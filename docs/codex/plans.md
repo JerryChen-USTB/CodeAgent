@@ -253,7 +253,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/tools/test_test_result_parser.py -q`.
 - Unit/integration tests to add: pytest pass/fail/error, unittest pass/fail, timeout log, malformed output fallback.
 - Risks and mitigations: output format variance; persist raw logs and include parser confidence.
-- Status: pending.
+- Status: done.
 
 ### M11 ToolRegistry, Permission Policy, and Tool-Level HITL
 
@@ -690,3 +690,15 @@ Use this section as an append-only engineering log. Every completed small module
 - Result summary: shell runner tests passed with 10 tests; full suite passed with 86 tests; both CLI help commands exited 0.
 - Reviews: M09 spec review initially found one P1 FR-28 gap: long stdout/stderr were returned in full. Fixed with truncated previews plus metadata and spec re-review PASS. M09 quality review found cwd-external path argument and pytest option bypasses; fixed path argument validation and high-risk pytest option denial. Quality re-review APPROVED with no P0/P1/P2 findings.
 - Next step: continue M10 Pytest and generic test result parsing.
+
+### 2026-06-03 M10 Pytest and Generic Test Result Parsing
+
+- Completed content: added normalized test-result dataclasses, pytest output parser, unittest output parser, shell-result dispatch helper, adapter exports, and focused unit tests.
+- Behavior implemented: parsers extract passed/failed/errors/skipped counts, total count, failing test identifiers, error summaries, timeout status, parser confidence, command text, exit code, and stdout/stderr log paths. Unknown output falls back to low-confidence results instead of fabricating counts.
+- Benchmark compatibility: visible benchmark configs use `python -m unittest discover ...`; M10 includes a unittest parser for those command summaries while preserving hidden-material isolation. No `evaluation`, `oracle_tests`, or `expected_result.json` contents were read.
+- Requirements/design alignment: reviewed SRS FR-46/FR-47/FR-48/FR-49, `TestResult`, SH-05, and design docs for `PytestResultParser`, `TestResult`, `parse_result(shell_result)`, pytest stdout parsing, and unittest/JUnit extension points.
+- Commands run: `python -m pytest tests/unit/tools/test_test_result_parser.py -q`; `python -m py_compile codeagent/adapters/test_result.py codeagent/adapters/pytest_adapter.py codeagent/adapters/unittest_adapter.py codeagent/tools/pytest_tools.py`; `python -m pytest -q`; `python -m codeagent --help`; `codeagent --help`.
+- Result summary: M10 parser tests passed with 8 tests; full suite passed with 94 tests; both CLI help commands exited 0; py_compile completed without errors.
+- Failures and fixes: TDD red run first failed on missing `codeagent.adapters`; later metadata red test exposed missing `command`/`exit_code`/`log_paths`; quality review found a P1 loss of parse data when ShellResult previews are truncated. Fixed by preserving ShellResult metadata and reading full stdout/stderr log files when previews are truncated, with regression coverage.
+- Reviews: M10 spec review PASS. M10 quality review initially requested the truncated-log fix; quality re-review APPROVED with no P0/P1/P2 findings.
+- Next step: continue M11 ToolRegistry, Permission Policy, and Tool-Level HITL.
