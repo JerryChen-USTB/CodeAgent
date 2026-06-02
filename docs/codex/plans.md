@@ -233,7 +233,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/tools/test_patch_service.py -q`.
 - Unit/integration tests to add: add/modify/delete diff parsing, path traversal rejection, idempotent apply, risk report for suspicious changes.
 - Risks and mitigations: patch parser edge cases; use focused fixtures and keep initial patch format conservative.
-- Status: pending.
+- Status: done.
 
 ### M09 ShellRunner and Test Command Execution
 
@@ -667,3 +667,14 @@ Use this section as an append-only engineering log. Every completed small module
 - Result summary: context tests passed with 13 tests; full suite passed with 65 tests. Scanner/searcher skip inaccessible sibling directories instead of failing or losing already discovered files; denied directories are not recursively listed; explicit hidden search roots are not listed; visible benchmark search excludes hidden `evaluation/` paths.
 - Reviews: M07 spec review initially failed because certificate files `.crt`/`.cer` were not denied; fixed suffix list and tests. Spec re-review PASS. Quality review initially requested replacing `sorted(root.rglob("*"))`; fixed with `safe_walk()`, denied-dir pruning, and hidden-root direct rejection. Quality re-review APPROVED with no P0/P1/P2 findings.
 - Next step: continue M08 PatchService.
+
+### 2026-06-03 M08 PatchService and Patch Risk Checks
+
+- Completed content: added `codeagent/services/patch_service.py`, service exports, `codeagent/tools/patch_tools.py`, and focused patch service tests.
+- Behavior implemented: create unified diffs from `FileChange`, parse file patches and hunks, validate path scope/sensitive/generated paths, reject duplicate patch targets and malformed hunk counts, summarize added/removed/changed files, apply add/modify/delete patches without Git, detect already-applied patches, preflight all planned writes/deletes before side effects, and rollback file writes on `OSError`.
+- Risk checks implemented: high-risk findings for test file deletion, skip/xfail additions, hardcoded case branches, large patches over 10 files, and test assertion removal.
+- Requirements/design alignment: reviewed SRS FR-23/FR-24/FR-26/FR-60/FR-64, NFR-10/NFR-12/NFR-13/NFR-14, and design docs for PatchService, patch-first, patch validation, HITL handoff, and benchmark forbidden patch patterns.
+- Commands run: `python -m pytest tests/unit/tools/test_patch_service.py -q`; `python -m pytest -q`; `python -m codeagent --help`; `codeagent --help`.
+- Result summary: patch service tests passed with 11 tests; full suite passed with 76 tests; both CLI help commands exited 0.
+- Reviews: M08 spec review initially found two P2 issues: large patches were warnings rather than high-risk findings, and hunk header counts were not validated. Both were fixed and spec re-review PASS. M08 quality review then found two P1 issues and one P2 issue: multi-file partial apply risk, duplicate target acceptance, and assertion removal not flagged. All were fixed; quality re-review APPROVED with no P0/P1/P2 findings.
+- Next step: continue M09 ShellRunner and test command execution.
