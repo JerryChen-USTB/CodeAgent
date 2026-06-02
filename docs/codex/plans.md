@@ -263,7 +263,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/tools/test_permissions.py -q`.
 - Unit/integration tests to add: allow/ask/deny classification, edited tool call, reject/respond behavior, decision trace records.
 - Risks and mitigations: model bypassing workflow approvals; keep side-effect tools guarded even if called directly.
-- Status: pending.
+- Status: done.
 
 ### M12 Model Factory and Prompt Registry
 
@@ -702,3 +702,16 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: TDD red run first failed on missing `codeagent.adapters`; later metadata red test exposed missing `command`/`exit_code`/`log_paths`; quality review found a P1 loss of parse data when ShellResult previews are truncated. Fixed by preserving ShellResult metadata and reading full stdout/stderr log files when previews are truncated, with regression coverage.
 - Reviews: M10 spec review PASS. M10 quality review initially requested the truncated-log fix; quality re-review APPROVED with no P0/P1/P2 findings.
 - Next step: continue M11 ToolRegistry, Permission Policy, and Tool-Level HITL.
+
+### 2026-06-03 M11 ToolRegistry, Permission Policy, and Tool-Level HITL
+
+- Completed content: added `ToolRegistry`, `ToolSpec`, default stage-scoped tool registration, `ToolPermissionPolicy`, `ToolCallContext`, `PermissionDecision`, tool-level approval request/decision models, and `ToolHITLInterceptor`.
+- Behavior implemented: default registry exposes tools by stage; unknown stages fail closed; readonly and patch-producing tools run automatically; output writes are allowed only under the run output directory; side-effect tools require approval unless benchmark auto-approval is configured and stage scope permits the tool.
+- HITL implemented: side-effect calls without a decision create an approval request; approve/edit executes; reject/respond/cancel does not execute; decisions are appended to `decision_trace.jsonl`; benchmark auto-approval records an automatic approve decision.
+- Safety fixes: direct side-effect calls are checked against stage scope before benchmark auto-approval; malformed output-write paths and NUL paths return `deny`; empty edited payloads are preserved instead of falling back to original args.
+- Requirements/design alignment: reviewed SRS FR-15/FR-16/FR-23~FR-28, FR-68/FR-71/FR-82/FR-83, NFR-14/NFR-21, and design docs for `ToolRegistry`, `ToolPermissionPolicy`, workflow/tool HITL, decision trace, and benchmark auto-approval.
+- Commands run: `python -m pytest tests/unit/tools/test_permissions.py -q`; `python -m pytest tests/unit/tools -q`; `python -m py_compile codeagent/tools/permissions.py codeagent/tools/registry.py codeagent/tools/hitl.py codeagent/tools/__init__.py`; `python -m pytest -q`; `python -m codeagent --help`; `codeagent --help`.
+- Result summary: M11 permission tests passed with 13 tests; tool tests passed with 42 tests; full suite passed with 107 tests; py_compile completed without errors; both CLI help commands exited 0.
+- Failures and fixes: spec review found stage-scope bypass under benchmark auto-approval; fixed with default-registry stage enforcement. Quality review found empty edit payload fallback and malformed path exceptions; fixed with regression tests. A parallel validation attempt made nested pytest exceed the shell-runner test timeout; sequential rerun passed, so future verification should not run nested pytest suites in parallel.
+- Reviews: M11 spec review initially failed on stage-scope bypass, then PASS after fix. M11 quality review requested two fixes; quality re-review APPROVED with no P0/P1/P2 findings.
+- Next step: continue M12 Model Factory and Prompt Registry.
