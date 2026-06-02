@@ -303,7 +303,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/workflow/test_routing.py -q`.
 - Unit/integration tests to add: route-after-implementation/testing/debugging/repair, selected-stage subsets, max repair attempts.
 - Risks and mitigations: graph routing mismatch with SRS; use deterministic mocked subgraphs first.
-- Status: pending.
+- Status: done.
 
 ### M16 SQLite Checkpoint, Interrupt, and Resume
 
@@ -751,3 +751,16 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: TDD red run first failed on missing `codeagent.reports.writer`. Full-suite validation exposed a brittle shell-runner nested-pytest timeout threshold; the failure-exit-code test timeout was widened while the dedicated timeout test still validates timeout behavior. Spec review found missing final-report failure validation/details; fixed with regression tests. Quality review found unescaped Markdown table cells; fixed with `_markdown_cell()` and regression tests for `|` and newline content.
 - Reviews: M14 spec review initially requested final-report failure detail fixes, then PASS after repair. M14 quality review initially requested Markdown cell escaping, then APPROVED with no P0/P1/P2 findings.
 - Next step: continue M15 LangGraph Main Graph and Routing.
+
+### 2026-06-03 M15 LangGraph Main Graph and Routing
+
+- Completed content: added `StageRouter`, `RouteDecision`, LangGraph main graph builder, `WorkflowFactory`, streaming event adapter, workflow exports, and focused routing/graph unit tests.
+- Behavior implemented: entry route selects the first configured stage; stage route nodes append route decisions to `AgentState.decision_trace`; conditional edges route implementation/testing/debugging/repair to final success/failure/cancelled or the next selected stage; repair failures loop back to debugging until `max_repair_attempts`.
+- Safety implemented: only `succeeded` stages may continue; `skipped`, `pending`, and `running` end as explicit failure instead of silently advancing; stage handlers returning unknown `AgentState` keys are rejected before LangGraph can drop them.
+- Streaming implemented: `stream_workflow_events()` normalizes LangGraph updates into `node_completed`, `route_decision`, `stage_result`, `final_status`, and raw fallback events; repeated debug/repair loop stage results are preserved.
+- Requirements/design alignment: reviewed SRS FR-13/FR-14/FR-17/FR-84/FR-87, NFR-09/NFR-18/NFR-22, and design docs 04/05/07 for main graph routing, route_after functions, testing failure to debug, repair retry loop, route decision logging, and streaming event shape.
+- Commands run: `python -m pytest tests/unit/workflow/test_routing.py -q`; `python -m pytest tests/unit/workflow -q`; `python -m compileall -q codeagent/workflow`; `python -m codeagent --help`; `python -m pytest -q`.
+- Result summary: M15 routing tests passed with 11 tests; workflow tests passed with 24 tests; full suite passed with 151 tests; compileall and CLI help exited 0.
+- Failures and fixes: TDD red run first failed on missing `codeagent.workflow.factory`. Initial graph tests used an undeclared `visited` key and were corrected to use schema-declared `messages`. Spec review found incomplete statuses advancing and missing stream adapter; fixed with regression tests. Quality review found retry stage_result de-duplication and unknown state-key loss; fixed with event emission and handler-output validation tests.
+- Reviews: M15 spec review initially requested incomplete-status and streaming fixes, then PASS after repair. M15 quality review initially requested retry event preservation and unknown-key validation, then APPROVED with no P0/P1/P2 findings.
+- Next step: continue M16 SQLite Checkpoint, Interrupt, and Resume.

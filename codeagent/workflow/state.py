@@ -39,8 +39,13 @@ class AgentState(TypedDict, total=False):
     context_summary: str
     artifact_refs: list[str]
     stage_results: dict[str, dict[str, JsonValue]]
+    decision_trace: list[dict[str, JsonValue]]
     pending_interrupt: dict[str, JsonValue] | None
     error: dict[str, JsonValue] | None
+    next_node: str | None
+    final_status: str | None
+    repair_attempt: int
+    max_repair_attempts: int
 
 
 def create_initial_state(
@@ -60,8 +65,13 @@ def create_initial_state(
         "context_summary": "",
         "artifact_refs": [],
         "stage_results": {},
+        "decision_trace": [],
         "pending_interrupt": None,
         "error": None,
+        "next_node": None,
+        "final_status": None,
+        "repair_attempt": 0,
+        "max_repair_attempts": 3,
     }
 
 
