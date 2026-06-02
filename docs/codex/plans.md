@@ -293,7 +293,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/reports -q`.
 - Unit/integration tests to add: template rendering, artifact reference validation, decision trace append, final report from mocked stage results.
 - Risks and mitigations: reports overstating results; generate only from verified records, not fresh model prose.
-- Status: pending.
+- Status: done.
 
 ### M15 LangGraph Main Graph and Routing
 
@@ -739,3 +739,15 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: TDD red run first failed on missing `codeagent.errors`. Spec review found missing `HumanDecision.edited_payload` and missing `blocked`/`skipped` tool statuses; fixed with regression tests. Quality review found non-standard JSON risk for `NaN`/`Infinity`; fixed with explicit non-finite float rejection and `allow_nan=False`.
 - Reviews: M13 spec review initially requested HITL/tool-status fixes, then PASS after repair. M13 quality review initially requested non-finite float handling, then APPROVED with no P0/P1/P2 findings.
 - Next step: continue M14 Report Writers and Audit Logs.
+
+### 2026-06-03 M14 Report Writers and Audit Logs
+
+- Completed content: added `ReportWriter`, `DecisionTraceWriter`, structured report reference errors, reports package exports, and report writer unit tests.
+- Behavior implemented: writes `stage_result.json`, `stage_report.md`, `final_report.md`, transcript events, decision trace events, and artifact index entries; stage/final reports reject unregistered artifact ids; failed/cancelled stages require reason and next suggestion.
+- Report safety implemented: final report is generated only from `StageResult`, `ArtifactStore`, and audit logs; failure/cancel details include error id, category, message, related artifacts, and next suggestion; Markdown table cells escape `|` and collapse newlines.
+- Requirements/design alignment: reviewed SRS FR-67~FR-72, FR-83/FR-84, NFR-08, and design docs 03/07/09 for transcript, decision trace, artifact index, stage_result, final_report, failure reports, and reproducibility rules.
+- Commands run: `python -m pytest tests/unit/reports -q`; `python -m pytest tests/unit/reports tests/unit/runtime tests/unit/workflow tests/unit/tools/test_shell_runner.py -q`; `python -m compileall -q codeagent/reports codeagent/runtime codeagent/workflow codeagent/tools`; `python -m codeagent --help`; `python -m pytest -q`.
+- Result summary: report tests passed with 10 tests; related validation passed with 45 tests; full suite passed with 140 tests; compileall and CLI help exited 0.
+- Failures and fixes: TDD red run first failed on missing `codeagent.reports.writer`. Full-suite validation exposed a brittle shell-runner nested-pytest timeout threshold; the failure-exit-code test timeout was widened while the dedicated timeout test still validates timeout behavior. Spec review found missing final-report failure validation/details; fixed with regression tests. Quality review found unescaped Markdown table cells; fixed with `_markdown_cell()` and regression tests for `|` and newline content.
+- Reviews: M14 spec review initially requested final-report failure detail fixes, then PASS after repair. M14 quality review initially requested Markdown cell escaping, then APPROVED with no P0/P1/P2 findings.
+- Next step: continue M15 LangGraph Main Graph and Routing.

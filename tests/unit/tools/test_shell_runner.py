@@ -55,7 +55,7 @@ def test_shell_runner_captures_failure_exit_code(tmp_path) -> None:
     result = runner.run(
         f"{sys.executable} -m pytest -q",
         cwd=project,
-        timeout_seconds=10,
+        timeout_seconds=30,
         approval=_approval("pytest-fail"),
     )
 
