@@ -1,0 +1,36 @@
+schema_version: 1
+name: codeagent_selfbuilt_python_benchmark
+description: Course-specific Python software projects for implementation, testing, debugging, and repair.
+case_root: cases
+default_agent_visible_paths:
+  - input
+  - workspace
+default_hidden_paths:
+  - oracle_tests
+cases:
+  - case_id: 01_todo_manager
+    config: cases/01_todo_manager/case.yaml
+    enabled: true
+    difficulty: introductory
+    project_type: cli
+  - case_id: 02_personal_ledger
+    config: cases/02_personal_ledger/case.yaml
+    enabled: true
+    difficulty: easy
+    project_type: cli
+  - case_id: 03_student_gradebook
+    config: cases/03_student_gradebook/case.yaml
+    enabled: true
+    difficulty: medium
+    project_type: cli
+  - case_id: 04_library_lending
+    config: cases/04_library_lending/case.yaml
+    enabled: true
+    difficulty: medium_high
+    project_type: cli
+  - case_id: 05_meeting_room_booking
+    config: cases/05_meeting_room_booking/case.yaml
+    enabled: true
+    difficulty: high
+    project_type: flask_api
+    dependency_note: "Agent should create workspace/requirements.txt with Flask dependency during implementation."

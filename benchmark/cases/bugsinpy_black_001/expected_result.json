@@ -1,0 +1,10 @@
+{
+  "dataset": "BugsInPy",
+  "project": "black",
+  "bug_id": "1",
+  "enabled_by_default": false,
+  "workspace_prepared": true,
+  "prepare_method": "official BugsInPy bugsinpy-checkout via WSL conda wrapper",
+  "test_method": "official BugsInPy bugsinpy-compile and bugsinpy-test via WSL conda wrapper",
+  "reason": "the case is disabled by default because it is a real project repair task and should run in a Python 3.8.3-compatible conda environment"
+}

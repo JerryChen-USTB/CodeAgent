@@ -1,0 +1,65 @@
+$ python -m unittest discover -s workspace/tests
+exit_code=1
+
+--- stdout ---
+
+--- stderr ---
+.E....E
+======================================================================
+ERROR: test_case_1 (test_find_in_sorted.TestFindInSorted.test_case_1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\tests\test_find_in_sorted.py", line 133, in test_case_1
+    self.assertEqual(find_in_sorted(*args), expected)
+                     ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 13, in find_in_sorted
+    return binsearch(0, len(arr))
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 7, in binsearch
+    return binsearch(start, mid)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 7, in binsearch
+    return binsearch(start, mid)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  [Previous line repeated 977 more times]
+RecursionError: maximum recursion depth exceeded
+
+======================================================================
+ERROR: test_case_6 (test_find_in_sorted.TestFindInSorted.test_case_6)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\tests\test_find_in_sorted.py", line 148, in test_case_6
+    self.assertEqual(find_in_sorted(*args), expected)
+                     ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 13, in find_in_sorted
+    return binsearch(0, len(arr))
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_find_in_sorted\workspace\find_in_sorted.py", line 9, in binsearch
+    return binsearch(mid, end)
+           ^^^^^^^^^^^^^^^^^^^
+  [Previous line repeated 980 more times]
+RecursionError: maximum recursion depth exceeded
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.060s
+
+FAILED (errors=2)
+

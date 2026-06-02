@@ -1,0 +1,13 @@
+{
+  "dataset": "HumanEval",
+  "task_id": "HumanEval/0",
+  "entry_point": "has_close_elements",
+  "success_criteria": [
+    "python -m unittest discover -s evaluation returns exit code 0",
+    "solution.py keeps the required entry point",
+    "no evaluation files are modified"
+  ],
+  "hidden_answer_fields_excluded": [
+    "canonical_solution"
+  ]
+}

@@ -1,0 +1,107 @@
+$ python -m unittest discover -s workspace/tests
+exit_code=1
+
+--- stdout ---
+
+--- stderr ---
+.EEEEE
+======================================================================
+ERROR: test_case_1 (test_gcd.TestGcd.test_case_1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\tests\test_gcd.py", line 59, in test_case_1
+    self.assertEqual(gcd(*args), expected)
+                     ^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  [Previous line repeated 981 more times]
+RecursionError: maximum recursion depth exceeded
+
+======================================================================
+ERROR: test_case_2 (test_gcd.TestGcd.test_case_2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\tests\test_gcd.py", line 62, in test_case_2
+    self.assertEqual(gcd(*args), expected)
+                     ^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  [Previous line repeated 981 more times]
+RecursionError: maximum recursion depth exceeded
+
+======================================================================
+ERROR: test_case_3 (test_gcd.TestGcd.test_case_3)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\tests\test_gcd.py", line 65, in test_case_3
+    self.assertEqual(gcd(*args), expected)
+                     ^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  [Previous line repeated 981 more times]
+RecursionError: maximum recursion depth exceeded
+
+======================================================================
+ERROR: test_case_4 (test_gcd.TestGcd.test_case_4)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\tests\test_gcd.py", line 68, in test_case_4
+    self.assertEqual(gcd(*args), expected)
+                     ^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  [Previous line repeated 981 more times]
+RecursionError: maximum recursion depth exceeded
+
+======================================================================
+ERROR: test_case_5 (test_gcd.TestGcd.test_case_5)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\tests\test_gcd.py", line 71, in test_case_5
+    self.assertEqual(gcd(*args), expected)
+                     ^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  File "D:\Projects\CodeAgent\benchmark\cases\quixbugs_gcd\workspace\gcd.py", line 5, in gcd
+    return gcd(a % b, b)
+           ^^^^^^^^^^^^^
+  [Previous line repeated 981 more times]
+RecursionError: maximum recursion depth exceeded
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.186s
+
+FAILED (errors=5)
+

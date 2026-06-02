@@ -1,0 +1,49 @@
+schema_version: 1
+case_id: 05_meeting_room_booking
+title: Meeting Room Booking API
+difficulty: high
+task_type: project_implementation_testing_debug_repair
+language: python
+project_type: flask_api
+stages:
+  - implementation
+  - testing
+  - debugging
+  - repair
+entrypoint:
+  package: meeting_room_booking
+  app_factory: "meeting_room_booking:create_app"
+workspace:
+  path: workspace
+  initial_state: empty
+input_materials:
+  - path: input/requirements.md
+    type: natural_language_requirements
+    required: true
+  - path: input/prd.md
+    type: prd
+    required: true
+  - path: input/user_stories.yaml
+    type: user_stories
+    required: true
+  - path: input/design_model.md
+    type: design_model
+    required: true
+  - path: input/acceptance_criteria.md
+    type: acceptance_criteria
+    required: true
+agent_visibility:
+  visible_paths:
+    - input
+    - workspace
+  hidden_paths:
+    - oracle_tests
+dependency_expectation:
+  - "Create workspace/requirements.txt containing Flask>=3.0,<4.0 or another compatible Flask 3 dependency spec."
+test_command:
+  command: "python -m unittest discover -s oracle_tests"
+  timeout_seconds: 25
+success_criteria:
+  - The agent creates a Flask package meeting_room_booking in the empty workspace.
+  - The app exposes create_app(db_path=None), uses SQLite persistence, and follows the API contract in input materials.
+  - All hidden oracle tests pass.

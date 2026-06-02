@@ -1,0 +1,38 @@
+epic: small_library_lending
+stories:
+  - id: US-01
+    role: 图书管理员
+    goal: 将新书加入系统
+    benefit: 我可以维护图书库存
+    acceptance:
+      - add-book 新增或更新图书
+      - books 显示总册数和可借册数
+  - id: US-02
+    role: 图书管理员
+    goal: 注册读者
+    benefit: 我可以记录谁借了书
+    acceptance:
+      - add-reader 保存 reader_id 和姓名
+      - 重复注册更新姓名
+  - id: US-03
+    role: 图书管理员
+    goal: 为读者办理借书
+    benefit: 系统可以跟踪借阅状态
+    acceptance:
+      - borrow 创建未归还借阅
+      - due_at 是借出日期后 14 天
+      - 无库存时拒绝
+  - id: US-04
+    role: 图书管理员
+    goal: 为读者办理还书
+    benefit: 图书可借数量会恢复
+    acceptance:
+      - return 设置 returned_at
+      - books 中 available 增加
+  - id: US-05
+    role: 班级负责人
+    goal: 查看逾期借阅
+    benefit: 我可以提醒读者归还图书
+    acceptance:
+      - overdue 只显示未归还且已过 due_at 的借阅
+      - 没有逾期时输出 no overdue loans

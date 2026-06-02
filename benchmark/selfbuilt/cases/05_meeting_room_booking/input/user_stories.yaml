@@ -1,0 +1,41 @@
+epic: meeting_room_booking
+stories:
+  - id: US-01
+    role: 行政管理员
+    goal: 创建会议室
+    benefit: 团队成员可以预约真实存在的会议室
+    acceptance:
+      - POST /rooms 成功返回 201
+      - 重复名称返回 409
+      - 非法容量返回 400
+  - id: US-02
+    role: 普通员工
+    goal: 创建会议室预约
+    benefit: 我可以锁定某个会议时间段
+    acceptance:
+      - POST /bookings 成功返回 active 预约
+      - 不存在 room_id 返回 404
+      - 时间格式错误返回 400
+  - id: US-03
+    role: 普通员工
+    goal: 避免预约冲突
+    benefit: 两场会议不会占用同一会议室同一时间
+    acceptance:
+      - 重叠预约返回 409
+      - 边界相接预约允许创建
+  - id: US-04
+    role: 团队成员
+    goal: 查看某天预约
+    benefit: 我可以了解会议室占用情况
+    acceptance:
+      - GET /bookings?date=... 返回当天 active 预约
+      - 可按 room_id 过滤
+      - 结果按开始时间排序
+  - id: US-05
+    role: 普通员工
+    goal: 取消预约
+    benefit: 释放不再需要的会议室时间段
+    acceptance:
+      - DELETE /bookings/<id> 返回 204
+      - 取消后该预约不再出现在查询结果中
+      - 取消后的时间段可以重新预约

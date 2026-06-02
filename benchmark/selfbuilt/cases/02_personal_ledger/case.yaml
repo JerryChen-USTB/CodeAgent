@@ -1,0 +1,46 @@
+schema_version: 1
+case_id: 02_personal_ledger
+title: Personal Ledger
+difficulty: easy
+task_type: project_implementation_testing_debug_repair
+language: python
+project_type: cli
+stages:
+  - implementation
+  - testing
+  - debugging
+  - repair
+entrypoint:
+  command: "python -m personal_ledger"
+workspace:
+  path: workspace
+  initial_state: empty
+input_materials:
+  - path: input/requirements.md
+    type: natural_language_requirements
+    required: true
+  - path: input/prd.md
+    type: prd
+    required: true
+  - path: input/user_stories.yaml
+    type: user_stories
+    required: true
+  - path: input/design_model.md
+    type: design_model
+    required: true
+  - path: input/acceptance_criteria.md
+    type: acceptance_criteria
+    required: true
+agent_visibility:
+  visible_paths:
+    - input
+    - workspace
+  hidden_paths:
+    - oracle_tests
+test_command:
+  command: "python -m unittest discover -s oracle_tests"
+  timeout_seconds: 15
+success_criteria:
+  - The agent creates a runnable personal_ledger package in the empty workspace.
+  - CLI behavior, JSON storage, CSV export, summaries, and validation match the input materials.
+  - All hidden oracle tests pass.

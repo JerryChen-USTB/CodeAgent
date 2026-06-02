@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-02",
+  "enabled_case_count": 6,
+  "optional_case_count": 1,
+  "enabled_cases": [
+    "humaneval_000_has_close_elements",
+    "humaneval_001_separate_paren_groups",
+    "mbpp_002_similar_elements",
+    "mbpp_003_is_not_prime",
+    "quixbugs_gcd",
+    "quixbugs_find_in_sorted"
+  ],
+  "optional_cases": [
+    "bugsinpy_black_001"
+  ],
+  "prepared_optional_workspaces": [
+    "bugsinpy_black_001"
+  ],
+  "skipped_datasets": {
+    "SWE-bench_Lite": "requires repository checkout, harness/Docker setup, and larger runtime budget; postponed"
+  }
+}

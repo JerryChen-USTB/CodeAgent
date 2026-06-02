@@ -1,0 +1,13 @@
+{
+  "dataset": "MBPP",
+  "task_id": 2,
+  "entry_point": "similar_elements",
+  "success_criteria": [
+    "python -m unittest discover -s evaluation returns exit code 0",
+    "solution.py keeps the required entry point",
+    "no evaluation files are modified"
+  ],
+  "hidden_answer_fields_excluded": [
+    "code"
+  ]
+}

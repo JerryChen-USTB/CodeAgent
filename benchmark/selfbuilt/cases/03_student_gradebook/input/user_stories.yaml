@@ -1,0 +1,34 @@
+epic: gradebook_processing
+stories:
+  - id: US-01
+    role: 教师
+    goal: 从 CSV 生成带总评和等级的报告
+    benefit: 我不需要手工计算每个学生成绩
+    acceptance:
+      - report 命令生成输出 CSV
+      - 输出包含 total 和 letter
+      - 行顺序与输入一致
+  - id: US-02
+    role: 教师
+    goal: 查看班级统计
+    benefit: 我可以快速了解班级整体情况
+    acceptance:
+      - stats 输出学生人数和均分
+      - stats 输出最高分和最低分学生
+      - stats 输出 A-F 分布
+  - id: US-03
+    role: 助教
+    goal: 发现输入 CSV 中的数据错误
+    benefit: 我可以及时修正成绩文件
+    acceptance:
+      - 缺列时报 missing column
+      - 重复学号时报 duplicate student_id
+      - 非法成绩时报 invalid score 或 score out of range
+  - id: US-04
+    role: 评分人员
+    goal: 确认等级边界计算准确
+    benefit: 我可以保证评分公平
+    acceptance:
+      - 90.00 转为 A
+      - 80.00 转为 B
+      - 60.00 转为 D

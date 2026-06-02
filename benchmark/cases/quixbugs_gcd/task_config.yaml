@@ -1,0 +1,47 @@
+schema_version: 1
+case_id: quixbugs_gcd
+dataset: QuixBugs
+source_id: "python_programs/gcd.py"
+enabled: true
+task_type: test_debug_repair
+stages:
+  - testing
+  - debugging
+  - repair
+language: python
+project:
+  path: workspace
+  test_framework: unittest
+input_materials:
+  - material_type: buggy_project
+    path: workspace
+    required: true
+    multi: false
+    description: "Project directory containing buggy source and reproducible tests"
+  - material_type: bug_report
+    path: input/bug_report.md
+    required: true
+    multi: false
+    description: "Repair task description and program specification"
+  - material_type: failing_tests
+    path: input/failure_tests.md
+    required: true
+    multi: true
+    description: "Failing tests used to reproduce the defect"
+  - material_type: error_log
+    path: input/before_test.log
+    required: false
+    multi: true
+    description: "Initial failure log captured before repair"
+test_command:
+  command: "python -m unittest discover -s workspace/tests"
+  timeout_seconds: 10
+agent_visibility:
+  visible_paths:
+    - input
+    - workspace
+  hidden_paths:
+    - expected_result.json
+evaluation:
+  oracle_tests: workspace/tests
+  expected_status: pass

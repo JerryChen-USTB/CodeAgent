@@ -1,0 +1,14 @@
+{
+  "dataset": "QuixBugs",
+  "program": "gcd",
+  "initial_test_exit_code": 1,
+  "test_case_count": 6,
+  "success_criteria": [
+    "python -m unittest discover -s workspace/tests returns exit code 0 after repair",
+    "workspace/tests files are not modified",
+    "repair patch is limited to the buggy program unless explicitly justified"
+  ],
+  "hidden_answer_fields_excluded": [
+    "correct_python_programs"
+  ]
+}

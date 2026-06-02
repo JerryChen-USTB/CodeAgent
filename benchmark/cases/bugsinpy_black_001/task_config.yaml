@@ -1,0 +1,51 @@
+schema_version: 1
+case_id: bugsinpy_black_001
+dataset: BugsInPy
+source_id: "projects/black/bugs/1"
+enabled: false
+task_type: project_debug_repair
+stages:
+  - testing
+  - debugging
+  - repair
+language: python
+project:
+  path: workspace/black
+  test_framework: unittest
+input_materials:
+  - material_type: bug_metadata
+    path: input/bug.info
+    required: true
+    multi: false
+    description: "BugsInPy bug metadata"
+  - material_type: bug_report
+    path: input/bug_report.md
+    required: true
+    multi: false
+    description: "Project-level repair task description"
+  - material_type: test_script
+    path: input/run_test.sh
+    required: true
+    multi: false
+    description: "BugsInPy test script"
+test_command:
+  command: "powershell -ExecutionPolicy Bypass -File scripts/run_bugsinpy_wsl_conda.ps1 -CaseDir benchmark/cases/bugsinpy_black_001"
+  timeout_seconds: 1200
+agent_visibility:
+  visible_paths:
+    - input
+    - workspace/black
+  hidden_paths:
+    - expected_result.json
+evaluation:
+  oracle_tests: BugsInPy harness
+  expected_status: pass
+requires_external_checkout: true
+prepare_command:
+  command: "powershell -ExecutionPolicy Bypass -File scripts/prepare_bugsinpy_wsl_conda.ps1 -CaseDir benchmark/cases/bugsinpy_black_001"
+  produces: workspace/black
+  description: "Run BugsInPy official bugsinpy-checkout in WSL with the conda Python 3.8.3 environment active."
+execution_environment:
+  recommended: wsl_conda
+  conda_env: codeagent-bugsinpy-py383
+  reason: "This BugsInPy bug declares Python 3.8.3. WSL provides the Bash/Linux runtime expected by BugsInPy, and conda provides the requested Python version."
