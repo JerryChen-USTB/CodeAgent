@@ -223,7 +223,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/context -q`.
 - Unit/integration tests to add: project scan, read small/large files, search matches, denied secret reads, `.git`/venv/build skip.
 - Risks and mitigations: hidden benchmark leakage; enforce visible-path allowlists in benchmark mode.
-- Status: pending.
+- Status: done.
 
 ### M08 PatchService and Patch Risk Checks
 
@@ -657,3 +657,13 @@ Use this section as an append-only engineering log. Every completed small module
 - Environment note: a manual smoke directory under ignored `codeagent_runs/_smoke_tmp` caused Windows directory enumeration/cleanup commands to time out. The path is ignored by Git and should be cleaned after the process/file lock clears; future smoke tests should use pytest-managed `tmp_path` or project venv temp dirs.
 - Quality re-review: APPROVED; no P0/P1/P2 issues remain after fail-closed artifact path handling.
 - Next step: continue M07 project context tools and sensitive filtering.
+
+### 2026-06-03 M07 Project Context Tools and Sensitive Filtering
+
+- Completed content: added `codeagent/context/sensitive_filter.py`, `file_reader.py`, `path_utils.py`, `code_search.py`, `scanner.py`, package exports, and context unit tests.
+- Behavior implemented: Python project scanning for source/test/config/dependency files, skipped-path reporting for denied/generated paths, safe text reads with truncation, keyword search with result/file limits, `.env`/key/cert/token and generated directory filtering, benchmark `visible_roots`/`hidden_roots` allowlist enforcement, safe traversal over inaccessible sibling directories, denied-directory recursion pruning, and direct empty results for explicitly hidden search roots.
+- Requirements/design alignment: reviewed SRS FR-20/FR-21/FR-22/FR-28, NFR-13, DR-02 and design docs for `scan_project`, `read_file`, `search_code`, sensitive filtering, and benchmark hidden path isolation.
+- Commands run: `python -m pytest tests/unit/context -q`; `python -m pytest -q`; actual repository scanner/search smoke without reading secrets or hidden benchmark material.
+- Result summary: context tests passed with 13 tests; full suite passed with 65 tests. Scanner/searcher skip inaccessible sibling directories instead of failing or losing already discovered files; denied directories are not recursively listed; explicit hidden search roots are not listed; visible benchmark search excludes hidden `evaluation/` paths.
+- Reviews: M07 spec review initially failed because certificate files `.crt`/`.cer` were not denied; fixed suffix list and tests. Spec re-review PASS. Quality review initially requested replacing `sorted(root.rglob("*"))`; fixed with `safe_walk()`, denied-dir pruning, and hidden-root direct rejection. Quality re-review APPROVED with no P0/P1/P2 findings.
+- Next step: continue M08 PatchService.
