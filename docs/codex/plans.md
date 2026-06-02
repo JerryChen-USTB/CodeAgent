@@ -213,7 +213,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/runtime -q`.
 - Unit/integration tests to add: run_id uniqueness, full directory tree, artifact index record/find/write, metadata redaction.
 - Risks and mitigations: path collisions or accidental overwrite; use timestamp plus hash and fail-safe creation.
-- Status: in-progress.
+- Status: done.
 
 ### M07 Project Context Tools and Sensitive Filtering
 
@@ -646,3 +646,14 @@ Use this section as an append-only engineering log. Every completed small module
 - Reviews: M05 spec review returned PASS. Non-blocking JSON benchmark test suggestion was implemented. M05 quality review requested fixes for evaluator-only metadata retention and malformed stage errors; fixed by changing agent-facing `TaskConfig` to ignore unknown keys, adding hidden-metadata regression tests, and returning stable `ValueError` for `stages: null` / scalar stage inputs.
 - Quality re-review: APPROVED; no P0/P1/P2 issues remain after hidden-metadata and malformed-stage fixes.
 - Next step: continue M06 run context and artifact index.
+
+### 2026-06-03 M06 Run Context and Artifact Index
+
+- Completed content: added run initialization, `RunContext`, SQLite checkpoint placeholder, metadata writer, normalized task config writer, artifact store, and JSONL recorder.
+- Behavior implemented: unique run IDs with timestamp/stage/hash, fail-safe directory creation without overwriting existing runs, required root files, stage directories, benchmark directory, metadata that records only `api_key_env`, artifact index create/load/record/find/find_by_stage/write, and timestamped transcript/decision trace append.
+- Commands run: `python -m pytest tests/unit/runtime -q`; `python -m pytest -q`.
+- Result summary: runtime tests passed with 12 tests; full suite passed with 52 tests. M06 smoke checks create run directories and required files without reading secrets or hidden benchmark contents.
+- Reviews: M06 spec review initially failed because it did not confirm artifact/JSONL tests; added explicit artifact-index initialization and unknown secret-like field redaction tests, then passed spec re-review. M06 quality review requested fail-closed artifact path handling; fixed out-of-run absolute path and `..` traversal rejection with regression tests.
+- Environment note: a manual smoke directory under ignored `codeagent_runs/_smoke_tmp` caused Windows directory enumeration/cleanup commands to time out. The path is ignored by Git and should be cleaned after the process/file lock clears; future smoke tests should use pytest-managed `tmp_path` or project venv temp dirs.
+- Quality re-review: APPROVED; no P0/P1/P2 issues remain after fail-closed artifact path handling.
+- Next step: continue M07 project context tools and sensitive filtering.
