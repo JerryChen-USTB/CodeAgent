@@ -273,7 +273,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/models tests/unit/agents -q`.
 - Unit/integration tests to add: config mapping, missing key error, prompt snapshot tests, structured schema validation retry.
 - Risks and mitigations: LangChain/OpenRouter API drift; re-check official docs immediately before implementation and record installed versions.
-- Status: pending.
+- Status: done.
 
 ### M13 AgentState, StageResult, ErrorRecord, and Report Schemas
 
@@ -715,3 +715,15 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: spec review found stage-scope bypass under benchmark auto-approval; fixed with default-registry stage enforcement. Quality review found empty edit payload fallback and malformed path exceptions; fixed with regression tests. A parallel validation attempt made nested pytest exceed the shell-runner test timeout; sequential rerun passed, so future verification should not run nested pytest suites in parallel.
 - Reviews: M11 spec review initially failed on stage-scope bypass, then PASS after fix. M11 quality review requested two fixes; quality re-review APPROVED with no P0/P1/P2 findings.
 - Next step: continue M12 Model Factory and Prompt Registry.
+
+### 2026-06-03 M12 Model Factory and Prompt Registry
+
+- Completed content: added secure model secret resolution, OpenAI-compatible `ModelClientFactory`, structured output retry helper, centralized `PromptRegistry`, model/agent package exports, and focused model/agent unit tests.
+- Behavior implemented: model config maps to `langchain_openai.ChatOpenAI` with model, base URL, API key, temperature, timeout, retries, and optional max tokens; missing or invalid API key env names produce redacted errors; secret records expose only env var plus `<redacted>`; structured output helper retries Pydantic validation; prompts cover required role, inputs, tools, schema, patch-first, hidden-oracle, no-secret, verification, failure behavior, and audit rules.
+- Official docs and dependency check: reviewed LangChain structured output docs, LangChain/OpenRouter integration docs, and OpenRouter quickstart/API compatibility docs. Local versions: `langchain==1.3.2`, `langchain-openai==1.2.2`, `langgraph==1.2.2`, `openai==2.40.0`, `pydantic==2.10.6`; `langchain-openrouter` is not installed. Current implementation follows project design using `ChatOpenAI(base_url=...)`; dedicated `ChatOpenRouter` is a recorded future integration option.
+- Requirements/design alignment: reviewed SRS AI-01~AI-05, FR-81, DR-01/DR-02, NFR-25, design `ModelClientFactory`, model access, prompt engineering constraints, and structured output schema guidance.
+- Commands run: `python -m pytest tests/unit/models tests/unit/agents -q`; `python -m py_compile codeagent/models/__init__.py codeagent/models/secrets.py codeagent/models/factory.py codeagent/models/structured_outputs.py codeagent/agents/__init__.py codeagent/agents/prompts.py`; `python -m pytest -q`; `python -m codeagent --help`; `codeagent --help`.
+- Result summary: M12 tests passed with 10 tests; full suite passed with 117 tests; py_compile completed without errors; both CLI help commands exited 0.
+- Failures and fixes: TDD red run first failed on missing `codeagent.models` and `codeagent.agents`; quality review found prompt section under-specification and secret-like `api_key_env` error leakage. Fixed with prompt structure tests, env var name validation, and redacted secret records.
+- Reviews: M12 spec review PASS. M12 quality review initially requested prompt and secret fixes; quality re-review APPROVED with no P0/P1/P2 findings.
+- Next step: continue M13 AgentState, StageResult, ErrorRecord, and Report Schemas.
