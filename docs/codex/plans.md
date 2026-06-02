@@ -323,7 +323,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/integration/test_implementation_stage.py -q`.
 - Unit/integration tests to add: plan schema, patch loop on validation failure, syntax-check failure path, cancelled approval path.
 - Risks and mitigations: LLM patch quality; use schema validation, targeted context, and small fixtures before benchmark.
-- Status: pending.
+- Status: done.
 
 ### M18 TestingSubgraph
 
@@ -777,3 +777,23 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: TDD red run first failed on missing `codeagent.workflow.checkpoint`. Spec review found placeholder final report completion misclassification and missing actual resume path; fixed with final-report artifact completion detection and real interrupt/resume tests. Quality review found malformed pending interrupt and invalid decision JSON crashes; fixed with stable fallback/error handling.
 - Reviews: M16 spec review initially requested completion/resume fixes, then PASS after repair. M16 quality review initially requested bad JSON handling, then APPROVED with no P0/P1/P2 findings.
 - Next step: continue M17 ImplementationSubgraph.
+
+### 2026-06-03 M17 ImplementationSubgraph Start
+
+- Alignment review: rechecked M17 scope against SRS goals for implement -> test -> debug -> repair, FR-13/FR-14, FR-67~FR-72, FR-81~FR-84, and design docs 04/05/06 for ImplementationSubgraph, patch-first, workflow-level HITL, `py_compile` syntax checks, artifact-backed reports, and decision trace records.
+- Planned implementation boundary: create a deterministic `ImplementationService` that consumes structured implementation intent and existing `PatchService`/`ShellRunner`/`ReportWriter`; later LLM agent nodes only need to supply validated structured file changes.
+- Commands run: targeted reads of `docs/codex/plans.md`, `docs/codex/implement.md`, SRS, design docs 04/05/06, `PatchService`, `ShellRunner`, `ReportWriter`, `ArtifactStore`, `AgentState`, and workflow factory/routing modules.
+- Next step: add failing M17 integration tests for success, patch validation failure, syntax-check failure, cancellation, and subgraph handler state output.
+
+### 2026-06-03 M17 ImplementationSubgraph
+
+- Completed content: added `ImplementationPlan`, `ImplementationFileChange`, `ImplementationRequest`, `ImplementationService`, deterministic implementation stage handler, interrupting implementation subgraph, and M17 integration tests.
+- Behavior implemented: generates `implementation_plan.md`, `implementation_plan.json`, `implementation.patch.diff`, `patch_attempts.json`, `changed_files.json`, `syntax_check.log`, `implementation_report.md`, and `stage_result.json`; validates patch candidates, retries alternate candidates, blocks sensitive/escaped targets before diff persistence, records approval decisions, applies approved patches, runs `python -m py_compile`, and writes artifact-backed reports.
+- HITL/resume implemented: `build_interrupting_implementation_subgraph()` separates `prepare_patch`, `approve_patch` with LangGraph `interrupt()`, and `apply_patch`; resume approve applies the previously approved patch file after `patch_sha256` verification instead of regenerating patch content; `implementation_plan.json` preserves the approved plan for syntax checks and reporting.
+- Requirements/design alignment: reviewed SRS implementation/debug/test workflow goals, FR-13/FR-14, FR-67~FR-72, FR-81~FR-84, and design docs 04/05/06 for ImplementationSubgraph, workflow HITL, patch-first side effects, `py_compile`, reports, and checkpoint-safe state.
+- Commands run: `python -m pytest tests/integration/test_implementation_stage.py -q`; `python -m pytest tests/integration/test_implementation_stage.py tests/integration/test_resume.py tests/unit/workflow tests/unit/tools tests/unit/reports -q`; `python -m compileall -q codeagent`; `python -m pytest -q`; `python -m codeagent --help`; `codeagent --help`.
+- Result summary: M17 integration tests passed with 10 tests; related regression passed with 95 tests; full suite passed with 170 tests; compileall and both CLI help commands exited 0.
+- Failures and fixes: TDD red run first failed on missing `codeagent.stages`. Quality review found sensitive candidate diff persistence; fixed with fail-closed precheck before diff generation and a `.env` regression test. Spec review found missing real interrupt/resume approval; fixed with a three-node subgraph and checkpoint resume test. Spec re-review found resume was regenerating the approved patch; fixed with `patch_sha256` and `apply_prepared_patch()`. Final spec review found report/syntax used resume-time plan; fixed by persisting and loading `implementation_plan.json`.
+- Reviews: M17 quality review final result APPROVED. M17 spec review final result PASS with no remaining P0/P1/P2 findings.
+- Developer report: `docs/dev_reports/M17_implementation_subgraph.md`.
+- Next step: continue M18 TestingSubgraph.
