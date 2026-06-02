@@ -1,5 +1,6 @@
 """Workflow state primitives."""
 
+from codeagent.workflow.checkpoint import CheckpointManager
 from codeagent.workflow.events import stream_workflow_events
 from codeagent.workflow.factory import WorkflowFactory
 from codeagent.workflow.main_graph import build_main_graph
@@ -13,6 +14,7 @@ from codeagent.workflow.state import (
 
 __all__ = [
     "AgentState",
+    "CheckpointManager",
     "CheckpointSafetyError",
     "RouteDecision",
     "StageRouter",

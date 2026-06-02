@@ -313,7 +313,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/integration/test_resume.py -q`.
 - Unit/integration tests to add: checkpoint file creation, interrupt/resume path, missing run_id, missing checkpoint fallback.
 - Risks and mitigations: LangGraph checkpoint API changes; verify official persistence/interrupt docs and pin versions.
-- Status: pending.
+- Status: done.
 
 ### M17 ImplementationSubgraph
 
@@ -764,3 +764,16 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: TDD red run first failed on missing `codeagent.workflow.factory`. Initial graph tests used an undeclared `visited` key and were corrected to use schema-declared `messages`. Spec review found incomplete statuses advancing and missing stream adapter; fixed with regression tests. Quality review found retry stage_result de-duplication and unknown state-key loss; fixed with event emission and handler-output validation tests.
 - Reviews: M15 spec review initially requested incomplete-status and streaming fixes, then PASS after repair. M15 quality review initially requested retry event preservation and unknown-key validation, then APPROVED with no P0/P1/P2 findings.
 - Next step: continue M16 SQLite Checkpoint, Interrupt, and Resume.
+
+### 2026-06-03 M16 SQLite Checkpoint, Interrupt, and Resume
+
+- Completed content: added `CheckpointManager`, resume inspection/render helpers, `resume_run_from_checkpoint()`, CLI `resume --output-root/--decision-json`, checkpointer injection for `WorkflowFactory`, and integration tests with real LangGraph interrupt/resume.
+- Behavior implemented: `thread_id` is derived from `run_id`; SQLite saver is created with an explicit connection lifecycle; pending interrupt payloads are persisted as JSON-safe files; `Command(resume=...)` resumes a checkpointed interrupt and clears pending interrupt state.
+- Recovery fallback implemented: `resume --run-id` detects missing/corrupt checkpoints and falls back to artifact index plus final report excerpt; initialized placeholder final reports are not misclassified as completed unless `final_report` is registered as an artifact.
+- Robustness implemented: malformed `pending_interrupt.json` no longer crashes inspection; invalid `--decision-json` produces a stable CLI error without traceback.
+- Requirements/design alignment: reviewed SRS FR-14/FR-15/FR-16/FR-19/FR-68/FR-70~FR-72/FR-83/FR-87, UC-07, and design docs 04/05/07/09 for SQLite checkpoint, `thread_id=run_id`, pending interrupt, resume, and artifact fallback.
+- Commands run: `python -m pytest tests/integration/test_resume.py -q`; `python -m pytest tests/integration/test_resume.py tests/unit/runtime tests/unit/workflow tests/test_cli_contract.py -q`; `python -m compileall -q codeagent/workflow codeagent/cli codeagent/runtime`; `python -m codeagent --help`; `python -m pytest -q`; `python -m codeagent resume --run-id missing-run --output-root .`.
+- Result summary: resume integration tests passed with 9 tests; related validation passed with 49 tests; full suite passed with 160 tests; compileall and CLI help exited 0; missing-run resume smoke exited 1 with the expected `not_found` summary.
+- Failures and fixes: TDD red run first failed on missing `codeagent.workflow.checkpoint`. Spec review found placeholder final report completion misclassification and missing actual resume path; fixed with final-report artifact completion detection and real interrupt/resume tests. Quality review found malformed pending interrupt and invalid decision JSON crashes; fixed with stable fallback/error handling.
+- Reviews: M16 spec review initially requested completion/resume fixes, then PASS after repair. M16 quality review initially requested bad JSON handling, then APPROVED with no P0/P1/P2 findings.
+- Next step: continue M17 ImplementationSubgraph.

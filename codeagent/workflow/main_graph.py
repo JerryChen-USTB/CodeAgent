@@ -20,6 +20,7 @@ def build_main_graph(
     *,
     stage_handlers: Mapping[str, StageHandler] | None = None,
     router: StageRouter | None = None,
+    checkpointer=None,
 ):
     stage_handlers = stage_handlers or {}
     router = router or StageRouter()
@@ -80,7 +81,7 @@ def build_main_graph(
     graph.add_edge("final_success", END)
     graph.add_edge("final_failed", END)
     graph.add_edge("final_cancelled", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def _stage_node(stage: str, handler: StageHandler | None):

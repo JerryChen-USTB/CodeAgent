@@ -18,8 +18,9 @@ class WorkflowFactory:
         self.stage_handlers = stage_handlers or {}
         self.router = router or StageRouter()
 
-    def build(self):
+    def build(self, *, checkpointer=None):
         return build_main_graph(
             stage_handlers=self.stage_handlers,
             router=self.router,
+            checkpointer=checkpointer,
         )

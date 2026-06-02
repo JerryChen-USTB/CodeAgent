@@ -97,10 +97,7 @@ def _create_stage_dirs(run_dir: Path) -> dict[Stage, Path]:
 
 def _initialize_sqlite_checkpoint(path: Path) -> None:
     with sqlite3.connect(path) as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS checkpoints "
-            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
+        conn.execute("PRAGMA user_version = 1")
 
 
 def _write_metadata(path: Path, run_id: str, task_config: TaskConfig) -> None:
