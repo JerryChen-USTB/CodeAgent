@@ -283,7 +283,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/workflow/test_state_schema.py -q`.
 - Unit/integration tests to add: JSON roundtrip, Pydantic validation failure, checkpoint-safe path/string conversion.
 - Risks and mitigations: non-serializable objects breaking checkpoint; keep state primitive and file-backed.
-- Status: pending.
+- Status: done.
 
 ### M14 Report Writers and Audit Logs
 
@@ -727,3 +727,15 @@ Use this section as an append-only engineering log. Every completed small module
 - Failures and fixes: TDD red run first failed on missing `codeagent.models` and `codeagent.agents`; quality review found prompt section under-specification and secret-like `api_key_env` error leakage. Fixed with prompt structure tests, env var name validation, and redacted secret records.
 - Reviews: M12 spec review PASS. M12 quality review initially requested prompt and secret fixes; quality re-review APPROVED with no P0/P1/P2 findings.
 - Next step: continue M13 AgentState, StageResult, ErrorRecord, and Report Schemas.
+
+### 2026-06-03 M13 AgentState, StageResult, ErrorRecord, and Report Schemas
+
+- Completed content: added checkpoint-safe workflow state helpers, structured error records, stage/tool/HITL/code-change/test/debug/repair report schemas, package exports, and focused state/schema unit tests.
+- Behavior implemented: initial `AgentState` includes run metadata, current graph position, messages, todo list, context summary, artifact refs, stage results, pending interrupt, and error slot; `state_to_json_dict()` converts paths/tuples/Pydantic models to JSON-safe primitives and rejects unsupported objects, non-string dict keys, overlong strings, and non-finite floats.
+- Report schema implemented: `StageResult`, `ToolCallRecord`, `HumanDecision` with `edited_payload`, `CodeChange`, `TestResultRecord`, `DebugResult`, `RepairResult`, and `ErrorRecord`; paths are normalized to POSIX strings and large summaries are bounded.
+- Requirements/design alignment: reviewed SRS FR-13/FR-14, FR-67~FR-72, FR-81~FR-84, the SRS data-object table, and design docs 03/05/07/09 for TypedDict state, Pydantic persisted objects, stage_result, error handling, checkpoint recovery, and artifact-backed reports.
+- Commands run: `python -m pytest tests/unit/workflow/test_state_schema.py -q`; `python -m pytest tests/unit/workflow/test_state_schema.py tests/unit/runtime/test_artifacts_and_logs.py tests/unit/tools/test_permissions.py -q`; `python -m compileall -q codeagent`; `python -m codeagent --help`; `python -m pytest -q`.
+- Result summary: M13 state/schema tests passed with 13 tests; related validation passed with 29 tests; full suite passed with 130 tests; compileall and CLI help exited 0.
+- Failures and fixes: TDD red run first failed on missing `codeagent.errors`. Spec review found missing `HumanDecision.edited_payload` and missing `blocked`/`skipped` tool statuses; fixed with regression tests. Quality review found non-standard JSON risk for `NaN`/`Infinity`; fixed with explicit non-finite float rejection and `allow_nan=False`.
+- Reviews: M13 spec review initially requested HITL/tool-status fixes, then PASS after repair. M13 quality review initially requested non-finite float handling, then APPROVED with no P0/P1/P2 findings.
+- Next step: continue M14 Report Writers and Audit Logs.
