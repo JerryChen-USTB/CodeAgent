@@ -2,3 +2,12 @@ dataset/
 __pycache__/
 *.py[cod]
 benchmark/cases/bugsinpy_black_001/workspace/
+Software Engineering Project.txt
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+codeagent_runs/
+docs/_backups/

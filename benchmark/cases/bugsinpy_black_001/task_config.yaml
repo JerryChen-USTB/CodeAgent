@@ -29,7 +29,7 @@ input_materials:
     multi: false
     description: "BugsInPy test script"
 test_command:
-  command: "powershell -ExecutionPolicy Bypass -File scripts/run_bugsinpy_wsl_conda.ps1 -CaseDir benchmark/cases/bugsinpy_black_001"
+  command: "powershell -ExecutionPolicy Bypass -File scripts/run_bugsinpy_wsl_conda.ps1 -CaseDir {{CASE_DIR}}"
   timeout_seconds: 1200
 agent_visibility:
   visible_paths:
@@ -42,7 +42,7 @@ evaluation:
   expected_status: pass
 requires_external_checkout: true
 prepare_command:
-  command: "powershell -ExecutionPolicy Bypass -File scripts/prepare_bugsinpy_wsl_conda.ps1 -CaseDir benchmark/cases/bugsinpy_black_001"
+  command: "powershell -ExecutionPolicy Bypass -File scripts/prepare_bugsinpy_wsl_conda.ps1 -CaseDir {{CASE_DIR}}"
   produces: workspace/black
   description: "Run BugsInPy official bugsinpy-checkout in WSL with the conda Python 3.8.3 environment active."
 execution_environment:

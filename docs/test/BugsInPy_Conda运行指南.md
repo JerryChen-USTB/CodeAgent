@@ -4,11 +4,13 @@
 
 ## 1. 当前样例
 
-样例路径：
+原始样例模板路径：
 
 ```text
 benchmark/cases/bugsinpy_black_001/
 ```
+
+正式 benchmark 运行时，不应直接在该原始路径中 checkout、修复或测试。runner 应先复制整个 case 到 `<copied_case_dir>`，后续命令均以该副本作为 `-CaseDir`。
 
 该样例来自 BugsInPy：
 
@@ -53,22 +55,22 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_bugsinpy_wsl_conda.ps1
 
 ## 4. 准备 workspace
 
-运行：
+在运行副本中执行准备命令：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\prepare_bugsinpy_wsl_conda.ps1 -CaseDir benchmark\cases\bugsinpy_black_001
+powershell -ExecutionPolicy Bypass -File scripts\prepare_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir>
 ```
 
 该脚本在 WSL 中执行官方命令：
 
 ```bash
-bugsinpy-checkout -p black -v 0 -i 1 -w benchmark/cases/bugsinpy_black_001/workspace
+bugsinpy-checkout -p black -v 0 -i 1 -w <copied_case_dir>/workspace
 ```
 
 官方 checkout 生成的可编辑项目目录是：
 
 ```text
-benchmark/cases/bugsinpy_black_001/workspace/black/
+<copied_case_dir>/workspace/black/
 ```
 
 ## 5. 运行官方测试
@@ -76,16 +78,16 @@ benchmark/cases/bugsinpy_black_001/workspace/black/
 验证初始 buggy 版本时运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir benchmark\cases\bugsinpy_black_001 -AllowTestFailure
+powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir> -AllowTestFailure
 ```
 
 智能体修复后运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir benchmark\cases\bugsinpy_black_001
+powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir>
 ```
 
-该脚本会先把 `workspace/black/` 复制到 WSL Linux 文件系统下的临时运行目录，避免在 Windows 盘 `/mnt/d` 上创建大量 venv 小文件。随后在 WSL conda 环境中执行官方命令：
+该脚本会先把当前运行副本中的 `workspace/black/` 复制到 WSL Linux 文件系统下的临时运行目录，避免在 Windows 盘 `/mnt/d` 上创建大量 venv 小文件。随后在 WSL conda 环境中执行官方命令：
 
 ```bash
 bugsinpy-compile -w ~/.cache/codeagent/bugsinpy/bugsinpy_black_001/workspace/black
@@ -98,20 +100,20 @@ bugsinpy-test -w ~/.cache/codeagent/bugsinpy/bugsinpy_black_001/workspace/black
 ~/.cache/codeagent/bugsinpy/bugsinpy_black_001/workspace/black/
 ```
 
-由于官方 `bugsinpy-test` 主要通过 `bugsinpy_fail.txt` 记录失败，PowerShell 包装脚本会在官方测试结束后检查该文件，并把结果转换为 benchmark runner 更容易使用的 exit code。失败日志会同步回项目的 `workspace/black/bugsinpy_fail.txt`。
+由于官方 `bugsinpy-test` 主要通过 `bugsinpy_fail.txt` 记录失败，PowerShell 包装脚本会在官方测试结束后检查该文件，并把结果转换为 benchmark runner 更容易使用的 exit code。失败日志应同步回本次运行副本的 `workspace/black/bugsinpy_fail.txt` 或 run_dir 日志目录，不得回写原始 `benchmark/cases/bugsinpy_black_001/` 模板。
 
 `black` 项目还需要 `_black_version.py`。该文件由项目自己的 `setup.py` 中 `setuptools_scm` 配置生成，因此测试脚本会在官方 compile 后执行一次 `python setup.py --version` 来生成该文件，不手写版本内容。
 
 ## 6. 与智能体的关系
 
-智能体输入是普通目录：
+智能体输入是普通目录，但正式 benchmark 运行时应来自干净运行副本，而不是仓库中的原始 case 模板：
 
 ```text
-benchmark/cases/bugsinpy_black_001/input/
-benchmark/cases/bugsinpy_black_001/workspace/black/
+<run_case_dir>/input/
+<run_case_dir>/workspace/black/
 ```
 
-智能体在 Windows 侧编辑 `workspace/black/`，测试命令通过 `wsl` 进入 WSL。运行测试前，脚本会把当前 `workspace/black/` 同步到 WSL 缓存目录，官方 BugsInPy 脚本在缓存目录中执行。
+智能体在 Windows 侧编辑运行副本的 `workspace/black/`，测试命令通过 `wsl` 进入 WSL。运行测试前，脚本会把当前运行副本的 `workspace/black/` 同步到 WSL 缓存目录，官方 BugsInPy 脚本在缓存目录中执行。原始 `benchmark/cases/bugsinpy_black_001/` 只作为可复用模板保留。
 
 ## 7. 相关文件
 
@@ -121,3 +123,9 @@ scripts/prepare_bugsinpy_wsl_conda.ps1
 scripts/run_bugsinpy_wsl_conda.ps1
 benchmark/cases/bugsinpy_black_001/task_config.yaml
 ```
+
+## 实现对齐变更记录
+
+| 日期 | 变更 | 原因 | 影响 |
+|---|---|---|---|
+| 2026-06-03 | 将 BugsInPy 测试说明中的编辑/日志同步目标从原始 case 调整为运行副本或 run_dir。 | 防止真实项目修复流程污染 `bugsinpy_black_001` 原始模板。 | 不改变评测目标；后续 runner 需把 BugsInPy case 复制到干净副本后再调用 WSL/conda 脚本。 |

@@ -94,11 +94,11 @@ python -m unittest discover -s oracle_tests
 建议 runner 流程：
 
 1. 读取 `benchmark/selfbuilt/selfbuilt_benchmark.yaml`。
-2. 为每个启用案例复制独立运行目录。
-3. 将 `input/` 和空 `workspace/` 提供给 Agent。
-4. 隐藏 `oracle_tests/`。
-5. Agent 执行实现、测试、调试、修复流程。
-6. 评测器运行 `case.yaml` 中的 `test_command`。
+2. 为每个启用案例复制整个原始 case 到干净独立运行目录，原始 case 作为可复用模板保持不变。
+3. 将运行副本中的 `input/` 和空 `workspace/` 提供给 Agent。
+4. 在运行副本中继续隐藏 `oracle_tests/`，只允许评测器最终使用。
+5. Agent 在运行副本中执行实现、测试、调试、修复流程。
+6. 评测器在运行副本中运行 `case.yaml` 中的 `test_command`。
 7. 统计通过率并保存测试报告。
 
 ## 6. 注意事项
@@ -107,8 +107,14 @@ python -m unittest discover -s oracle_tests
 2. Agent 可以在运行副本的 `workspace/` 中创建任意项目文件。
 3. `oracle_tests/` 不应暴露给 Agent。
 4. Flask 案例需要在评测前安装 Agent 生成的依赖。
-5. 所有案例都应在副本中运行，避免污染原始 benchmark。
+5. 所有案例都必须在干净副本中运行，避免污染原始 benchmark，并保证同一个 case 可被多次重复评测。
 
 ## 7. 结论
 
 新版自建 benchmark 更符合需求规格说明书对实现阶段输入材料的要求，也更适合展示软件工程智能体从空项目开始完成常规软件开发任务的能力。5 个案例覆盖 CLI、文件处理、CSV、SQLite 和 Web API 等常见项目形态，难度递增且主题普通，便于课程展示和批量评测。
+
+## 实现对齐变更记录
+
+| 日期 | 变更 | 原因 | 影响 |
+|---|---|---|---|
+| 2026-06-03 | 明确自建 benchmark 必须复制整个原始 case 到干净副本后运行，原始空 `workspace/` 和 `oracle_tests/` 保持不变。 | 保证自建案例可重复利用并维持隐藏测试隔离。 | 不改变案例验收标准；后续 runner 需在副本中执行 Agent 和 oracle tests。 |

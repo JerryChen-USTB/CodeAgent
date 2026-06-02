@@ -12,6 +12,19 @@ Each case directory contains:
 - `evaluation/`: oracle tests used by a benchmark runner. Function-level implementation cases should hide this directory from the agent.
 - `expected_result.json`: success criteria and answer-isolation notes.
 
+## Case Reuse Rule
+
+Benchmark runs must not edit the original case directories. A runner should copy
+the entire selected case to a clean per-run workspace first, then allow the agent
+and test command to operate only on that copy. Hidden paths such as `evaluation/`
+and `expected_result.json` remain hidden from the agent in the copy and are used
+only by the runner for scoring. This keeps the source cases reusable across
+repeated benchmark runs.
+
+If a `task_config.yaml` command needs the case directory, use the
+`{{CASE_DIR}}` placeholder. The benchmark runner must replace it with the clean
+copied case directory before execution.
+
 ## Enabled Cases
 
 - `humaneval_000_has_close_elements`
@@ -23,6 +36,12 @@ Each case directory contains:
 
 ## Optional Cases
 
-- `bugsinpy_black_001`: workspace can be prepared with `powershell -ExecutionPolicy Bypass -File scripts/prepare_bugsinpy_wsl_conda.ps1 -CaseDir benchmark/cases/bugsinpy_black_001`; disabled by default because it needs WSL and the `codeagent-bugsinpy-py383` conda environment. The prepare/test steps call the official BugsInPy `bugsinpy-checkout`, `bugsinpy-compile`, and `bugsinpy-test` scripts.
+- `bugsinpy_black_001`: disabled by default because it needs WSL and the `codeagent-bugsinpy-py383` conda environment. To run it, first copy the original case to a clean `<copied_case_dir>`, then run the prepare/test wrappers with `-CaseDir <copied_case_dir>`. The prepare/test steps call the official BugsInPy `bugsinpy-checkout`, `bugsinpy-compile`, and `bugsinpy-test` scripts against the copied case.
 
 SWE-bench Lite is not converted yet because it needs a dedicated harness, repository checkout, and Docker-style evaluation environment.
+
+## Change Log
+
+| Date | Change | Reason |
+|---|---|---|
+| 2026-06-03 | Added case reuse rule requiring clean per-run copies and `{{CASE_DIR}}` command substitution. | Keep original benchmark cases reusable and prevent accidental pollution. |

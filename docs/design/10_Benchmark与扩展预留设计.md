@@ -18,8 +18,9 @@
 2. 每个 case 复用普通 `TaskConfig` 和主工作流；
 3. benchmark 模式允许自动审批测试命令和 patch，但必须记录自动审批；
 4. 每个 case 独立输出 run_dir；
-5. 聚合成功率、失败原因和产物路径；
-6. 支持按类别统计：implement_test、debug_repair、full_pipeline。
+5. 每次运行前将原始 case 复制到干净的运行副本，Agent 和测试命令只操作副本，原始 case 保持可重复利用；
+6. 聚合成功率、失败原因和产物路径；
+7. 支持按类别统计：implement_test、debug_repair、full_pipeline。
 
 ## 3. Benchmark 运行架构
 
@@ -29,17 +30,24 @@ flowchart TD
   B --> C[BenchmarkRunner]
   C --> D{遍历 cases}
   D --> E[加载 case TaskConfig]
-  E --> F[设置 mode=benchmark\nauto_approve=true]
-  F --> G[调用 MainWorkflowGraph]
-  G --> H[生成 case run_dir]
-  H --> I[读取 stage_result/final_report]
-  I --> J[SuccessEvaluator]
-  J --> K[BenchmarkResult]
-  K --> D
-  D --> L[MetricAggregator]
-  L --> M[benchmark_result.json]
-  L --> N[benchmark_report.md]
+  E --> F[复制原始 case 到干净 run workspace\n原始 case 只读保留]
+  F --> G[设置 mode=benchmark\nauto_approve=true]
+  G --> H[调用 MainWorkflowGraph]
+  H --> I[生成 case run_dir]
+  I --> J[读取 stage_result/final_report]
+  J --> K[SuccessEvaluator]
+  K --> L[BenchmarkResult]
+  L --> D
+  D --> M[MetricAggregator]
+  M --> N[benchmark_result.json]
+  M --> O[benchmark_report.md]
 ```
+
+### 3.1 原始 case 复用规则
+
+Benchmark runner 必须把 `benchmark/cases/<case_id>/` 或 `benchmark/selfbuilt/cases/<case_id>/` 视为可复用模板。每次执行 case 时，先复制整个 case 到本次 benchmark 的干净运行目录，再把复制后的 `workspace/` 提供给 Agent 修改和测试。无论成功、失败、取消或超时，原始 case 目录都不得被 Agent、测试命令或修复流程直接修改。
+
+隐藏路径规则在副本中继续生效：`evaluation/`、`oracle_tests/`、`expected_result.json` 等只能由 runner 评分使用，不能进入 Agent 可见上下文。这样同一个 case 可以被多轮 benchmark、回归测试和失败复现重复使用。
 
 ## 4. benchmark.yaml 设计
 
@@ -301,6 +309,13 @@ Java 后续扩展需要补充：
 |---|---|
 | 自动审批导致危险命令执行 | benchmark 默认只允许 pytest/py_compile 类命令 |
 | case 互相污染 | 每个 case 使用独立项目副本和独立 run_dir |
+| 原始 case 被改坏，无法重复评测 | 原始 case 只作为只读模板；每次运行复制到干净 run workspace，Agent 和测试只操作副本 |
 | 修复过拟合 | patch risk checker 检查删除测试、skip、硬编码 |
 | 成功率不可解释 | 每个失败 case 保存 final_report 和 failure_reason |
 | 结果不可复现 | 保存 task_config、metadata、模型配置、日志和 patch |
+
+## 实现对齐变更记录
+
+| 日期 | 变更 | 原因 | 影响 |
+|---|---|---|---|
+| 2026-06-03 | 补充原始 case 复用规则，并在 Benchmark 运行架构中增加复制干净 run workspace 步骤。 | 防止 benchmark 运行污染原始案例，保证重复评测可靠。 | 不改变课程验收范围；BenchmarkRunner 必须先复制 case 再执行 Agent 和评测。 |

@@ -1,0 +1,14 @@
+"""Default configuration values."""
+
+DEFAULT_MODEL_PROVIDER = "openai_compatible"
+DEFAULT_MODEL_NAME = "anthropic/claude-opus-4.8"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
+DEFAULT_TEST_COMMAND = "pytest -q"
+DEFAULT_TEST_FRAMEWORK = "pytest"
+DEFAULT_LANGUAGE = "python"
+DEFAULT_OUTPUT_DIR = "codeagent_runs"
+DEFAULT_BENCHMARK_OUTPUT_DIR = "codeagent_runs/benchmark"
+DEFAULT_REPAIR_ATTEMPTS = 3
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
+DEFAULT_LOG_TRUNCATION_CHARS = 12000

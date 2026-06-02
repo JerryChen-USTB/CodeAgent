@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codeagent"
+version = "0.1.0"
+description = "CLI-based LangGraph and LangChain software-engineering agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [
+  { name = "CodeAgent Contributors" }
+]
+dependencies = [
+  "langchain>=1.0,<2.0",
+  "langchain-openai>=1.0,<2.0",
+  "langgraph>=1.0,<2.0",
+  "langgraph-checkpoint-sqlite>=3.1,<4.0",
+  "openai>=2.26,<3.0",
+  "pydantic>=2.10,<3.0",
+  "pyyaml>=6.0,<7.0",
+  "rich>=13.9,<15.0",
+  "typer>=0.19,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+]
+
+[project.scripts]
+codeagent = "codeagent.cli.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.hatch.build.targets.wheel]
+packages = ["codeagent"]

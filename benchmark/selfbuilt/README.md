@@ -44,8 +44,11 @@ case/
   oracle_tests/
 ```
 
-`workspace/` should remain empty in the original benchmark copy. A runner should
-copy each case to a temporary run directory before letting the agent write code.
+`workspace/` should remain empty in the original benchmark copy. A runner must
+copy the entire case to a clean temporary run directory before letting the agent
+write code or before running oracle tests. The agent and test command operate
+only on the copied workspace; the original case remains reusable for later
+benchmark runs.
 
 ## Case Summary
 
@@ -60,12 +63,21 @@ copy each case to a temporary run directory before letting the agent write code.
 ## Manual Initial Check
 
 The initial workspaces are empty, so oracle tests should fail before the agent
-implements each project:
+implements each project. Run this check on a copied case, not on the reusable
+original benchmark case:
 
 ```powershell
-cd benchmark\selfbuilt\cases\01_todo_manager
+cd <copied_case_dir>
 python -m unittest discover -s oracle_tests
 ```
 
-The expected initial failure is a missing entry module or missing package. After
-the agent implements the case, the same command is the final verification step.
+Only the benchmark runner/evaluator should run this command, and only inside the
+copied case directory. The expected initial failure is a missing entry module or
+missing package. After the agent implements the case in the copied workspace, the
+same command is the final verification step.
+
+## Change Log
+
+| Date | Change | Reason |
+|---|---|---|
+| 2026-06-03 | Strengthened copy-to-clean-run-directory rule for self-built cases. | Keep original empty workspaces and hidden oracle tests reusable across repeated benchmark runs. |
