@@ -243,7 +243,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/unit/tools/test_shell_runner.py -q`.
 - Unit/integration tests to add: success, failure, timeout, stderr capture, command policy, benchmark auto-approval record.
 - Risks and mitigations: dangerous command execution; start with allowlist and explicit approval payload.
-- Status: pending.
+- Status: done.
 
 ### M10 Pytest and Generic Test Result Parsing
 
@@ -678,3 +678,15 @@ Use this section as an append-only engineering log. Every completed small module
 - Result summary: patch service tests passed with 11 tests; full suite passed with 76 tests; both CLI help commands exited 0.
 - Reviews: M08 spec review initially found two P2 issues: large patches were warnings rather than high-risk findings, and hunk header counts were not validated. Both were fixed and spec re-review PASS. M08 quality review then found two P1 issues and one P2 issue: multi-file partial apply risk, duplicate target acceptance, and assertion removal not flagged. All were fixed; quality re-review APPROVED with no P0/P1/P2 findings.
 - Next step: continue M09 ShellRunner and test command execution.
+
+### 2026-06-03 M09 ShellRunner and Test Command Execution
+
+- Completed content: added command approval/result models in `codeagent/runtime/commands.py`, `ShellRunner` and command policy in `codeagent/tools/shell_tools.py`, runtime exports, and shell runner unit tests.
+- Behavior implemented: approved pytest/unittest/py_compile commands run with `shell=False`; rejected or policy-denied commands fail closed; cwd must be a directory; stdout/stderr/exit code/duration/timeout are captured; full stdout/stderr logs and command operation JSON records are written; benchmark auto-approval is recorded.
+- Safety implemented: allowlist covers direct `pytest` and `python -m pytest/unittest/py_compile`; path-like command arguments must resolve under cwd; cwd-external absolute paths and `..` traversal are denied; high-risk pytest options `--override-ini`, `-o`, `-o=...`, `-p`, `-p...`, and `--pyargs` are denied.
+- Output control: full command output is saved to logs, while `ShellResult.stdout` / `stderr` return truncated previews with `*_truncated` and `*_original_chars` metadata to satisfy FR-28.
+- Requirements/design alignment: reviewed SRS FR-25/FR-26/FR-27/FR-28, SH-01~SH-05, NFR-11/NFR-17, UC-03/UC-05, and design docs for ShellRunner, shell command approval, command restrictions, benchmark auto-approval, and logging.
+- Commands run: `python -m pytest tests/unit/tools/test_shell_runner.py -q`; `python -m pytest -q`; `python -m codeagent --help`; `codeagent --help`.
+- Result summary: shell runner tests passed with 10 tests; full suite passed with 86 tests; both CLI help commands exited 0.
+- Reviews: M09 spec review initially found one P1 FR-28 gap: long stdout/stderr were returned in full. Fixed with truncated previews plus metadata and spec re-review PASS. M09 quality review found cwd-external path argument and pytest option bypasses; fixed path argument validation and high-risk pytest option denial. Quality re-review APPROVED with no P0/P1/P2 findings.
+- Next step: continue M10 Pytest and generic test result parsing.
