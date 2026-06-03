@@ -18,6 +18,7 @@ from codeagent.cli.progress import ProgressEventFormatter, ProgressReporter
 from codeagent.cli.wizard import (
     _MANUAL_MATERIAL_SENTINEL,
     _discover_input_material_candidates,
+    QuestionaryWizardBackend,
     WizardPromptAnswers,
     build_task_config_from_answers,
     render_task_summary,
@@ -115,6 +116,37 @@ def test_wizard_discovers_requirements_next_to_clean_workspace_and_filters_secre
     assert _MANUAL_MATERIAL_SENTINEL in values
     assert all("Software Engineering Project.txt" not in value for value in values)
     assert all("openrouter_token.txt" not in value for value in values)
+
+
+def test_questionary_checkbox_search_disables_jk_shortcuts() -> None:
+    captured: dict[str, object] = {}
+
+    class FakePrompt:
+        def ask(self):
+            return ["requirements.md"]
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, *, title, value, checked=False):
+                self.title = title
+                self.value = value
+                self.checked = checked
+
+        def checkbox(self, message, choices, **kwargs):
+            captured.update(kwargs)
+            return FakePrompt()
+
+    backend = QuestionaryWizardBackend()
+    backend._questionary = FakeQuestionary()
+
+    selected = backend.checkbox(
+        "选择输入材料",
+        [("requirements.md", "requirements.md")],
+    )
+
+    assert selected == ["requirements.md"]
+    assert captured["use_search_filter"] is True
+    assert captured["use_jk_keys"] is False
 
 
 def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypatch) -> None:

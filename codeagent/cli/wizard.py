@@ -358,6 +358,7 @@ class QuestionaryWizardBackend:
             message,
             choices=q_choices,
             use_search_filter=True,
+            use_jk_keys=False,
             instruction=(
                 "（上下键移动，空格勾选/取消，输入文字搜索，回车确认；"
                 "手动路径请选列表末尾选项）"
