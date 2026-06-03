@@ -13,6 +13,11 @@ from codeagent.tools.permissions import (
     ToolPermissionPolicy,
 )
 from codeagent.tools.registry import ToolRegistry, ToolSpec, create_default_tool_registry
+from codeagent.tools.risk_checker import (
+    RepairRiskChecker,
+    RepairRiskFinding,
+    RepairRiskReport,
+)
 
 __all__ = [
     "ApprovalDecision",
@@ -25,5 +30,8 @@ __all__ = [
     "ToolPermissionPolicy",
     "ToolRegistry",
     "ToolSpec",
+    "RepairRiskChecker",
+    "RepairRiskFinding",
+    "RepairRiskReport",
     "create_default_tool_registry",
 ]

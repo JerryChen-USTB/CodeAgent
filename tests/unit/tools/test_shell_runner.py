@@ -132,7 +132,7 @@ def test_shell_runner_returns_truncated_stdout_preview_but_saves_full_log(
     result = runner.run(
         f"{sys.executable} -m pytest -q -s",
         cwd=project,
-        timeout_seconds=10,
+        timeout_seconds=30,
         approval=_approval("long-output"),
     )
 

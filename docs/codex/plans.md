@@ -353,7 +353,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/integration/test_repair_stage.py -q`.
 - Unit/integration tests to add: risk checker, repair success, repair failure loop, max-attempt final failure.
 - Risks and mitigations: overfitting patch; deny test deletion/skip/hardcoding and record risk decisions.
-- Status: pending.
+- Status: done.
 
 ### M21 Wizard, Streaming Progress, and Approval UI
 
@@ -841,3 +841,26 @@ Use this section as an append-only engineering log. Every completed small module
 - Developer report: `docs/dev_reports/M19_debugging_subgraph.md`.
 - OpenRouter validation note: current milestones have not consumed OpenRouter tokens because stage services are still deterministic/test-injected. Before final example and benchmark execution, run a controlled real LLM smoke using `OPENROUTER_API_KEY` without printing or persisting the secret value.
 - Next step: continue M20 RepairSubgraph and Multi-Round Repair Loop.
+
+### 2026-06-03 M20 RepairSubgraph Start
+
+- Backup before doc update: `docs/_backups/20260603_093756/plans.md`.
+- Alignment review: rechecked M20 against SRS FR-57~FR-65, AC-11, UC-05, repair-stage input/output rules, and design docs 03/04/06/07/09 for final repair plan, repair patch approval, risk checks, patch application, regression command approval, after-test logs, repair report, and multi-round route behavior.
+- Planned implementation boundary: mirror M17/M18/M19 service/subgraph pattern. The first pass will use structured repair plans and deterministic patch generation; later LLM Repairer nodes can supply richer plans through the same schema.
+- Commands run: exact-path reads/searches of M20 milestone block, SRS repair-stage sections, design repair subgraph, PatchService risk behavior, and current workflow routing contracts.
+- Next step: add failing M20 integration tests for repair success, risky patch rejection, regression command rejection, repair verification failure routing, max-attempt final failure, and interrupt resume.
+
+### 2026-06-03 M20 RepairSubgraph Complete
+
+- Backup before completion doc update: `docs/_backups/20260603_101303/plans.md`.
+- Behavior implemented: structured repair plan schema, repair patch generation, risk checker, patch approval interrupt, patch SHA-256 tamper check, patch application, regression command approval interrupt, after-test log, parsed repair test result, repair report, main-graph handler, standalone subgraph, SQLite resume, and failed repair routing through the main graph retry limit.
+- Safety implemented: sensitive/generated/hidden repair targets are prechecked before diff generation or candidate artifact writes; repair patches modifying tests or test infrastructure are high risk; regression commands reject hidden benchmark paths and tokens.
+- Fixes during review: spec/quality review found hidden benchmark repair paths could be diffed or read before validation, and test infrastructure files were not high-risk. Added red tests for `.env`, `evaluation`, `oracle_tests`, `expected_result.json`, and `conftest.py`, then fixed path prechecks and risk classification.
+- Related regression fix: related-suite validation exposed a brittle ShellRunner long-output test timeout under load; widened that non-timeout scenario while preserving dedicated timeout behavior.
+- Commands run: `python -m pytest tests\integration\test_repair_stage.py -q` -> 16 passed.
+- Commands run: `python -m pytest tests\integration\test_repair_stage.py tests\integration\test_debugging_stage.py tests\integration\test_testing_stage.py tests\integration\test_implementation_stage.py tests\integration\test_resume.py tests\unit\workflow tests\unit\tools tests\unit\reports -q` -> 138 passed.
+- Commands run: `python -m pytest -q` -> 213 passed.
+- Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
+- Reviews: M20 spec review final result PASS. M20 quality review final result APPROVED.
+- Developer report: `docs/dev_reports/M20_repair_subgraph.md`.
+- Next step: continue M21 Wizard, Streaming Progress, and Approval UI.

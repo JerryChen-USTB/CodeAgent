@@ -6,6 +6,12 @@ from codeagent.stages.implementation_service import (
     ImplementationRequest,
     ImplementationService,
 )
+from codeagent.stages.repair_service import (
+    RepairFileChange,
+    RepairPlan,
+    RepairRequest,
+    RepairService,
+)
 from codeagent.stages.debugging_service import (
     DebuggingRequest,
     DebuggingService,
@@ -24,6 +30,10 @@ __all__ = [
     "ImplementationPlan",
     "ImplementationRequest",
     "ImplementationService",
+    "RepairFileChange",
+    "RepairPlan",
+    "RepairRequest",
+    "RepairService",
     "DebuggingRequest",
     "DebuggingService",
     "FaultCandidate",
