@@ -33,6 +33,7 @@ def test_core_command_help_contracts() -> None:
         (["test", "--help"], "Run the testing stage."),
         (["debug", "--help"], "Run the debugging stage."),
         (["repair", "--help"], "Run the repair stage."),
+        (["benchmark", "--help"], "Run benchmark cases and aggregate results."),
     ]
     for command, description in implemented_commands:
         result = runner.invoke(app, command)
@@ -41,7 +42,7 @@ def test_core_command_help_contracts() -> None:
         assert description in result.output
         assert "Example:" in result.output
 
-    for command in [["benchmark", "--help"], ["resume", "--help"]]:
+    for command in [["resume", "--help"]]:
         result = runner.invoke(app, command)
         assert result.exit_code == 0
         assert "Usage:" in result.output
@@ -55,9 +56,15 @@ def test_run_requires_config_or_project() -> None:
     assert "Provide --config or --project" in result.output
 
 
-def test_benchmark_dry_run_reports_config() -> None:
-    result = runner.invoke(app, ["benchmark", "--config", "benchmark/benchmark.yaml"])
+def test_benchmark_command_prints_summary_for_temp_config(tmp_path) -> None:
+    config_path = tmp_path / "benchmark.yaml"
+    config_path.write_text(
+        f"name: cli_contract\noutput_dir: {(tmp_path / 'runs').as_posix()}\ncases: []\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["benchmark", "--config", str(config_path)])
+
     assert result.exit_code == 0
-    assert "benchmark/benchmark.yaml" in result.output
-    assert "not implemented yet" in result.output
-    assert "clean per-run directories" in result.output
+    assert "Benchmark completed" in result.output
+    assert "success_rate=0.00" in result.output

@@ -96,6 +96,58 @@ def test_debug_subcommand_maps_to_task_config_and_executes_static_log(tmp_path) 
     assert "mode: run" in task_config
 
 
+def test_test_debug_run_uses_generated_test_logs_before_external_failure_material(tmp_path) -> None:
+    project = tmp_path / "project"
+    tests_dir = project / "tests"
+    tests_dir.mkdir(parents=True)
+    (project / "math_utils.py").write_text(
+        "def add(left, right):\n    return left - right\n",
+        encoding="utf-8",
+    )
+    (tests_dir / "test_math_utils.py").write_text(
+        "\n".join(
+            [
+                "import unittest",
+                "from math_utils import add",
+                "",
+                "class MathUtilsTest(unittest.TestCase):",
+                "    def test_add(self):",
+                "        self.assertEqual(add(1, 2), 3)",
+                "",
+                "if __name__ == '__main__':",
+                "    unittest.main()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    external_log = tmp_path / "input" / "before_test.log"
+    external_log.parent.mkdir()
+    external_log.write_text("Old visible case input log.\n", encoding="utf-8")
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [test, debug]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+test_framework: unittest
+input_materials:
+  - material_type: error_log
+    path: {external_log.as_posix()}
+    required: true
+test_command:
+  command: "python -m unittest discover -s tests"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "failure log path is not allowed" not in result.output
+    assert "[final] succeeded" in result.output
+
+
 def test_run_project_options_reject_invalid_stage_order(tmp_path) -> None:
     project, _log = _debug_fixture(tmp_path)
 

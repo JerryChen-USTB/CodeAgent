@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from codeagent import __version__
+from codeagent.benchmark.runner import BenchmarkRunner
 from codeagent.cli.executor import execute_task_config
 from codeagent.cli.progress import ProgressReporter
 from codeagent.cli.resume import (
@@ -261,15 +262,21 @@ def benchmark(
         help="Benchmark YAML configuration file.",
     ),
 ) -> None:
-    """Planned skeleton: run benchmark cases and aggregate results.
+    """Run benchmark cases and aggregate results.
 
     Example: codeagent benchmark --config benchmark/benchmark.yaml
     """
-    reporter.planned(
-        "benchmark",
-        "Config: "
-        f"{config}\nCases will be copied to clean per-run directories before execution.",
+    try:
+        result = BenchmarkRunner(reporter=reporter).run_config(config)
+    except (ConfigLoadError, ValueError, OSError) as exc:
+        console.print(f"Invalid benchmark configuration: {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        "Benchmark completed: "
+        f"success_rate={result.success_rate:.2f} "
+        f"({result.success_cases}/{result.total_cases})"
     )
+    console.print(f"Benchmark directory: {result.benchmark_run_dir}")
 
 
 @app.command()

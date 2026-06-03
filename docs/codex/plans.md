@@ -383,7 +383,7 @@ Scope out for MVP:
 - Verification commands: `codeagent benchmark --config benchmark/benchmark.yaml`; `python -m pytest tests/integration/test_benchmark_runner.py -q`.
 - Unit/integration tests to add: case loading, hidden path enforcement, auto-approval trace, artifact-required evaluator, failure aggregation.
 - Risks and mitigations: original benchmark pollution; always copy the entire case to a clean temp/run dir, run Agent/test commands against that copy, and never edit source benchmark directories.
-- Status: pending.
+- Status: done.
 
 ### M24 Public Benchmark Pass: HumanEval, MBPP, QuixBugs
 
@@ -915,3 +915,37 @@ Use this section as an append-only engineering log. Every completed small module
 - Developer report: `docs/dev_reports/M22_non_interactive_run_stage_subcommands.md`.
 - OpenRouter validation note: M22 intentionally does not consume tokens; controlled real LLM smoke remains required before final example/benchmark execution.
 - Next step: continue M23 BenchmarkRunner, CaseLoader, Evaluator, and Aggregator.
+
+### 2026-06-03 M23 BenchmarkRunner, CaseLoader, Evaluator, and Aggregator Start
+
+- Backup before doc update: `docs/_backups/20260603-110504/plans.md`.
+- Alignment review in progress: rechecking benchmark scope against SRS benchmark reporting/isolation requirements and design doc 10 for clean copied case directories, visible/hidden path enforcement, auto-approval trace, evaluator inputs, metrics, and report artifacts.
+- Non-negotiable boundary: original `benchmark/cases/**` and `benchmark/selfbuilt/cases/**` directories remain reusable read-only templates; every benchmark run must copy each case into a clean run workspace before Agent execution, patching, dependency setup, testing, logging, or evaluation.
+- OpenRouter validation reminder: user requested real OpenRouter calls from this point forward. Implement controlled LLM smoke and LLM-driven structured request builders as soon as M23 runner is stable; the only supported secret source is `OPENROUTER_API_KEY`, not checked-in files or `Software Engineering Project.txt`.
+- Next step: add failing M23 integration tests for case loading, case clean-copy reuse, `{{CASE_DIR}}` command substitution, hidden path denial, auto-approval trace, evaluator artifact requirements, and aggregate reports.
+
+### 2026-06-03 OpenRouter Real LLM Integration Directive
+
+- User directive: from this point forward, plan and implement real OpenRouter API calls so the LLM can drive the agent workflow, and be ready to return to code implementation when live-call issues expose robustness gaps.
+- Safety decision: `Software Engineering Project.txt` remains a forbidden secret source under project rules. Do not read, print, copy, summarize, or parse it for API keys. Real calls must obtain credentials from `OPENROUTER_API_KEY` or another explicitly configured environment variable resolved by `SecretResolver`; secret values must never appear in logs, reports, transcripts, exceptions, or git.
+- Current environment check: process-level `OPENROUTER_API_KEY` is still absent in the already-running Codex process, but the Windows user-level environment variable is present. `SecretResolver` now falls back to the Windows user environment when the process environment has not inherited the value, without printing or persisting the secret. A controlled OpenRouter smoke using `ModelClientFactory` returned `CODEAGENT_OPENROUTER_SMOKE_OK`.
+- Implementation impact: after M23 benchmark runner, prioritize M24 work on controlled LLM smoke, structured-output invocation for implementation/repair plans, request builders that feed existing deterministic stage services, prompt hardening, retry/error reporting, and regression tests that keep hidden benchmark and secret-isolation guarantees intact.
+
+### 2026-06-03 M23 BenchmarkRunner, CaseLoader, Evaluator, and Aggregator Complete
+
+- Backup before completion doc update: `docs/_backups/20260603-114112/plans.md`.
+- Behavior implemented: benchmark config loading, enabled case enumeration, clean per-case copy under `case_workspaces/<case_id>`, `{{CASE_DIR}}` substitution, benchmark-mode auto approval, CLI `benchmark` execution, per-case failure isolation, aggregate `benchmark_result.json` and `benchmark_report.md`, and original source case reuse without generated artifacts.
+- Hidden oracle behavior implemented: if a case test command references hidden `evaluation/`, `oracle_tests/`, or `expected_result.json`, the Agent-visible workflow receives a safe visible `python -m py_compile ...` smoke command, while `CaseEvaluator` executes the original oracle command runner-only from the copied case root and records `oracle_success` plus oracle logs under the benchmark run directory.
+- Robustness fixes: nested hidden paths already inside the copied case are preserved instead of flattened; Agent-visible smoke commands exclude all Python files under hidden roots; preparation/load/path failures are captured as failed `CaseEvaluation` entries and do not abort later cases; debug after test now prefers generated test logs over stale external failure materials.
+- OpenRouter validation: user-level `OPENROUTER_API_KEY` is available; `SecretResolver` can resolve it even when the current process env has not inherited the value; real OpenRouter smoke through `ModelClientFactory` succeeded with `CODEAGENT_OPENROUTER_SMOKE_OK`.
+- Commands run: `python -m pytest tests\integration\test_benchmark_runner.py -q` -> 8 passed.
+- Commands run: `python -m pytest tests\integration\test_benchmark_runner.py tests\integration\test_cli_run.py tests\test_cli_contract.py tests\unit\models\test_model_factory.py -q` -> 24 passed.
+- Commands run: `python -m compileall -q codeagent` -> passed.
+- Commands run: `python -m codeagent benchmark --config benchmark\benchmark.yaml` -> completed 6 cases, generated aggregate reports, success_rate=0.00 because implementation/repair stages still require LLM-generated structured plans in later milestones. Re-run after hidden-root smoke filtering also completed 6 cases and generated aggregate reports.
+- Commands run: `codeagent benchmark --config benchmark\benchmark.yaml` -> completed 6 cases, generated aggregate reports, success_rate=0.00 for the same missing LLM-plan reason.
+- Commands run: `python -m pytest -q` -> 239 passed.
+- Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
+- Commands run: `git ls-files --others --exclude-standard -- benchmark codeagent_runs` -> no generated benchmark or run artifacts are untracked.
+- Reviews: M23 spec review initially requested runner-only hidden oracle execution and then nested hidden-root filtering; final result APPROVED. M23 quality review initially requested copied-path preservation and per-case preparation isolation, then requested the same hidden-root smoke filtering; final result APPROVED.
+- Developer report: `docs/dev_reports/M23_benchmark_runner.md`.
+- Next step: continue M24 Public Benchmark Pass with real LLM-driven planning/implementation/repair integration.

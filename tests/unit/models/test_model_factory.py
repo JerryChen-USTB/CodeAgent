@@ -27,6 +27,21 @@ def test_secret_resolver_reads_env_and_redacts_repr(monkeypatch) -> None:
     }
 
 
+def test_secret_resolver_reads_user_environment_when_process_env_is_missing() -> None:
+    resolver = SecretResolver(
+        process_env={},
+        user_env_reader=lambda name: "sk-user-secret"
+        if name == "OPENROUTER_API_KEY"
+        else None,
+    )
+
+    secret = resolver.resolve("OPENROUTER_API_KEY")
+
+    assert secret.value == "sk-user-secret"
+    assert secret.env_var == "OPENROUTER_API_KEY"
+    assert "sk-user-secret" not in repr(secret)
+
+
 def test_secret_resolver_missing_key_has_clear_redacted_error(monkeypatch) -> None:
     monkeypatch.delenv("CODEAGENT_MISSING_KEY", raising=False)
 

@@ -216,6 +216,9 @@ def _debugging_request_from_config(
 
 
 def _failure_logs_from_config(context: RunContext, state: AgentState) -> list[Path]:
+    testing_logs = _testing_log_paths(context)
+    if "testing" in state.get("stage_results", {}) and testing_logs:
+        return testing_logs
     paths = [
         material.path
         for material in context.task_config.input_materials
@@ -224,17 +227,19 @@ def _failure_logs_from_config(context: RunContext, state: AgentState) -> list[Pa
     ]
     if paths:
         return paths
-    if "testing" in state.get("stage_results", {}):
-        logs_dir = context.stage_dirs[Stage.TEST] / "logs"
-        return [
-            path
-            for path in (
-                logs_dir / "testing_cli_command.stdout.log",
-                logs_dir / "testing_cli_command.stderr.log",
-            )
-            if path.exists()
-        ]
     return []
+
+
+def _testing_log_paths(context: RunContext) -> list[Path]:
+    logs_dir = context.stage_dirs[Stage.TEST] / "logs"
+    return [
+        path
+        for path in (
+            logs_dir / "testing_cli_command.stdout.log",
+            logs_dir / "testing_cli_command.stderr.log",
+        )
+        if path.exists()
+    ]
 
 
 def _testing_report_path(context: RunContext, state: AgentState) -> Path | None:
