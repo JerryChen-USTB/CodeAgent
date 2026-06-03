@@ -16,6 +16,8 @@ from codeagent.cli.approval_console import (
 )
 from codeagent.cli.progress import ProgressEventFormatter, ProgressReporter
 from codeagent.cli.wizard import (
+    _MANUAL_MATERIAL_SENTINEL,
+    _discover_input_material_candidates,
     WizardPromptAnswers,
     build_task_config_from_answers,
     render_task_summary,
@@ -88,6 +90,33 @@ def test_wizard_rejects_file_as_project_path(tmp_path) -> None:
         )
 
 
+def test_wizard_discovers_requirements_next_to_clean_workspace_and_filters_secrets(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    demo_root = tmp_path / "codeagent_runs" / "interactive_demo" / "todo_manager"
+    workspace = demo_root / "workspace"
+    workspace.mkdir(parents=True)
+    requirements = demo_root / "requirements.md"
+    requirements.write_text("# Todo requirements\n", encoding="utf-8")
+    (demo_root / "Software Engineering Project.txt").write_text(
+        "contains a provider key and must not be offered\n",
+        encoding="utf-8",
+    )
+    (demo_root / "openrouter_token.txt").write_text("sensitive\n", encoding="utf-8")
+
+    choices = _discover_input_material_candidates(str(workspace))
+    titles = [title for title, _value in choices]
+    values = [value for _title, value in choices]
+
+    assert str(requirements.resolve()) in values
+    assert any(title.startswith("requirements.md") for title in titles)
+    assert _MANUAL_MATERIAL_SENTINEL in values
+    assert all("Software Engineering Project.txt" not in value for value in values)
+    assert all("openrouter_token.txt" not in value for value in values)
+
+
 def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypatch) -> None:
     project, requirements = _project(tmp_path)
     output_dir = tmp_path / "runs"
@@ -117,6 +146,8 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
     assert "选择要执行的阶段组合" in result.output
     assert "项目目录" in result.output
     assert "选择输入材料" in result.output
+    assert "requirements.md" in result.output
+    assert "手动添加输入材料路径" in result.output
     assert "输出目录" in result.output
     assert "测试命令" in result.output
     assert "任务摘要" in result.output

@@ -16,6 +16,9 @@ from codeagent.reports.writer import ReportWriter
 from codeagent.runtime.run_context import create_run_context
 
 
+_MANUAL_MATERIAL_SENTINEL = "__codeagent_manual_input_material__"
+
+
 @dataclass(frozen=True)
 class WizardPromptAnswers:
     """Raw answers collected by the semi-interactive CLI wizard."""
@@ -168,14 +171,24 @@ def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
     project_path = backend.text("项目目录", default=".")
     material_candidates = _discover_input_material_candidates(project_path)
     selected_materials = backend.checkbox(
-        "选择输入材料（可多选，空格勾选，回车确认）",
+        "选择输入材料（上下键移动，空格勾选，回车确认；找不到时选择“手动添加输入材料路径”）",
         material_candidates,
         default=[],
     )
+    manual_requested = _MANUAL_MATERIAL_SENTINEL in selected_materials
+    selected_materials = [
+        material for material in selected_materials if material != _MANUAL_MATERIAL_SENTINEL
+    ]
     manual_material = backend.text(
-        "补充输入材料路径（多个路径用分号分隔，可留空）",
+        (
+            "请填写补充输入材料路径（多个路径用分号分隔）"
+            if manual_requested
+            else "补充输入材料路径（可选，多个路径用分号分隔）"
+        ),
         default="",
     )
+    if manual_requested and not manual_material.strip():
+        raise ValueError("已选择手动添加输入材料路径，但没有填写路径")
     output_dir = backend.text("输出目录", default="codeagent_runs")
     test_command = backend.text("测试命令", default="pytest -q")
     return WizardPromptAnswers(
@@ -341,7 +354,15 @@ class QuestionaryWizardBackend:
             )
             for title, value in choices
         ]
-        answer = self._questionary.checkbox(message, choices=q_choices).ask()
+        answer = self._questionary.checkbox(
+            message,
+            choices=q_choices,
+            use_search_filter=True,
+            instruction=(
+                "（上下键移动，空格勾选/取消，输入文字搜索，回车确认；"
+                "手动路径请选列表末尾选项）"
+            ),
+        ).ask()
         if answer is None:
             raise ValueError("用户取消了输入材料选择")
         return [str(item) for item in answer]
@@ -385,9 +406,12 @@ def _stage_choices() -> list[tuple[str, str]]:
 def _discover_input_material_candidates(project_path: str) -> list[tuple[str, str]]:
     roots: list[Path] = []
     candidate_project = Path(project_path).expanduser()
+    cwd = Path.cwd().resolve()
     if candidate_project.exists():
-        roots.append(candidate_project.resolve())
-    cwd = Path.cwd()
+        resolved_project = candidate_project.resolve()
+        roots.append(resolved_project)
+        if resolved_project != cwd and resolved_project.parent not in roots:
+            roots.append(resolved_project.parent)
     if cwd not in roots:
         roots.append(cwd)
     seen: set[Path] = set()
@@ -398,10 +422,64 @@ def _discover_input_material_candidates(project_path: str) -> list[tuple[str, st
             if resolved in seen:
                 continue
             seen.add(resolved)
-            choices.append((resolved.name, str(resolved)))
-            if len(choices) >= 30:
-                return choices
-    return choices
+            choices.append((_format_material_choice_title(resolved), str(resolved)))
+            if len(choices) >= 40:
+                return _with_manual_material_choice(choices)
+    return _with_manual_material_choice(choices)
+
+
+def _with_manual_material_choice(choices: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [
+        *choices,
+        ("手动添加输入材料路径（下一步填写）", _MANUAL_MATERIAL_SENTINEL),
+    ]
+
+
+def _format_material_choice_title(path: Path) -> str:
+    try:
+        parent = path.parent.relative_to(Path.cwd().resolve())
+        parent_text = str(parent) if str(parent) != "." else "."
+    except ValueError:
+        parent_text = str(path.parent)
+    return f"{path.name} ({parent_text})"
+
+
+def _sort_material_candidates(candidates: list[Path]) -> list[Path]:
+    return sorted(candidates, key=_material_sort_key)
+
+
+def _material_sort_key(path: Path) -> tuple[int, int, str]:
+    name = path.name.lower()
+    if name == "requirements.md":
+        priority = 0
+    elif "requirement" in name or "需求" in name:
+        priority = 1
+    elif name in {"task.yaml", "task.yml"}:
+        priority = 2
+    elif name in {"readme.md", "readme.txt"}:
+        priority = 3
+    else:
+        priority = 10
+    return (priority, len(path.parts), str(path).lower())
+
+
+def _is_sensitive_material_candidate(path: Path) -> bool:
+    name = path.name.lower()
+    normalized = name.replace(" ", "_").replace("-", "_")
+    sensitive_markers = {
+        "software_engineering_project",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "password",
+        "private",
+    }
+    if name.startswith(".env") or name == "expected_result.json":
+        return True
+    return any(marker in normalized for marker in sensitive_markers)
 
 
 def _iter_material_candidates(root: Path) -> list[Path]:
@@ -419,6 +497,7 @@ def _iter_material_candidates(root: Path) -> list[Path]:
     }
     if not root.exists() or not root.is_dir():
         return []
+    root = root.resolve()
     candidates: list[Path] = []
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
@@ -430,7 +509,11 @@ def _iter_material_candidates(root: Path) -> list[Path]:
         except OSError:
             continue
         for path in children:
-            if any(part in denied_parts for part in path.parts):
+            try:
+                relative_parts = path.resolve().relative_to(root).parts
+            except (OSError, ValueError):
+                relative_parts = path.parts
+            if any(part in denied_parts for part in relative_parts):
                 continue
             if path.is_dir():
                 stack.append((path, depth + 1))
@@ -441,12 +524,12 @@ def _iter_material_candidates(root: Path) -> list[Path]:
                 continue
             if not is_file or path.suffix.lower() not in suffixes:
                 continue
-            if path.name.lower().startswith(".env") or path.name == "expected_result.json":
+            if _is_sensitive_material_candidate(path):
                 continue
             candidates.append(path)
-            if len(candidates) >= 30:
-                return candidates
-    return candidates
+            if len(candidates) >= 120:
+                return _sort_material_candidates(candidates)
+    return _sort_material_candidates(candidates)
 
 
 def _split_manual_paths(raw: str) -> list[str]:
