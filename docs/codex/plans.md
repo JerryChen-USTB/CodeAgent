@@ -363,7 +363,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/integration/test_cli_wizard.py -q`.
 - Unit/integration tests to add: scripted wizard input, approval decisions, cancellation final report.
 - Risks and mitigations: flaky interactive tests; test controller logic separately from terminal rendering.
-- Status: pending.
+- Status: done.
 
 ### M22 Non-Interactive Run and Stage Subcommands
 
@@ -864,3 +864,27 @@ Use this section as an append-only engineering log. Every completed small module
 - Reviews: M20 spec review final result PASS. M20 quality review final result APPROVED.
 - Developer report: `docs/dev_reports/M20_repair_subgraph.md`.
 - Next step: continue M21 Wizard, Streaming Progress, and Approval UI.
+
+### 2026-06-03 M21 Wizard, Streaming Progress, and Approval UI Start
+
+- Backup before doc update: `docs/_backups/20260603-101725/plans.md`.
+- Alignment review in progress: rechecking M21 against SRS CLI/HITL/progress/cancel requirements and design docs for workflow interrupts, report artifacts, streaming events, and CLI behavior.
+- Planned implementation boundary: keep terminal rendering thin and test controller logic separately so scripted wizard input, approval decisions, progress event formatting, and cancellation reporting remain stable in CI.
+- OpenRouter validation reminder: M21 remains UI/controller oriented and should not consume tokens; a controlled real LLM smoke with `OPENROUTER_API_KEY` is still required before final example/benchmark execution, without printing or persisting the secret value.
+- Next step: add failing M21 integration tests for wizard configuration, approve/edit/reject/cancel approval handling, progress rendering, and cancellation final report.
+
+### 2026-06-03 M21 Wizard, Streaming Progress, and Approval UI Complete
+
+- Backup before completion doc update: `docs/_backups/20260603-103814/plans.md`.
+- Behavior implemented: semi-interactive `codeagent wizard` answer collection, `TaskConfig(mode="wizard")` normalization, task summary rendering, run-dir initialization on confirmation, cancelled wizard stage/final report writing, approval decision parsing for approve/edit/reject/respond/cancel, edit payload JSON validation, allowed-decision enforcement, and normalized progress event rendering for stage/route/result/tool/final/approval events.
+- Safety and scope implemented: M21 stays at CLI/controller level and does not run business stages or consume OpenRouter tokens; project path must be an existing directory; input materials must exist and may be files or directories; cancellation writes run artifacts without modifying project source.
+- TDD and fixes: initial red run failed on missing `codeagent.cli.approval_console`; after implementation, one Rich rendering test exposed markup stripping and was fixed with `markup=False`. Quality review found an existing file could be accepted as `project_path`; added a failing regression test, then fixed directory-aware validation.
+- Commands run: `python -m pytest tests\integration\test_cli_wizard.py -q` -> 11 passed.
+- Commands run: `python -m pytest tests\integration\test_cli_wizard.py tests\test_cli_contract.py tests\unit\workflow tests\unit\reports tests\unit\runtime -q` -> 61 passed.
+- Commands run: `python -m pytest -q` -> 224 passed.
+- Commands run: `python -m compileall -q codeagent` -> passed.
+- Commands run: `python -m codeagent --help`, `python -m codeagent wizard --help`, and `codeagent --help` -> all succeeded.
+- Reviews: M21 spec review final result PASS. M21 quality review initially requested project-directory validation, then APPROVED after repair.
+- Developer report: `docs/dev_reports/M21_wizard_streaming_approval_ui.md`.
+- OpenRouter validation note: no OpenRouter token consumption expected in M21; keep the controlled real LLM smoke before final example/benchmark execution.
+- Next step: continue M22 Non-Interactive Run and Stage Subcommands.

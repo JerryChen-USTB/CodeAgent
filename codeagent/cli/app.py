@@ -53,7 +53,7 @@ def root(
 
 @app.command()
 def wizard() -> None:
-    """Planned skeleton: launch the guided task setup flow."""
+    """Launch the guided task setup flow."""
     wizard_command()
 
 
