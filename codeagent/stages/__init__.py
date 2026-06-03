@@ -6,10 +6,20 @@ from codeagent.stages.implementation_service import (
     ImplementationRequest,
     ImplementationService,
 )
+from codeagent.stages.testing_service import (
+    TestFileChange,
+    TestingPlan,
+    TestingRequest,
+    TestingService,
+)
 
 __all__ = [
     "ImplementationFileChange",
     "ImplementationPlan",
     "ImplementationRequest",
     "ImplementationService",
+    "TestFileChange",
+    "TestingPlan",
+    "TestingRequest",
+    "TestingService",
 ]

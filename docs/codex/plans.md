@@ -333,7 +333,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/integration/test_testing_stage.py -q`.
 - Unit/integration tests to add: test-plan review decisions, test patch restrictions, command edit/reject, pass/fail result routing.
 - Risks and mitigations: hidden tests leakage in benchmark mode; expose only visible paths and deny reads of `evaluation` or `oracle_tests`.
-- Status: pending.
+- Status: done.
 
 ### M19 DebuggingSubgraph
 
@@ -797,3 +797,24 @@ Use this section as an append-only engineering log. Every completed small module
 - Reviews: M17 quality review final result APPROVED. M17 spec review final result PASS with no remaining P0/P1/P2 findings.
 - Developer report: `docs/dev_reports/M17_implementation_subgraph.md`.
 - Next step: continue M18 TestingSubgraph.
+
+### 2026-06-03 M18 TestingSubgraph Start
+
+- Alignment review: rechecked M18 scope against SRS G-04/G-08/G-10, AC-09, UC-03, testing-stage input/output rules, and design docs 04/06 for test-plan review, test patch approval, command approval, test execution, parsing, and artifact-backed reporting.
+- Planned implementation boundary: mirror the M17 deterministic service/subgraph pattern for testing. The first pass will consume structured test intent, then later LLM TestDesigner/TestWriter nodes can supply that intent.
+- Commands run: targeted reads of M18 milestone block, SRS testing-stage and UC-03 sections, design testing subgraph, and existing M17 stage/subgraph files for implementation pattern reuse.
+- Next step: add failing M18 integration tests for approved test-plan/test-patch/command success, command rejection, command edit, test patch restrictions, and pass/fail routing output.
+
+### 2026-06-03 M18 TestingSubgraph Complete
+
+- Backup before doc update: `docs/_backups/20260603_085909/plans.md`.
+- Behavior implemented: structured testing plan schema, test-file patch intent, testing plan review interrupt, test patch approval interrupt, command approval interrupt, patch-first test modification, hidden benchmark path denial, patch hash tamper detection, pytest/unittest result parsing integration, stage report/artifact writing, and SQLite resume coverage for testing interrupts.
+- Fixes during review: rejected hidden benchmark command paths including `--option=value`; added approved patch SHA-256 validation; repaired plan/patch edit decisions so they regenerate approval payloads; fixed stale `test_plan.json` persistence after edit so command approval and reports use the edited plan.
+- Commands run: `python -m pytest tests\integration\test_testing_stage.py::test_interrupting_testing_subgraph_accepts_edited_plan_review tests\integration\test_testing_stage.py::test_interrupting_testing_subgraph_accepts_edited_patch_plan -q` first failed with stale command assertions, then passed after the persistence fix.
+- Commands run: `python -m pytest tests\integration\test_testing_stage.py -q` -> 15 passed.
+- Commands run: `python -m pytest tests\integration\test_testing_stage.py tests\integration\test_implementation_stage.py tests\integration\test_resume.py tests\unit\workflow tests\unit\tools tests\unit\reports -q` -> 110 passed.
+- Commands run: `python -m pytest -q` -> 185 passed.
+- Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
+- Reviews: M18 spec review final result PASS. M18 quality review final result APPROVED.
+- Developer report: `docs/dev_reports/M18_testing_subgraph.md`.
+- Next step: continue M19 DebuggingSubgraph.
