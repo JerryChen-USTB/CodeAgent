@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from codeagent.config.schema import Stage
 from codeagent.context.sensitive_filter import (
     GENERATED_DIRS,
+    SensitiveFilter,
     SENSITIVE_FILENAMES,
     SENSITIVE_NAME_PARTS,
     SENSITIVE_SUFFIXES,
@@ -135,6 +137,7 @@ class PlanGenerationService:
         model = self.model_factory.create(context.task_config.model)
         last_error: Exception | None = None
         attempts = max(1, context.task_config.model.max_retries + 1)
+        audit = _new_attempt_audit(prompt=prompt, schema=schema, attempts=attempts)
         for attempt in range(1, attempts + 1):
             retry_prompt = prompt
             if last_error is not None:
@@ -142,13 +145,42 @@ class PlanGenerationService:
                     "\n\nPrevious response failed schema validation. "
                     f"Attempt {attempt}/{attempts}. Error: {_redact(str(last_error))}"
                 )
-            response = model.invoke(retry_prompt)
             try:
-                payload = json.loads(_extract_json(_response_text(response)))
+                response = model.invoke(retry_prompt)
+            except Exception as exc:
+                last_error = exc
+                _record_attempt(
+                    audit,
+                    attempt=attempt,
+                    status="model_error",
+                    error=exc,
+                )
+                _write_attempt_audit(context, schema, audit)
+                continue
+            response_text = _response_text(response)
+            try:
+                payload = json.loads(_extract_json(response_text))
                 value = schema.model_validate(payload)
-                return _normalize_generated_plan(value, context.task_config.project_path)
+                value = _normalize_generated_plan(value, context.task_config.project_path)
+                _validate_generated_plan_targets(value, context)
+                _record_attempt(
+                    audit,
+                    attempt=attempt,
+                    status="valid",
+                    response_text=response_text,
+                )
+                _write_attempt_audit(context, schema, audit)
+                return value
             except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
                 last_error = exc
+                _record_attempt(
+                    audit,
+                    attempt=attempt,
+                    status="invalid",
+                    error=exc,
+                    response_text=response_text,
+                )
+                _write_attempt_audit(context, schema, audit)
         raise PlanGenerationError(
             f"Failed to generate valid {schema.__name__}: {_redact(str(last_error))}"
         )
@@ -189,6 +221,71 @@ def _normalize_generated_plan(plan: SchemaT, project_root: Path) -> SchemaT:
         ]
         return plan.model_copy(update={"changes": changes})  # type: ignore[return-value]
     return plan
+
+
+def _validate_generated_plan_targets(plan: BaseModel, context: RunContext) -> None:
+    root = context.task_config.project_path.resolve()
+    hidden_roots = [
+        path.resolve() for path in context.task_config.agent_visibility.hidden_paths
+    ]
+    sensitive_filter = SensitiveFilter(
+        root,
+        visible_roots=[root],
+        hidden_roots=hidden_roots,
+    )
+    errors: list[str] = []
+    for target_path in _generated_plan_target_paths(plan):
+        normalized = _safe_generated_target(target_path)
+        if normalized is None:
+            errors.append(f"generated plan path outside project root: {target_path}")
+            continue
+        target = (root / normalized).resolve()
+        if not _is_relative_to(target, root):
+            errors.append(f"generated plan path outside project root: {target_path}")
+            continue
+        if _is_hidden_benchmark_target(normalized) or any(
+            _is_relative_to(target, hidden) for hidden in hidden_roots
+        ):
+            errors.append(
+                f"generated plan targets hidden benchmark material: {normalized}"
+            )
+            continue
+        if sensitive_filter.is_denied(target):
+            errors.append(
+                f"generated plan targets sensitive or generated path: {normalized}"
+            )
+    if errors:
+        raise ValueError("; ".join(errors))
+
+
+def _generated_plan_target_paths(plan: BaseModel) -> list[Path]:
+    if isinstance(plan, ImplementationPlan):
+        return [change.path for change in plan.changes] + list(plan.syntax_check_targets)
+    if isinstance(plan, RepairPlan):
+        return [change.path for change in plan.changes]
+    return []
+
+
+def _safe_generated_target(path: Path) -> str | None:
+    raw = str(path).replace("\\", "/")
+    posix_path = PurePosixPath(raw)
+    if (
+        not raw
+        or posix_path.is_absolute()
+        or any(part in {"", ".."} for part in posix_path.parts)
+        or (posix_path.parts and ":" in posix_path.parts[0])
+    ):
+        return None
+    return posix_path.as_posix()
+
+
+def _is_hidden_benchmark_target(path: str) -> bool:
+    parts = [part.lower() for part in PurePosixPath(path.replace("\\", "/")).parts]
+    return (
+        "evaluation" in parts
+        or "oracle_tests" in parts
+        or any(part == "expected_result.json" for part in parts)
+    )
 
 
 def _project_relative_path(raw_path: Path, project_root: Path) -> Path:
@@ -334,14 +431,74 @@ def _append_file_section(
 
 def _failure_log_paths(context: RunContext) -> list[Path]:
     logs_dir = context.stage_dirs[Stage.TEST] / "logs"
-    return [
-        path
-        for path in (
-            logs_dir / "testing_cli_command.stdout.log",
-            logs_dir / "testing_cli_command.stderr.log",
-        )
-        if path.exists()
+    candidates = [
+        logs_dir / "testing_cli_command.stdout.log",
+        logs_dir / "testing_cli_command.stderr.log",
     ]
+    if logs_dir.exists():
+        candidates.extend(sorted(logs_dir.glob("*.stdout.log")))
+        candidates.extend(sorted(logs_dir.glob("*.stderr.log")))
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for path in candidates:
+        if not path.exists() or not path.is_file():
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        paths.append(path)
+    return paths
+
+
+def _new_attempt_audit(
+    *,
+    prompt: str,
+    schema: type[BaseModel],
+    attempts: int,
+) -> dict[str, Any]:
+    return {
+        "schema": schema.__name__,
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "prompt_chars": len(prompt),
+        "max_attempts": attempts,
+        "attempts": [],
+    }
+
+
+def _record_attempt(
+    audit: dict[str, Any],
+    *,
+    attempt: int,
+    status: str,
+    error: Exception | None = None,
+    response_text: str | None = None,
+) -> None:
+    record: dict[str, Any] = {
+        "attempt": attempt,
+        "status": status,
+    }
+    if response_text is not None:
+        record["response_chars"] = len(response_text)
+        record["response_preview"] = _truncate(_redact(response_text), limit=500)
+    if error is not None:
+        record["error_type"] = type(error).__name__
+        record["error_message"] = _truncate(_redact(str(error)), limit=2_000)
+    audit["attempts"].append(record)
+
+
+def _write_attempt_audit(
+    context: RunContext,
+    schema: type[BaseModel],
+    audit: dict[str, Any],
+) -> None:
+    stage = Stage.REPAIR if issubclass(schema, RepairPlan) else Stage.IMPLEMENT
+    stage_dir = context.stage_dirs[stage]
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "plan_generation_attempts.json").write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _is_visible_file(
@@ -408,7 +565,26 @@ def _extract_json(text: str) -> str:
 
 
 def _redact(text: str) -> str:
-    return re.sub(r"sk(?:-or)?-[A-Za-z0-9_-]+", "<redacted>", text)
+    redacted = re.sub(r"sk(?:-or)?-[A-Za-z0-9_-]+", "<redacted>", text)
+    redacted = re.sub(
+        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+",
+        "Bearer <redacted>",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b(api[_-]?key|authorization|token|secret|password)"
+        r"(\s*[:=]\s*)"
+        r"([^\s,;]+)",
+        r"\1\2<redacted>",
+        redacted,
+    )
+    return redacted
+
+
+def _truncate(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n[truncated]"
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

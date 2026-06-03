@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from codeagent.agents.plan_generation import PlanGenerationService
+import pytest
+
+from codeagent.agents.plan_generation import PlanGenerationError, PlanGenerationService
 from codeagent.config.schema import InputMaterial, Stage, TaskConfig
 from codeagent.runtime.run_context import RunContext, create_run_context
 from codeagent.stages.implementation_service import PATCH_INTERRUPT_ID
@@ -26,6 +28,16 @@ class _FakeModel:
     def invoke(self, prompt: str) -> _Response:
         self.prompts.append(prompt)
         return _Response("```json\n" + json.dumps(self.response) + "\n```")
+
+
+class _SequenceModel:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.prompts: list[str] = []
+
+    def invoke(self, prompt: str) -> _Response:
+        self.prompts.append(prompt)
+        return _Response(self.responses.pop(0))
 
 
 class _FakeFactory:
@@ -270,6 +282,156 @@ def test_plan_generation_builds_repair_request_with_failure_logs(tmp_path) -> No
     assert request.command_approval.interrupt_id == REPAIR_COMMAND_INTERRUPT_ID
     assert request.patch_approval.auto is True
     assert request.command_approval.auto is True
+
+
+def test_plan_generation_repair_prompt_discovers_shortened_shell_logs(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR])
+    (context.task_config.project_path / "find_in_sorted.py").write_text(
+        "def find_in_sorted(arr, x):\n    return find_in_sorted(arr, x)\n",
+        encoding="utf-8",
+    )
+    logs_dir = context.stage_dirs[Stage.TEST] / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "cmd-8cfce45a271f.stdout.log").write_text("", encoding="utf-8")
+    (logs_dir / "cmd-8cfce45a271f.stderr.log").write_text(
+        "RecursionError: maximum recursion depth exceeded\n",
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "root_cause": "The function recurses without changing bounds.",
+            "strategy": "Implement binary search with narrowing bounds.",
+            "changes": [
+                {
+                    "path": "find_in_sorted.py",
+                    "old_content": "def find_in_sorted(arr, x):\n    return find_in_sorted(arr, x)\n",
+                    "new_content": (
+                        "def find_in_sorted(arr, x):\n"
+                        "    low, high = 0, len(arr) - 1\n"
+                        "    while low <= high:\n"
+                        "        mid = (low + high) // 2\n"
+                        "        if arr[mid] == x:\n"
+                        "            return mid\n"
+                        "        if arr[mid] < x:\n"
+                        "            low = mid + 1\n"
+                        "        else:\n"
+                        "            high = mid - 1\n"
+                        "    return -1\n"
+                    ),
+                    "rationale": "Avoid unbounded recursion.",
+                }
+            ],
+            "verification_command": "python -m unittest discover -s tests",
+            "framework": "unittest",
+        }
+    )
+
+    PlanGenerationService(model_factory=_FakeFactory(model)).create_repair_request(
+        context
+    )
+
+    assert "RecursionError: maximum recursion depth exceeded" in model.prompts[0]
+
+
+def test_plan_generation_writes_redacted_attempt_audit_for_malformed_responses(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    model = _SequenceModel(
+        [
+            "not json sk-or-should-not-leak",
+            '{"requirements_summary": "missing required fields"}',
+            '{"requirements_summary": "still missing required fields"}',
+        ]
+    )
+
+    with pytest.raises(PlanGenerationError, match="Failed to generate valid"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+            context
+        )
+
+    audit_path = (
+        context.stage_dirs[Stage.IMPLEMENT] / "plan_generation_attempts.json"
+    )
+    audit_text = audit_path.read_text(encoding="utf-8")
+    audit = json.loads(audit_text)
+    assert audit["schema"] == "ImplementationPlan"
+    assert audit["attempts"][0]["status"] == "invalid"
+    assert audit["attempts"][1]["status"] == "invalid"
+    assert "sk-or-should-not-leak" not in audit_text
+    assert "<redacted>" in audit_text
+    assert "prompt_sha256" in audit
+
+
+def test_plan_generation_rejects_hidden_plan_targets_before_patch_stage(
+    tmp_path,
+) -> None:
+    context = _context(
+        tmp_path,
+        stages=[Stage.IMPLEMENT],
+        hidden_paths=[tmp_path / "case" / "workspace" / "pkg" / "oracle_tests"],
+    )
+    model = _FakeModel(
+        {
+            "requirements_summary": "Implement visible behavior.",
+            "impact_summary": "Attempt to change a hidden oracle target.",
+            "changes": [
+                {
+                    "path": "pkg/oracle_tests/test_hidden.py",
+                    "old_content": None,
+                    "new_content": "TOKEN = 'sk-or-should-not-leak'\n",
+                    "rationale": "This must be rejected before patching.",
+                }
+            ],
+            "syntax_check_targets": ["pkg/oracle_tests/test_hidden.py"],
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="Failed to generate valid"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+            context
+        )
+
+    audit_text = (
+        context.stage_dirs[Stage.IMPLEMENT] / "plan_generation_attempts.json"
+    ).read_text(encoding="utf-8")
+    assert "oracle_tests" in audit_text
+    assert "generated plan targets hidden benchmark material" in audit_text
+    assert "sk-or-should-not-leak" not in audit_text
+    assert "<redacted>" in audit_text
+
+
+def test_plan_generation_rejects_sensitive_plan_targets_before_patch_stage(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    model = _FakeModel(
+        {
+            "requirements_summary": "Implement visible behavior.",
+            "impact_summary": "Attempt to change a sensitive target.",
+            "changes": [
+                {
+                    "path": ".env",
+                    "old_content": None,
+                    "new_content": "OPENROUTER_API_KEY=sk-or-should-not-leak\n",
+                    "rationale": "This must be rejected before patching.",
+                }
+            ],
+            "syntax_check_targets": [".env"],
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="Failed to generate valid"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+            context
+        )
+
+    audit_text = (
+        context.stage_dirs[Stage.IMPLEMENT] / "plan_generation_attempts.json"
+    ).read_text(encoding="utf-8")
+    assert "generated plan targets sensitive or generated path: .env" in audit_text
+    assert "sk-or-should-not-leak" not in audit_text
+    assert "<redacted>" in audit_text
 
 
 def test_plan_generation_normalizes_model_paths_to_project_root_relative(

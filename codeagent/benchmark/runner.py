@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,25 +81,23 @@ class BenchmarkRunner:
                     context.task_config,
                     reporter=self.reporter,
                 )
-                evaluations.append(
-                    self.evaluator.evaluate(
-                        context=context,
-                        run_dir=cli_result.run_dir,
-                        final_status=cli_result.final_status,
-                    )
+                evaluation = self.evaluator.evaluate(
+                    context=context,
+                    run_dir=cli_result.run_dir,
+                    final_status=cli_result.final_status,
                 )
+                evaluations.append(_attach_source_snapshot(evaluation, context))
             except Exception as exc:  # pragma: no cover - defensive per-case isolation
-                evaluations.append(
-                    CaseEvaluation(
-                        case_id=context.case_id,
-                        success=False,
-                        score=0.0,
-                        final_status="failed",
-                        run_dir=None,
-                        run_case_dir=context.run_case_dir,
-                        failure_reason=f"benchmark case execution failed: {exc}",
-                    )
+                evaluation = CaseEvaluation(
+                    case_id=context.case_id,
+                    success=False,
+                    score=0.0,
+                    final_status="failed",
+                    run_dir=None,
+                    run_case_dir=context.run_case_dir,
+                    failure_reason=f"benchmark case execution failed: {exc}",
                 )
+                evaluations.append(_attach_source_snapshot(evaluation, context))
         success_cases = sum(1 for evaluation in evaluations if evaluation.success)
         total_cases = len(evaluations)
         result = BenchmarkResult(
@@ -122,6 +122,7 @@ class BenchmarkRunner:
         run_case_dir = benchmark_run_dir / "case_workspaces" / case.case_id
         if run_case_dir.exists():
             raise FileExistsError(f"benchmark run case directory already exists: {run_case_dir}")
+        source_snapshot_before = _snapshot_case_dir(case.source_case_dir)
         shutil.copytree(case.source_case_dir, run_case_dir)
         relative_config = case.config_path.resolve().relative_to(
             case.source_case_dir.resolve()
@@ -171,6 +172,7 @@ class BenchmarkRunner:
             task_config=task_config,
             visible_paths=visible_paths,
             hidden_paths=hidden_paths,
+            source_snapshot_before=source_snapshot_before,
             oracle_logs_dir=(
                 benchmark_run_dir / "oracle_logs" / case.case_id
                 if oracle_command
@@ -193,6 +195,58 @@ def _create_benchmark_run_dir(output_root: Path, *, benchmark_id: str) -> Path:
             continue
         return path
     raise RuntimeError("Unable to create a unique benchmark run directory.")
+
+
+def _attach_source_snapshot(
+    evaluation: CaseEvaluation,
+    context: CaseExecutionContext,
+) -> CaseEvaluation:
+    source_snapshot_after = _snapshot_case_dir(context.source_case_dir)
+    source_snapshot_before = context.source_snapshot_before
+    source_unchanged = (
+        source_snapshot_before == source_snapshot_after
+        if source_snapshot_before is not None
+        else None
+    )
+    if source_unchanged is False:
+        evaluation = replace(
+            evaluation,
+            success=False,
+            score=0.0,
+            failure_reason=_append_reason(
+                evaluation.failure_reason,
+                "source case changed during benchmark run",
+            ),
+        )
+    return replace(
+        evaluation,
+        source_snapshot_before=source_snapshot_before,
+        source_snapshot_after=source_snapshot_after,
+        source_unchanged=source_unchanged,
+    )
+
+
+def _snapshot_case_dir(path: Path) -> str:
+    root = path.resolve()
+    entries: list[dict[str, object]] = []
+    for candidate in sorted(root.rglob("*")):
+        if not candidate.is_file():
+            continue
+        stat = candidate.stat()
+        relative = candidate.relative_to(root).as_posix()
+        entries.append(
+            {
+                "path": relative,
+                "size": stat.st_size,
+                "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            }
+        )
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _append_reason(existing: str, reason: str) -> str:
+    return f"{existing}; {reason}" if existing else reason
 
 
 def _case_visibility_paths(

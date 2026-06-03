@@ -399,9 +399,9 @@ Scope boundaries for this implementation pass:
 
 - Scope: harden the LLM-driven implementation/repair loop after the first public benchmark pass by adding richer context selection, redaction, retry diagnostics, structured failure classes, and a self-designed benchmark regression pack that covers implementation, repair, hidden oracle, nested hidden paths, and malformed model output.
 - Key files/modules: `codeagent/agents/plan_generation.py`, `codeagent/agents/prompts.py`, `codeagent/models/structured_outputs.py`, `codeagent/benchmark/**`, `benchmark/selfbuilt/**` or new public-style regression cases.
-- Acceptance criteria: LLM calls are auditable without secret leakage; malformed/partial model responses produce actionable errors; prompt context excludes hidden and sensitive files by test; custom benchmark pack runs in clean copies and reports stable outcomes.
+- Acceptance criteria: LLM calls are auditable without secret leakage; malformed/partial model responses produce actionable errors; prompt context excludes hidden and sensitive files by test; generated plans cannot target hidden/sensitive paths; custom benchmark pack runs in clean copies, records source-case snapshot evidence, and reports stable outcomes.
 - Verification commands: `python -m pytest tests/unit/agents tests/unit/models tests/integration/test_benchmark_runner.py -q`; run custom benchmark config; rerun `benchmark/benchmark.yaml`.
-- Status: pending.
+- Status: done.
 
 ### M25 BugsInPy Optional Path and Environment Detection
 
@@ -987,3 +987,25 @@ Use this section as an append-only engineering log. Every completed small module
 - Commands run: `codeagent benchmark --config benchmark\benchmark.yaml` -> latest run completed 6 cases, success_rate=1.00 (6/6), no hidden oracle material exposed to Agent-visible workflow.
 - Developer report: `docs/dev_reports/M24_public_benchmark_llm_pass.md`.
 - Next step: continue M24A LLM Orchestration Hardening and Benchmark Regression Pack, including self-designed public-style regression cases and richer malformed-response diagnostics.
+
+### 2026-06-03 M24A LLM Orchestration Hardening and Benchmark Regression Pack
+
+- Backup before doc update: `docs/_backups/20260603-141115/M24A_docs/plans.md`.
+- Alignment review: checked M24A against SRS requirements for full-process logs, benchmark success statistics, model error handling, test/debug/repair artifacts, and design docs 07/09/10 for structured validation retries, reproducible reports, clean case copies, and runner-only hidden oracle boundaries.
+- LLM audit hardening: `PlanGenerationService` now writes `plan_generation_attempts.json` for implementation and repair planning attempts with schema name, prompt hash, prompt length, attempt status, redacted response preview, and redacted validation/model errors. It does not write full prompt text or secret values.
+- Malformed output diagnostics: non-JSON responses, schema validation failures, and model invocation errors are retried and recorded as structured attempt entries; final `PlanGenerationError` remains redacted.
+- Prompt evidence hardening: repair prompts now discover actual `ShellRunner` stdout/stderr logs even when Windows path-length protection shortens log stems to `cmd-<hash>.*.log`, so repair LLM context uses current testing evidence instead of stale fallback inputs.
+- Hidden/sensitive target hardening: generated implementation/repair plans are normalized and rejected before patching if they target absolute/out-of-root paths, hidden benchmark material (`evaluation`, `oracle_tests`, `expected_result.json`), configured hidden roots, sensitive files such as `.env`, or generated directories.
+- Benchmark regression pack: integration tests now build a five-case custom pack covering visible tests, runner-only oracle, nested hidden paths, project-relative commands, `{{CASE_DIR}}` placeholder normalization, aggregate reports, and reusable source templates.
+- Template reuse evidence: benchmark results now include `source_snapshot_before`, `source_snapshot_after`, and `source_unchanged` per case. Public benchmark run `benchmark/codeagent_runs/benchmark/2026-06-03_060921_184932_codeagent_course_benchmark_b870e4/benchmark_result.json` reported 6/6 success and `source_unchanged=True` for every enabled case.
+- Real OpenRouter evidence: process env reports `OPENROUTER_API_KEY=SET`; `python -m codeagent benchmark --config benchmark\benchmark.yaml` completed 6 enabled public cases with real LLM implementation/repair planning, success_rate=1.00.
+- Secret scan: run artifacts under the latest public benchmark `case_runs` plus aggregate JSON/Markdown had no matches for OpenRouter-style key, bearer token, or `OPENROUTER_API_KEY=` value patterns.
+- Commands run: `python -m pytest tests\unit\agents -q` -> 12 passed.
+- Commands run: `python -m pytest tests\integration\test_benchmark_runner.py tests\unit\agents -q` -> 23 passed.
+- Commands run: `python -m pytest tests\integration\test_cli_run.py tests\unit\tools\test_shell_runner.py -q` -> 20 passed.
+- Commands run: `python -m pytest -q` -> 256 passed.
+- Commands run: `python -m compileall -q codeagent\benchmark codeagent\agents` -> passed.
+- Commands run: `python -m compileall -q codeagent` -> passed.
+- Commands run: `python -m codeagent benchmark --config benchmark\benchmark.yaml` -> 6/6 passed, success_rate=1.00.
+- Developer report: `docs/dev_reports/M24A_llm_orchestration_hardening.md`.
+- Next step: run full repository verification, finalize M24A status, then continue to M25 optional BugsInPy readiness detection.

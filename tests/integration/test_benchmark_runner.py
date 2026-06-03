@@ -14,6 +14,19 @@ from codeagent.cli.app import app
 runner = CliRunner()
 
 
+class _MutatingEvaluator(CaseEvaluator):
+    def evaluate(self, *, context, run_dir: Path | None, final_status: str):
+        (context.source_case_dir / "workspace" / "pollution.txt").write_text(
+            "source mutation must fail the benchmark\n",
+            encoding="utf-8",
+        )
+        return super().evaluate(
+            context=context,
+            run_dir=run_dir,
+            final_status=final_status,
+        )
+
+
 def _write_unittest_case(
     root: Path,
     case_id: str,
@@ -171,9 +184,18 @@ def test_benchmark_runner_executes_clean_copy_and_writes_aggregate_reports(tmp_p
     assert case_result.case_id == "case_success"
     assert case_result.success is True
     assert case_result.run_case_dir != case_dir
+    assert case_result.source_unchanged is True
+    assert case_result.source_snapshot_before == case_result.source_snapshot_after
     assert (case_result.run_dir / "final_report.md").exists()
     assert (result.benchmark_run_dir / "benchmark_result.json").exists()
     assert (result.benchmark_run_dir / "benchmark_report.md").exists()
+    aggregate = json.loads(
+        (result.benchmark_run_dir / "benchmark_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert aggregate["cases"][0]["source_unchanged"] is True
+    assert aggregate["cases"][0]["source_snapshot_before"]
     decisions = [
         json.loads(line)
         for line in (case_result.run_dir / "decision_trace.jsonl")
@@ -300,6 +322,123 @@ test_command:
     assert "benchmark case preparation failed" in bad_result.failure_reason
     assert good_result.case_id == "case_good"
     assert good_result.success is True
+
+
+def test_custom_benchmark_regression_pack_keeps_templates_reusable_and_hidden_oracles_runner_only(
+    tmp_path,
+) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_visible")
+    _write_unittest_case(
+        tmp_path / "cases",
+        "case_oracle",
+        command="python -m unittest discover -s oracle_tests",
+    )
+    oracle_test = tmp_path / "cases" / "case_oracle" / "oracle_tests" / "test_oracle.py"
+    oracle_test.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "import unittest",
+                "from pathlib import Path",
+                "",
+                "sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'workspace'))",
+                "from math_utils import add",
+                "",
+                "class OracleMathTest(unittest.TestCase):",
+                "    def test_addition(self):",
+                "        self.assertEqual(add(2, 5), 7)",
+                "",
+                "if __name__ == '__main__':",
+                "    unittest.main()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    nested_case = _write_unittest_case(
+        tmp_path / "cases",
+        "case_nested",
+        command="python -m py_compile {{CASE_DIR}}/workspace/math_utils.py {{CASE_DIR}}/workspace/private_tests/test_hidden.py",
+        hidden_paths="workspace/private_tests",
+    )
+    (nested_case / "workspace" / "private_tests").mkdir()
+    (nested_case / "workspace" / "private_tests" / "test_hidden.py").write_text(
+        "raise AssertionError('runner-only hidden path')\n",
+        encoding="utf-8",
+    )
+    _write_unittest_case(
+        tmp_path / "cases",
+        "case_project_relative",
+        command="python -m unittest discover -s workspace/tests",
+    )
+    _write_unittest_case(
+        tmp_path / "cases",
+        "case_case_dir_placeholder",
+        command="python -m unittest discover -s {{CASE_DIR}}/workspace/tests",
+    )
+    config_path = _benchmark_config_for_cases(
+        tmp_path,
+        [
+            "case_visible",
+            "case_oracle",
+            "case_nested",
+            "case_project_relative",
+            "case_case_dir_placeholder",
+        ],
+    )
+
+    result = BenchmarkRunner().run_config(config_path)
+
+    assert result.total_cases == 5
+    assert result.success_cases == 5
+    assert result.success_rate == 1.0
+    assert all(case.source_unchanged is True for case in result.cases)
+    assert all(
+        not (tmp_path / "cases" / case.case_id / "codeagent_runs").exists()
+        for case in result.cases
+    )
+    oracle_case = next(case for case in result.cases if case.case_id == "case_oracle")
+    assert oracle_case.oracle_success is True
+    assert oracle_case.oracle_command == "python -m unittest discover -s oracle_tests"
+    nested_result = next(case for case in result.cases if case.case_id == "case_nested")
+    assert nested_result.oracle_success is True
+    assert nested_result.oracle_command is not None
+    assert "private_tests" in nested_result.oracle_command
+    assert nested_result.run_dir is not None
+    agent_task_config = (nested_result.run_dir / "task_config.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "test_hidden.py" not in agent_task_config
+    assert "workspace/private_tests/test_hidden.py" not in agent_task_config.replace(
+        "\\",
+        "/",
+    )
+    aggregate = json.loads(
+        (result.benchmark_run_dir / "benchmark_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert {case["case_id"] for case in aggregate["cases"]} == {
+        "case_visible",
+        "case_oracle",
+        "case_nested",
+        "case_project_relative",
+        "case_case_dir_placeholder",
+    }
+    assert all(case["source_unchanged"] is True for case in aggregate["cases"])
+
+
+def test_benchmark_runner_fails_case_when_source_template_changes(tmp_path) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_source_mutated")
+    config_path = _benchmark_config(tmp_path, "case_source_mutated")
+
+    result = BenchmarkRunner(evaluator=_MutatingEvaluator()).run_config(config_path)
+
+    assert result.total_cases == 1
+    assert result.success_cases == 0
+    case_result = result.cases[0]
+    assert case_result.success is False
+    assert case_result.source_unchanged is False
+    assert "source case changed during benchmark run" in case_result.failure_reason
 
 
 def test_evaluator_requires_final_report_artifact(tmp_path) -> None:

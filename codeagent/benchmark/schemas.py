@@ -40,6 +40,7 @@ class CaseExecutionContext:
     task_config: TaskConfig
     visible_paths: list[Path]
     hidden_paths: list[Path]
+    source_snapshot_before: str | None = None
     oracle_logs_dir: Path | None = None
     oracle_command: str | None = None
     oracle_framework: str | None = None
@@ -57,6 +58,9 @@ class CaseEvaluation:
     oracle_success: bool | None = None
     oracle_command: str | None = None
     oracle_logs_dir: Path | None = None
+    source_snapshot_before: str | None = None
+    source_snapshot_after: str | None = None
+    source_unchanged: bool | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +76,9 @@ class CaseEvaluation:
             "oracle_logs_dir": (
                 self.oracle_logs_dir.as_posix() if self.oracle_logs_dir else None
             ),
+            "source_snapshot_before": self.source_snapshot_before,
+            "source_snapshot_after": self.source_snapshot_after,
+            "source_unchanged": self.source_unchanged,
         }
 
 
