@@ -85,6 +85,10 @@ def _resolve_task_paths(config: TaskConfig, base_dir: Path) -> None:
 def _validate_task_paths(config: TaskConfig) -> None:
     if not config.project_path.exists():
         raise ConfigLoadError(f"project_path does not exist: {config.project_path}")
+    if not config.project_path.is_dir():
+        raise ConfigLoadError(
+            f"project_path must be a directory: {config.project_path}"
+        )
     for material in config.input_materials:
         if material.required and not material.path.exists():
             raise ConfigLoadError(

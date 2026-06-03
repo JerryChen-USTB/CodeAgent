@@ -36,6 +36,8 @@ class ProgressEventFormatter:
             return f"[tool] {tool_name} {status}"
         if event_type == "final_status":
             return f"[final] {event.get('status', '<unknown>')}"
+        if event_type == "run_directory":
+            return f"Run directory: {event.get('path', '<unknown>')}"
         if event_type == "human_decision":
             decision = event.get("decision_type", "<unknown>")
             action = event.get("action", "approval")

@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from codeagent import __version__
+from codeagent.cli.executor import execute_task_config
 from codeagent.cli.progress import ProgressReporter
 from codeagent.cli.resume import (
     inspect_run_for_resume,
@@ -14,6 +15,11 @@ from codeagent.cli.resume import (
     resume_run_from_checkpoint,
 )
 from codeagent.cli.wizard import wizard_command
+from codeagent.config.cli_mapping import (
+    task_config_for_stage_command,
+    task_config_from_run_options,
+)
+from codeagent.config.loader import ConfigLoadError
 
 console = Console()
 reporter = ProgressReporter(console)
@@ -76,16 +82,31 @@ def run(
         "--stages",
         help="Comma-separated stage list, for example implement,test,debug,repair.",
     ),
+    output_dir: str | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory under which a unique run directory will be created.",
+    ),
+    test_cmd: str | None = typer.Option(
+        None,
+        "--test-cmd",
+        help="Test command used by testing/debugging/repair stages.",
+    ),
 ) -> None:
-    """Planned skeleton: run a task from config or CLI options.
+    """Run a task from config or CLI options.
 
     Example: codeagent run --config task.yaml
     """
-    if config is None and project is None:
-        raise typer.BadParameter("Provide --config or --project.")
-    target = config or project or "<unknown>"
-    stage_text = stages or "implement,test,debug,repair"
-    reporter.planned("run", f"Target: {target}\nStages: {stage_text}")
+    task_config = _build_or_exit(
+        lambda: task_config_from_run_options(
+            config_path=config,
+            project=project,
+            stages=stages,
+            output_dir=output_dir,
+            test_cmd=test_cmd,
+        )
+    )
+    _execute_or_exit(task_config)
 
 
 @app.command()
@@ -102,15 +123,25 @@ def implement(
         "-r",
         help="Requirements document path.",
     ),
+    output_dir: str | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory under which a unique run directory will be created.",
+    ),
 ) -> None:
-    """Planned skeleton: run the implementation stage.
+    """Run the implementation stage.
 
     Example: codeagent implement --project ./repo --requirements requirements.md
     """
-    reporter.planned(
-        "implement",
-        f"Project: {project}\nRequirements: {requirements}",
+    task_config = _build_or_exit(
+        lambda: task_config_for_stage_command(
+            stage="implement",
+            project=project,
+            requirements=requirements,
+            output_dir=output_dir,
+        )
     )
+    _execute_or_exit(task_config)
 
 
 @app.command(name="test")
@@ -126,12 +157,25 @@ def test_command(
         "--test-cmd",
         help="Test command to run after approval.",
     ),
+    output_dir: str | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory under which a unique run directory will be created.",
+    ),
 ) -> None:
-    """Planned skeleton: run the testing stage.
+    """Run the testing stage.
 
     Example: codeagent test --project ./repo --test-cmd "pytest -q"
     """
-    reporter.planned("test", f"Project: {project}\nTest command: {test_cmd}")
+    task_config = _build_or_exit(
+        lambda: task_config_for_stage_command(
+            stage="test",
+            project=project,
+            test_cmd=test_cmd,
+            output_dir=output_dir,
+        )
+    )
+    _execute_or_exit(task_config)
 
 
 @app.command()
@@ -152,15 +196,26 @@ def debug(
         "--log",
         help="Path to a failing test log.",
     ),
+    output_dir: str | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory under which a unique run directory will be created.",
+    ),
 ) -> None:
-    """Planned skeleton: run the debugging stage.
+    """Run the debugging stage.
 
     Example: codeagent debug --project ./repo --test-cmd "pytest -q" --log failing.log
     """
-    reporter.planned(
-        "debug",
-        f"Project: {project}\nTest command: {test_cmd}\nLog: {log or '<none>'}",
+    task_config = _build_or_exit(
+        lambda: task_config_for_stage_command(
+            stage="debug",
+            project=project,
+            test_cmd=test_cmd,
+            log=log,
+            output_dir=output_dir,
+        )
     )
+    _execute_or_exit(task_config)
 
 
 @app.command()
@@ -176,12 +231,25 @@ def repair(
         "--test-cmd",
         help="Regression test command.",
     ),
+    output_dir: str | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory under which a unique run directory will be created.",
+    ),
 ) -> None:
-    """Planned skeleton: run the repair stage.
+    """Run the repair stage.
 
     Example: codeagent repair --project ./repo --test-cmd "pytest -q"
     """
-    reporter.planned("repair", f"Project: {project}\nTest command: {test_cmd}")
+    task_config = _build_or_exit(
+        lambda: task_config_for_stage_command(
+            stage="repair",
+            project=project,
+            test_cmd=test_cmd,
+            output_dir=output_dir,
+        )
+    )
+    _execute_or_exit(task_config)
 
 
 @app.command()
@@ -246,6 +314,21 @@ def resume(
             console.print(f"Final status: {result['final_status']}")
         return
     console.print(render_resume_summary(summary))
+
+
+def _build_or_exit(builder):
+    try:
+        return builder()
+    except (ConfigLoadError, ValueError) as exc:
+        console.print(f"Invalid task configuration: {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _execute_or_exit(task_config) -> None:
+    result = execute_task_config(task_config, reporter=reporter)
+    console.print(f"Final status: {result.final_status}")
+    if result.final_status != "succeeded":
+        raise typer.Exit(1)
 
 
 def main() -> None:

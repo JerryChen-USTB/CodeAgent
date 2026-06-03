@@ -27,16 +27,21 @@ def test_root_help_lists_required_commands() -> None:
 
 
 def test_core_command_help_contracts() -> None:
-    commands = [
-        ["run", "--help"],
-        ["implement", "--help"],
-        ["test", "--help"],
-        ["debug", "--help"],
-        ["repair", "--help"],
-        ["benchmark", "--help"],
-        ["resume", "--help"],
+    implemented_commands = [
+        (["run", "--help"], "Run a task from config or CLI options."),
+        (["implement", "--help"], "Run the implementation stage."),
+        (["test", "--help"], "Run the testing stage."),
+        (["debug", "--help"], "Run the debugging stage."),
+        (["repair", "--help"], "Run the repair stage."),
     ]
-    for command in commands:
+    for command, description in implemented_commands:
+        result = runner.invoke(app, command)
+        assert result.exit_code == 0
+        assert "Usage:" in result.output
+        assert description in result.output
+        assert "Example:" in result.output
+
+    for command in [["benchmark", "--help"], ["resume", "--help"]]:
         result = runner.invoke(app, command)
         assert result.exit_code == 0
         assert "Usage:" in result.output

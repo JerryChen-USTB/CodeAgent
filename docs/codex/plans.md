@@ -373,7 +373,7 @@ Scope out for MVP:
 - Verification commands: `codeagent run --config examples/task.yaml`; `python -m pytest tests/integration/test_cli_run.py -q`.
 - Unit/integration tests to add: run config, stage subcommand mapping, invalid path, invalid stage order.
 - Risks and mitigations: command/config divergence; use one loader normalization path for all commands.
-- Status: pending.
+- Status: done.
 
 ### M23 BenchmarkRunner, CaseLoader, Evaluator, and Aggregator
 
@@ -888,3 +888,30 @@ Use this section as an append-only engineering log. Every completed small module
 - Developer report: `docs/dev_reports/M21_wizard_streaming_approval_ui.md`.
 - OpenRouter validation note: no OpenRouter token consumption expected in M21; keep the controlled real LLM smoke before final example/benchmark execution.
 - Next step: continue M22 Non-Interactive Run and Stage Subcommands.
+
+### 2026-06-03 M22 Non-Interactive Run and Stage Subcommands Start
+
+- Backup before doc update: `docs/_backups/20260603-104021/plans.md`.
+- Alignment review in progress: rechecking M22 against SRS CLI non-interactive mode, stage command mapping, path validation, output directory/run artifact rules, workflow streaming, and explicit failure behavior.
+- Planned implementation boundary: introduce one CLI-to-`TaskConfig` normalization path for `run --config`, `run --project --stages`, and stage subcommands, then execute configured stages through the existing LangGraph factory and deterministic stage handlers where enough structured inputs are available.
+- OpenRouter validation reminder: M22 should not print or persist secrets; if real LLM smoke becomes possible, keep it controlled and do not consume tokens except for the planned final validation point.
+- Next step: add failing M22 integration tests for config run, stage subcommand mapping, invalid path, invalid stage order, run-dir creation, and streaming progress output.
+
+### 2026-06-03 M22 Non-Interactive Run and Stage Subcommands Complete
+
+- Backup before completion doc update: `docs/_backups/20260603-110243/plans.md`.
+- Behavior implemented: `run --config`, `run --project --stages`, and `implement/test/debug/repair` normalize through `TaskConfig(mode="run")`; CLI executor creates run context, runs the LangGraph main workflow, renders stream progress, writes stage reports and final report, and exits nonzero for final failed/cancelled runs.
+- Stage execution implemented: testing stage can execute user-supplied pytest/unittest/py_compile-like commands through `ShellRunner` policy and parse results; debugging stage reuses `DebuggingService` with static logs or non-interactive reproduction; implementation and repair create explicit failed reports when structured plans are absent instead of reporting skeleton success.
+- Validation and examples implemented: config loader rejects `project_path` files; `examples/task.yaml` provides a public debug-only static-log run that succeeds without LLM calls or project modification.
+- TDD and fixes: initial M22 red run showed all five new CLI tests failing against skeleton commands; implementation added `cli_mapping`, `executor`, command wiring, example config, and updated CLI help contracts until tests passed.
+- Commands run: `python -m pytest tests\integration\test_cli_run.py -q` -> 5 passed.
+- Commands run: `python -m pytest tests\integration\test_cli_run.py tests\test_cli_contract.py -q` -> 9 passed.
+- Commands run: `python -m pytest tests\integration\test_cli_run.py tests\integration\test_cli_wizard.py tests\test_cli_contract.py tests\unit\config tests\unit\workflow tests\unit\reports tests\unit\runtime tests\unit\tools -q` -> 140 passed.
+- Commands run: `python -m pytest -q` -> 229 passed.
+- Commands run: `python -m compileall -q codeagent` -> passed.
+- Commands run: `codeagent run --config examples\task.yaml` and `python -m codeagent run --config examples\task.yaml` -> both succeeded and generated ignored `codeagent_runs/examples/<run_id>/` directories.
+- Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
+- Reviews: M22 spec review final result PASS. M22 quality review final result APPROVED.
+- Developer report: `docs/dev_reports/M22_non_interactive_run_stage_subcommands.md`.
+- OpenRouter validation note: M22 intentionally does not consume tokens; controlled real LLM smoke remains required before final example/benchmark execution.
+- Next step: continue M23 BenchmarkRunner, CaseLoader, Evaluator, and Aggregator.
