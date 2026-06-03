@@ -343,7 +343,7 @@ Scope out for MVP:
 - Verification commands: `python -m pytest tests/integration/test_debugging_stage.py -q`.
 - Unit/integration tests to add: reproduction approved/rejected, static-log fallback, fault-localization schema, low-confidence reporting.
 - Risks and mitigations: speculative root cause; require tool evidence in structured output.
-- Status: pending.
+- Status: done.
 
 ### M20 RepairSubgraph and Multi-Round Repair Loop
 
@@ -818,3 +818,26 @@ Use this section as an append-only engineering log. Every completed small module
 - Reviews: M18 spec review final result PASS. M18 quality review final result APPROVED.
 - Developer report: `docs/dev_reports/M18_testing_subgraph.md`.
 - Next step: continue M19 DebuggingSubgraph.
+
+### 2026-06-03 M19 DebuggingSubgraph Start
+
+- Backup before doc update: `docs/_backups/20260603_090445/plans.md`.
+- Alignment review: rechecked M19 against SRS G-05, FR-49~FR-56, AC-10, UC-04, debugging-stage input/output rules, and design docs 03/04/07/09 for reproduction, static-log fallback, failure summary, fault localization, root cause, repair plan, debug trace, and debug report artifacts.
+- Planned implementation boundary: follow the deterministic service/subgraph pattern from M17/M18. The first pass will consume structured/debuggable inputs and local evidence; later LLM Debugger nodes can enrich root-cause reasoning through the same schemas.
+- Commands run: exact-path reads/searches of M19 milestone block, SRS debugging sections, design debugging subgraph, artifact layout, and current workflow/stage patterns.
+- Next step: add failing M19 integration tests for reproduction success, reproduction command rejection/static fallback, fault-localization schema, low-confidence reporting, and main-graph compatible state output.
+
+### 2026-06-03 M19 DebuggingSubgraph Complete
+
+- Backup before completion doc update: `docs/_backups/20260603_093507/plans.md`.
+- Behavior implemented: structured debugging request/schema, reproduction command HITL, approve/edit/reject/cancel handling, static-log fallback, pytest/unittest result parsing, failure summary, fault localization, root cause, repair plan, debug trace, debug report, stage result/artifact writing, main-graph handler, standalone subgraph, and SQLite resume interrupt coverage.
+- Safety implemented: debugging logs/test reports must resolve under project root or current run_dir; secret-like paths, sensitive suffixes, `Software Engineering Project.txt`, hidden benchmark paths, and hidden benchmark command arguments are denied before reading or execution.
+- Fixes during review: quality review found arbitrary external log ingestion and bare hidden benchmark command tokens; added red tests for both, then fixed path allow-root checks and command token checks.
+- Commands run: `python -m pytest tests\integration\test_debugging_stage.py -q` -> 12 passed.
+- Commands run: `python -m pytest tests\integration\test_debugging_stage.py tests\integration\test_testing_stage.py tests\integration\test_implementation_stage.py tests\integration\test_resume.py tests\unit\workflow tests\unit\tools tests\unit\reports -q` -> 122 passed.
+- Commands run: `python -m pytest -q` -> 197 passed.
+- Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
+- Reviews: M19 spec review final result PASS. M19 quality review final result APPROVED.
+- Developer report: `docs/dev_reports/M19_debugging_subgraph.md`.
+- OpenRouter validation note: current milestones have not consumed OpenRouter tokens because stage services are still deterministic/test-injected. Before final example and benchmark execution, run a controlled real LLM smoke using `OPENROUTER_API_KEY` without printing or persisting the secret value.
+- Next step: continue M20 RepairSubgraph and Multi-Round Repair Loop.

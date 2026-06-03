@@ -6,6 +6,12 @@ from codeagent.stages.implementation_service import (
     ImplementationRequest,
     ImplementationService,
 )
+from codeagent.stages.debugging_service import (
+    DebuggingRequest,
+    DebuggingService,
+    FaultCandidate,
+    FaultLocalization,
+)
 from codeagent.stages.testing_service import (
     TestFileChange,
     TestingPlan,
@@ -18,6 +24,10 @@ __all__ = [
     "ImplementationPlan",
     "ImplementationRequest",
     "ImplementationService",
+    "DebuggingRequest",
+    "DebuggingService",
+    "FaultCandidate",
+    "FaultLocalization",
     "TestFileChange",
     "TestingPlan",
     "TestingRequest",
