@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ from codeagent import filesystem as fs
 from codeagent.adapters.test_result import TestResult
 from codeagent.agents.plan_generation import PlanGenerationError, PlanGenerationService
 from codeagent.config.schema import Stage, TaskConfig
+from codeagent.context.redaction import redact_sensitive_text
 from codeagent.errors.exceptions import ErrorRecord, utc_timestamp
 from codeagent.reports import ArtifactKind, ArtifactRecord, ReportWriter, StageResult
 from codeagent.reports.schemas import HumanDecision
@@ -25,6 +25,7 @@ from codeagent.stages.debugging_service import (
 )
 from codeagent.stages.implementation_service import ImplementationService
 from codeagent.stages.repair_service import RepairService
+from codeagent.stages.testing_service import TestingService
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
@@ -32,6 +33,7 @@ from codeagent.workflow.checkpoint import CheckpointManager
 from codeagent.workflow.events import stream_workflow_events
 from codeagent.workflow.factory import WorkflowFactory
 from codeagent.workflow.main_graph import StageHandler
+from codeagent.workflow.progress_events import emit_progress
 from codeagent.workflow.state import AgentState, create_initial_state
 
 from codeagent.cli.progress import ProgressReporter
@@ -67,7 +69,11 @@ def execute_task_config(
         ).build(checkpointer=saver)
         thread_config = manager.get_thread_config()
         for event in stream_workflow_events(
-            graph.stream(initial, config=thread_config)
+            graph.stream(
+                initial,
+                config=thread_config,
+                stream_mode=["updates", "custom", "messages"],
+            )
         ):
             progress.render_event(event)
         final_state = dict(graph.get_state(config=thread_config).values)
@@ -87,7 +93,7 @@ def execute_task_config(
 def _stage_handlers_for_cli(context: RunContext) -> dict[str, StageHandler]:
     return {
         "implementation": _implementation_handler(context),
-        "testing": _testing_command_handler(context),
+        "testing": _testing_handler(context),
         "debugging": _debugging_handler(context),
         "repair": _repair_handler(context),
     }
@@ -99,6 +105,11 @@ def _implementation_handler(context: RunContext) -> StageHandler:
     def run(state: AgentState) -> dict[str, Any]:
         started_at = utc_timestamp()
         try:
+            emit_progress(
+                "phase_started",
+                stage="implementation",
+                message="正在读取公开需求和可见源码，准备生成实现计划",
+            )
             request = PlanGenerationService().create_implementation_request(context)
         except Exception as exc:
             result = _llm_generation_failed_result(
@@ -114,6 +125,11 @@ def _implementation_handler(context: RunContext) -> StageHandler:
             _writer(context).write_stage_report(result)
             return _state_update_from_result(state, result)
         try:
+            emit_progress(
+                "agent_status",
+                stage="implementation",
+                message="已获得实现计划，正在生成、校验并应用实现补丁",
+            )
             result = service.run(request)
         except Exception as exc:
             result = _stage_execution_failed_result(
@@ -124,6 +140,56 @@ def _implementation_handler(context: RunContext) -> StageHandler:
                 next_suggestion=(
                     "Inspect implementation artifacts, command logs, and patch "
                     "application state, then retry the stage after fixing the runtime issue."
+                ),
+            )
+            _writer(context).write_stage_report(result)
+        return _state_update_from_result(state, result)
+
+    return run
+
+
+def _testing_handler(context: RunContext) -> StageHandler:
+    service = TestingService(run_context=context)
+
+    def run(state: AgentState) -> dict[str, Any]:
+        started_at = utc_timestamp()
+        try:
+            emit_progress(
+                "phase_started",
+                stage="testing",
+                message="正在根据公开需求、实现产物和可见源码设计自测用例",
+            )
+            request = PlanGenerationService().create_testing_request(context)
+        except Exception as exc:
+            result = _llm_generation_failed_result(
+                stage="testing",
+                started_at=started_at,
+                exc=exc,
+                summary="Testing plan generation failed.",
+                next_suggestion=(
+                    "Inspect model configuration, visible inputs, and schema validation "
+                    "errors, then regenerate the testing plan."
+                ),
+            )
+            _writer(context).write_stage_report(result)
+            return _state_update_from_result(state, result)
+        try:
+            emit_progress(
+                "agent_status",
+                stage="testing",
+                message="测试方案已生成，正在写入测试补丁并执行 Agent 自测",
+            )
+            result = service.run(request)
+        except Exception as exc:
+            result = _stage_execution_failed_result(
+                stage="testing",
+                started_at=started_at,
+                exc=exc,
+                summary="Testing stage execution failed.",
+                next_suggestion=(
+                    "Inspect testing artifacts, generated tests, command logs, and "
+                    "test result parsing state, then retry the stage after fixing the "
+                    "runtime issue."
                 ),
             )
             _writer(context).write_stage_report(result)
@@ -195,7 +261,17 @@ def _debugging_handler(context: RunContext) -> StageHandler:
     service = DebuggingService(run_context=context)
 
     def run(state: AgentState) -> dict[str, Any]:
+        emit_progress(
+            "phase_started",
+            stage="debugging",
+            message="正在收集测试失败日志、测试报告和可见源码线索",
+        )
         request = _debugging_request_from_config(context, state)
+        emit_progress(
+            "agent_status",
+            stage="debugging",
+            message="正在分析失败现象并生成根因定位报告",
+        )
         result = service.run(request)
         return _state_update_from_result(state, result)
 
@@ -208,6 +284,11 @@ def _repair_handler(context: RunContext) -> StageHandler:
     def run(state: AgentState) -> dict[str, Any]:
         started_at = utc_timestamp()
         try:
+            emit_progress(
+                "phase_started",
+                stage="repair",
+                message="正在读取调试证据和失败日志，准备生成修复计划",
+            )
             request = PlanGenerationService().create_repair_request(context)
         except Exception as exc:
             result = _llm_generation_failed_result(
@@ -223,6 +304,11 @@ def _repair_handler(context: RunContext) -> StageHandler:
             _writer(context).write_stage_report(result)
             return _state_update_from_result(state, result)
         try:
+            emit_progress(
+                "agent_status",
+                stage="repair",
+                message="已获得修复计划，正在生成、校验并验证修复补丁",
+            )
             result = service.run(request)
         except Exception as exc:
             result = _stage_execution_failed_result(
@@ -313,9 +399,10 @@ def _testing_report_path(context: RunContext, state: AgentState) -> Path | None:
     if explicit:
         return explicit[0]
     if "testing" in state.get("stage_results", {}):
-        path = context.stage_dirs[Stage.TEST] / "test_report.json"
-        if fs.exists(path):
-            return path
+        for filename in ("test_result.json", "test_report.json", "test_report.md"):
+            path = context.stage_dirs[Stage.TEST] / filename
+            if fs.exists(path):
+                return path
     return None
 
 
@@ -381,6 +468,28 @@ def _testing_result_from_parsed(
                     summary,
                 )
             )
+    if _is_no_tests_result(parsed):
+        return StageResult(
+            stage="testing",
+            status="failed",
+            started_at=started_at,
+            ended_at=utc_timestamp(),
+            summary="Testing command completed but no tests were collected.",
+            artifact_ids=artifacts,
+            error=ErrorRecord(
+                error_id="testing_no_tests_collected",
+                stage="testing",
+                node="testing",
+                category="validation",
+                message=(
+                    "The testing stage must execute generated tests; a zero-test "
+                    "result is not accepted as a successful verification."
+                ),
+                artifact_ids=artifacts,
+                retryable=True,
+            ),
+            next_suggestion="Generate visible pytest/unittest tests and run them.",
+        )
     if parsed.success:
         return StageResult(
             stage="testing",
@@ -437,6 +546,18 @@ def _test_summary(parsed: TestResult) -> str:
     return (
         f"{parsed.passed} passed, {parsed.failed} failed, "
         f"{parsed.errors} errors, {parsed.skipped} skipped"
+    )
+
+
+def _is_no_tests_result(parsed: TestResult) -> bool:
+    if parsed.total > 0:
+        return False
+    text = f"{parsed.raw_summary}\n{parsed.error_summary}".lower()
+    return (
+        parsed.success
+        or "ran 0 tests" in text
+        or "no tests ran" in text
+        or "collected 0 items" in text
     )
 
 
@@ -505,7 +626,7 @@ def _stage_execution_failed_result(
 
 def _redact_exception(exc: Exception) -> str:
     text = f"{type(exc).__name__}: {exc}"
-    return re.sub(r"sk(?:-or)?-[A-Za-z0-9_-]+", "<redacted>", text)
+    return redact_sensitive_text(text)
 
 
 def _state_update_from_result(state: AgentState, result: StageResult) -> dict[str, Any]:

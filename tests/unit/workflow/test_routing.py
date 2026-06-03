@@ -144,6 +144,37 @@ def test_stream_workflow_events_normalizes_langgraph_updates() -> None:
     assert events[-1] == {"type": "final_status", "status": "succeeded"}
 
 
+def test_stream_workflow_events_normalizes_multi_mode_stream_chunks() -> None:
+    raw_events = [
+        ("custom", {"type": "agent_status", "stage": "testing", "message": "生成测试"}),
+        ("messages", ("token", {"langgraph_node": "testing"})),
+        (
+            "updates",
+            {
+                "testing": {
+                    "current_node": "testing",
+                    "stage_results": {
+                        "testing": _stage_result("testing", "succeeded")
+                    },
+                }
+            },
+        ),
+    ]
+
+    events = list(stream_workflow_events(raw_events))
+
+    assert events[0] == {
+        "type": "agent_status",
+        "stage": "testing",
+        "message": "生成测试",
+    }
+    assert {"type": "agent_status", "message": "模型正在生成结构化输出"} in events
+    assert any(
+        event["type"] == "stage_result" and event["stage"] == "testing"
+        for event in events
+    )
+
+
 def test_stream_workflow_events_preserves_retry_stage_results() -> None:
     initial = _state(["debug", "repair"])
     initial["max_repair_attempts"] = 2

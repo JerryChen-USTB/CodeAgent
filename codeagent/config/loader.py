@@ -49,22 +49,22 @@ def load_benchmark_config(
     for case in config.cases:
         case.config = _resolve_path(base_dir, case.config)
         if validate_case_configs and not case.config.exists():
-            raise ConfigLoadError(f"benchmark case config does not exist: {case.config}")
+            raise ConfigLoadError(f"benchmark case 配置不存在：{case.config}")
     return config
 
 
 def _read_mapping(path: Path) -> dict[str, Any]:
     if not path.exists():
-        raise ConfigLoadError(f"config file does not exist: {path}")
+        raise ConfigLoadError(f"配置文件不存在：{path}")
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() in {".yaml", ".yml"}:
         data = yaml.safe_load(text)
     elif path.suffix.lower() == ".json":
         data = json.loads(text)
     else:
-        raise ConfigLoadError(f"unsupported config file extension: {path.suffix}")
+        raise ConfigLoadError(f"不支持的配置文件扩展名：{path.suffix}")
     if not isinstance(data, dict):
-        raise ConfigLoadError(f"config file must contain a mapping: {path}")
+        raise ConfigLoadError(f"配置文件必须包含映射对象：{path}")
     return data
 
 
@@ -84,16 +84,12 @@ def _resolve_task_paths(config: TaskConfig, base_dir: Path) -> None:
 
 def _validate_task_paths(config: TaskConfig) -> None:
     if not config.project_path.exists():
-        raise ConfigLoadError(f"project_path does not exist: {config.project_path}")
+        raise ConfigLoadError(f"project_path 不存在：{config.project_path}")
     if not config.project_path.is_dir():
-        raise ConfigLoadError(
-            f"project_path must be a directory: {config.project_path}"
-        )
+        raise ConfigLoadError(f"project_path 必须是目录：{config.project_path}")
     for material in config.input_materials:
         if material.required and not material.path.exists():
-            raise ConfigLoadError(
-                f"required input material does not exist: {material.path}"
-            )
+            raise ConfigLoadError(f"必需输入材料不存在：{material.path}")
 
 
 def _resolve_path(base_dir: Path, path: Path) -> Path:

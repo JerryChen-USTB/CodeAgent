@@ -143,6 +143,46 @@ def test_testing_service_success_applies_tests_runs_command_and_writes_report(tm
     assert artifact_store.find("testing_test_report") is not None
 
 
+def test_testing_service_rejects_zero_collected_tests(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    service, run_context = _service(tmp_path, project_root)
+    plan = TestingPlan(
+        target_summary="Ensure the test stage rejects empty discovery.",
+        strategy="Create a helper file that unittest will not collect.",
+        acceptance_criteria=["A zero-test run is reported as failed."],
+        changes=[
+            TestFileChange(
+                path="tests/__init__.py",
+                old_content=None,
+                new_content="",
+                rationale="Make the unittest discovery directory importable.",
+            ),
+            TestFileChange(
+                path="tests/helper.py",
+                old_content=None,
+                new_content="VALUE = 1\n",
+                rationale="This file is intentionally not a unittest test module.",
+            )
+        ],
+        command="python -m unittest discover -s tests",
+        framework="unittest",
+    )
+
+    result = service.run(_request(plan))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.category == "validation"
+    assert "no tests were collected" in result.summary
+    test_result = json.loads(
+        (run_context.run_dir / "testing" / "test_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert test_result["total"] == 0
+
+
 def test_testing_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
     project_root = tmp_path / "project"
     _write_project(project_root)

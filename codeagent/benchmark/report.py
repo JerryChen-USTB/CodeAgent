@@ -33,10 +33,10 @@ def _render_markdown(result: BenchmarkResult) -> str:
         f"- Success rate: {result.success_rate:.2f}",
         "",
         (
-            "| case_id | success | final_status | oracle_success | source_unchanged | score | "
-            "run_dir | failure_reason |"
+            "| case_id | success | final_status | agent_self_test | agent_test_total | "
+            "oracle_success | source_unchanged | score | run_dir | failure_reason |"
         ),
-        "|---|---|---|---|---|---:|---|---|",
+        "|---|---|---|---|---:|---|---|---:|---|---|",
     ]
     for case in result.cases:
         lines.append(
@@ -44,6 +44,8 @@ def _render_markdown(result: BenchmarkResult) -> str:
             f"{_cell(case.case_id)} | "
             f"{case.success} | "
             f"{_cell(case.final_status)} | "
+            f"{case.agent_test_success if case.agent_test_success is not None else '-'} | "
+            f"{case.agent_test_total if case.agent_test_total is not None else '-'} | "
             f"{case.oracle_success if case.oracle_success is not None else '-'} | "
             f"{case.source_unchanged if case.source_unchanged is not None else '-'} | "
             f"{case.score:.2f} | "

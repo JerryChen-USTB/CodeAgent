@@ -106,7 +106,7 @@ agent_visibility:
 
 @pytest.mark.parametrize(
     ("stage_value", "expected"),
-    [("null", "At least one stage"), ("implement", "stages must be a list")],
+    [("null", "至少需要选择一个阶段"), ("implement", "stages 必须是阶段列表")],
 )
 def test_malformed_stage_config_is_rejected_cleanly(
     tmp_path, stage_value: str, expected: str
@@ -142,7 +142,7 @@ input_materials:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="required input material"):
+    with pytest.raises(ValueError, match="必需输入材料不存在"):
         load_task_config(config_path)
 
 

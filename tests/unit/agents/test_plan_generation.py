@@ -14,6 +14,11 @@ from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
     REPAIR_PATCH_INTERRUPT_ID,
 )
+from codeagent.stages.testing_service import (
+    TEST_COMMAND_INTERRUPT_ID,
+    TEST_PATCH_INTERRUPT_ID,
+    TEST_PLAN_INTERRUPT_ID,
+)
 
 
 class _Response:
@@ -41,8 +46,18 @@ class _SequenceModel:
         return _Response(self.responses.pop(0))
 
 
+class _FailingModel:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.prompts: list[str] = []
+
+    def invoke(self, prompt: str) -> _Response:
+        self.prompts.append(prompt)
+        raise RuntimeError(self.message)
+
+
 class _FakeFactory:
-    def __init__(self, model: _FakeModel) -> None:
+    def __init__(self, model) -> None:
         self.model = model
 
     def create(self, _config):
@@ -128,7 +143,97 @@ def test_plan_generation_builds_implementation_request_without_hidden_context(tm
     assert request.plan.changes[0].path.as_posix() == "solution.py"
     assert request.approval.interrupt_id == PATCH_INTERRUPT_ID
     assert request.approval.decision_type == "approve"
-    assert request.approval.auto is True
+
+
+def test_plan_generation_builds_testing_request_without_hidden_context(tmp_path) -> None:
+    case_dir = tmp_path / "case"
+    input_dir = case_dir / "input"
+    input_dir.mkdir(parents=True)
+    requirements = input_dir / "requirements.md"
+    requirements.write_text("Implement add(left, right).\n", encoding="utf-8")
+    hidden_dir = case_dir / "oracle_tests"
+    hidden_dir.mkdir()
+    (hidden_dir / "test_secret.py").write_text("SECRET_ORACLE = True\n", encoding="utf-8")
+    context = _context(
+        tmp_path,
+        stages=[Stage.TEST],
+        input_materials=[
+            InputMaterial(
+                material_type="requirements",
+                path=requirements,
+                required=True,
+            )
+        ],
+        hidden_paths=[hidden_dir],
+    )
+    (context.task_config.project_path / "solution.py").write_text(
+        "def add(left, right):\n    return left + right\n",
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "target_summary": "Verify add helper.",
+            "strategy": "Generate visible tests for normal arithmetic behavior.",
+            "acceptance_criteria": ["add(2, 3) returns 5"],
+            "changes": [
+                {
+                    "path": "tests/test_solution.py",
+                    "old_content": None,
+                    "new_content": (
+                        "from solution import add\n\n"
+                        "def test_add_visible():\n"
+                        "    assert add(2, 3) == 5\n"
+                    ),
+                    "rationale": "Exercise the visible public requirement.",
+                }
+            ],
+            "command": "python -m pytest tests -q",
+            "framework": "pytest",
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_request(
+        context
+    )
+
+    prompt = model.prompts[0]
+    assert "Implement add(left, right)." in prompt
+    assert "solution.py" in prompt
+    assert "SECRET_ORACLE" not in prompt
+    assert "test_secret.py" not in prompt
+    assert request.plan.changes[0].path.as_posix() == "tests/test_solution.py"
+    assert request.plan_review.interrupt_id == TEST_PLAN_INTERRUPT_ID
+    assert request.patch_approval.interrupt_id == TEST_PATCH_INTERRUPT_ID
+    assert request.command_approval.interrupt_id == TEST_COMMAND_INTERRUPT_ID
+    assert request.plan_review.auto is True
+
+
+def test_plan_generation_normalizes_testing_command_wrapper_prefix(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    model = _FakeModel(
+        {
+            "target_summary": "Verify generated package.",
+            "strategy": "Run generated tests from the project root.",
+            "acceptance_criteria": ["Generated tests are collected."],
+            "changes": [
+                {
+                    "path": "project/tests/test_generated.py",
+                    "old_content": None,
+                    "new_content": "def test_generated():\n    assert True\n",
+                    "rationale": "Exercise visible behavior.",
+                }
+            ],
+            "command": "cd project && python -m pytest project/tests/test_generated.py -v",
+            "framework": "pytest",
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_request(
+        context
+    )
+
+    assert request.plan.changes[0].path.as_posix() == "tests/test_generated.py"
+    assert request.plan.command == "python -m pytest tests/test_generated.py -v"
 
 
 def test_plan_generation_keeps_visible_context_inside_generated_run_roots(
@@ -500,6 +605,73 @@ def test_plan_generation_repair_prompt_discovers_shortened_shell_logs(tmp_path) 
     assert "RecursionError: maximum recursion depth exceeded" in model.prompts[0]
 
 
+def test_plan_generation_repair_uses_latest_agent_self_test_command(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR])
+    (context.task_config.project_path / "calc.py").write_text(
+        "def add(left, right):\n    return left - right\n",
+        encoding="utf-8",
+    )
+    testing_dir = context.stage_dirs[Stage.TEST]
+    testing_dir.mkdir(parents=True, exist_ok=True)
+    (testing_dir / "test_command.json").write_text(
+        json.dumps(
+            {
+                "command": "python -m pytest tests/test_generated_calc.py -q",
+                "executed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (testing_dir / "test_result.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "passed": 0,
+                "failed": 1,
+                "errors": 0,
+                "skipped": 0,
+                "total": 1,
+                "error_summary": "assert -1 == 3",
+            }
+        ),
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "root_cause": "add subtracts instead of adding.",
+            "strategy": "Replace subtraction with addition.",
+            "changes": [
+                {
+                    "path": "workspace/calc.py",
+                    "old_content": "def add(left, right):\n    return left - right\n",
+                    "new_content": "def add(left, right):\n    return left + right\n",
+                    "rationale": "Match generated self-test expectation.",
+                }
+            ],
+            "verification_command": (
+                "cd workspace && python -m pytest "
+                "workspace/tests/test_generated_calc.py -q"
+            ),
+            "framework": "pytest",
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_repair_request(
+        context
+    )
+
+    prompt = model.prompts[0]
+    assert "python -m pytest tests/test_generated_calc.py -q" in prompt
+    assert "assert -1 == 3" in prompt
+    assert request.plan.changes[0].path.as_posix() == "calc.py"
+    assert (
+        request.plan.verification_command
+        == "python -m pytest tests/test_generated_calc.py -q"
+    )
+
+
 def test_plan_generation_writes_redacted_attempt_audit_for_malformed_responses(
     tmp_path,
 ) -> None:
@@ -528,6 +700,33 @@ def test_plan_generation_writes_redacted_attempt_audit_for_malformed_responses(
     assert "sk-or-should-not-leak" not in audit_text
     assert "<redacted>" in audit_text
     assert "prompt_sha256" in audit
+
+
+def test_plan_generation_redacts_provider_account_links_from_model_errors(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    model = _FailingModel(
+        "Error code: 402. Visit "
+        "https://openrouter.ai/workspaces/default/keys/deadbeefcafebabe "
+        "for user_3AcDhKqoZ79KPBpEz1UYGiuadXx with sk-or-should-not-leak"
+    )
+
+    with pytest.raises(PlanGenerationError) as exc_info:
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+            context
+        )
+
+    audit_text = (
+        context.stage_dirs[Stage.IMPLEMENT] / "plan_generation_attempts.json"
+    ).read_text(encoding="utf-8")
+    combined = f"{exc_info.value}\n{audit_text}"
+    assert "deadbeefcafebabe" not in combined
+    assert "user_3AcDhKqoZ79KPBpEz1UYGiuadXx" not in combined
+    assert "sk-or-should-not-leak" not in combined
+    assert "https://openrouter.ai/workspaces/<redacted>" in combined
+    assert "user_<redacted>" in combined
+    assert "<redacted>" in combined
 
 
 def test_plan_generation_writes_attempt_audit_under_long_windows_paths(

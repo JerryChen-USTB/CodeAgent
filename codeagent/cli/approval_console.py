@@ -17,17 +17,23 @@ _DECISION_ALIASES: dict[str, DecisionType] = {
     "a": "approve",
     "approve": "approve",
     "approved": "approve",
+    "批准": "approve",
+    "同意": "approve",
     "e": "edit",
     "edit": "edit",
+    "修改": "edit",
     "r": "reject",
     "reject": "reject",
     "rejected": "reject",
+    "拒绝": "reject",
     "respond": "respond",
     "response": "respond",
+    "回复": "respond",
     "c": "cancel",
     "cancel": "cancel",
     "cancelled": "cancel",
     "canceled": "cancel",
+    "取消": "cancel",
 }
 
 
@@ -43,8 +49,8 @@ def parse_approval_decision(
     if decision_type not in request.allowed_decisions:
         allowed = ", ".join(request.allowed_decisions)
         raise ApprovalInputError(
-            f"Decision {decision_type!r} is not allowed for {request.action}; "
-            f"allowed: {allowed}"
+            f"决策 {decision_type!r} 不适用于 {request.action}；"
+            f"允许值：{allowed}"
         )
 
     edited_payload = None
@@ -70,7 +76,7 @@ class ApprovalConsole:
         raw = self.input_func(f"{request.title} [{allowed}]: ")
         edited_payload_text = None
         if _normalize_decision(raw) == "edit":
-            edited_payload_text = self.input_func("Edited payload JSON: ")
+            edited_payload_text = self.input_func("修改后的 JSON 内容: ")
         return parse_approval_decision(
             raw,
             request=request,
@@ -82,7 +88,7 @@ def _normalize_decision(raw: str) -> DecisionType:
     normalized = raw.strip().lower()
     decision_type = _DECISION_ALIASES.get(normalized)
     if decision_type is None:
-        raise ApprovalInputError(f"Unknown approval decision: {raw!r}")
+        raise ApprovalInputError(f"未知审批决策：{raw!r}")
     return decision_type
 
 
@@ -92,7 +98,7 @@ def _parse_edited_payload(edited_payload_text: str | None) -> dict:
     try:
         payload = json.loads(edited_payload_text)
     except json.JSONDecodeError as exc:
-        raise ApprovalInputError(f"Edited payload must be valid JSON: {exc.msg}") from exc
+        raise ApprovalInputError(f"修改内容必须是合法 JSON：{exc.msg}") from exc
     if not isinstance(payload, dict):
-        raise ApprovalInputError("Edited payload must be a JSON object.")
+        raise ApprovalInputError("修改内容必须是 JSON 对象。")
     return payload

@@ -9,8 +9,30 @@ from typing import Any
 def stream_workflow_events(raw_events: Iterable[Any]) -> Iterator[dict[str, Any]]:
     seen_route_events = 0
     final_status: str | None = None
+    emitted_message_status = False
 
     for raw_event in raw_events:
+        if isinstance(raw_event, tuple):
+            mode, payload = _split_stream_tuple(raw_event)
+            if mode == "custom":
+                if isinstance(payload, dict):
+                    yield dict(payload)
+                else:
+                    yield {"type": "agent_status", "message": str(payload)}
+                continue
+            if mode == "messages":
+                if not emitted_message_status:
+                    emitted_message_status = True
+                    yield {
+                        "type": "agent_status",
+                        "message": "模型正在生成结构化输出",
+                    }
+                continue
+            if mode in {"updates", "values"}:
+                raw_event = payload
+            else:
+                yield {"type": "raw_event", "stream_mode": mode, "payload": payload}
+                continue
         if not isinstance(raw_event, dict):
             yield {"type": "raw_event", "payload": raw_event}
             continue
@@ -60,3 +82,11 @@ def _completed_stage(
     if node in stage_results:
         return node
     return None
+
+
+def _split_stream_tuple(raw_event: tuple[Any, ...]) -> tuple[str, Any]:
+    if len(raw_event) == 2 and isinstance(raw_event[0], str):
+        return raw_event[0], raw_event[1]
+    if len(raw_event) == 3 and isinstance(raw_event[1], str):
+        return raw_event[1], raw_event[2]
+    return "unknown", raw_event

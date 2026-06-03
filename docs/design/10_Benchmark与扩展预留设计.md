@@ -319,3 +319,4 @@ Java 后续扩展需要补充：
 | 日期 | 变更 | 原因 | 影响 |
 |---|---|---|---|
 | 2026-06-03 | 补充原始 case 复用规则，并在 Benchmark 运行架构中增加复制干净 run workspace 步骤。 | 防止 benchmark 运行污染原始案例，保证重复评测可靠。 | 不改变课程验收范围；BenchmarkRunner 必须先复制 case 再执行 Agent 和评测。 |
+| 2026-06-03 | Benchmark 结果增加 Agent 可见自测字段，并提供 `benchmark/selfbuilt/meeting_room_demo_benchmark.yaml` 单 case 演示配置。 | 避免 `0 tests` 被误判成功，降低课程现场演示的真实 LLM 时间和 token 成本。 | 成功条件同时要求 Agent 自测非零通过和 runner-only oracle 未失败；完整 self-built 套件仍保留用于最终验收。 |

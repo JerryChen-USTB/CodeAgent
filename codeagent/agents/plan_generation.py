@@ -19,6 +19,7 @@ from codeagent.context.sensitive_filter import (
     SENSITIVE_NAME_PARTS,
     SENSITIVE_SUFFIXES,
 )
+from codeagent.context.redaction import redact_sensitive_text
 from codeagent.models.factory import ModelClientFactory
 from codeagent.runtime.run_context import RunContext
 from codeagent.stages.implementation_service import (
@@ -32,7 +33,15 @@ from codeagent.stages.repair_service import (
     RepairPlan,
     RepairRequest,
 )
+from codeagent.stages.testing_service import (
+    TEST_COMMAND_INTERRUPT_ID,
+    TEST_PATCH_INTERRUPT_ID,
+    TEST_PLAN_INTERRUPT_ID,
+    TestingPlan,
+    TestingRequest,
+)
 from codeagent.tools.hitl import ApprovalDecision
+from codeagent.workflow.progress_events import emit_progress
 
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -89,6 +98,30 @@ class PlanGenerationService:
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
         )
 
+    def create_testing_request(self, context: RunContext) -> TestingRequest:
+        prompt = self._testing_prompt(context)
+        plan = self._invoke_schema(context, prompt, TestingPlan)
+        return TestingRequest(
+            plan=plan,
+            plan_review=_approval(
+                context,
+                interrupt_id=TEST_PLAN_INTERRUPT_ID,
+                comment="Auto-approved generated testing plan.",
+            ),
+            patch_approval=_approval(
+                context,
+                interrupt_id=TEST_PATCH_INTERRUPT_ID,
+                comment="Auto-approved generated testing patch.",
+            ),
+            command_approval=_approval(
+                context,
+                interrupt_id=TEST_COMMAND_INTERRUPT_ID,
+                comment="Auto-approved generated testing command.",
+            ),
+            max_patch_attempts=max(1, context.task_config.model.max_retries + 1),
+            command_timeout_seconds=context.task_config.test_command.timeout_seconds,
+        )
+
     def _implementation_prompt(self, context: RunContext) -> str:
         return "\n\n".join(
             [
@@ -111,6 +144,17 @@ class PlanGenerationService:
         )
 
     def _repair_prompt(self, context: RunContext) -> str:
+        latest_testing_command = _latest_testing_command(context)
+        command_guidance = (
+            "Use the latest Agent self-test command from testing/test_command.json "
+            f"when repairing a failed self-test: {latest_testing_command!r}. "
+            "Do not switch to hidden oracle paths or py_compile-only smoke checks."
+            if latest_testing_command
+            else (
+                "Set verification_command to the configured command unless a safer "
+                f"equivalent is required: {context.task_config.test_command.command!r}."
+            )
+        )
         return "\n\n".join(
             [
                 _system_rules("repair", "RepairPlan"),
@@ -124,9 +168,35 @@ class PlanGenerationService:
                 (
                     "Return only JSON. Produce a complete, scope-controlled "
                     "source-code repair with enough context for audit. Do not modify "
-                    "tests. Set verification_command to the configured command unless "
-                    f"a safer equivalent is required: "
-                    f"{context.task_config.test_command.command!r}."
+                    f"tests. {command_guidance}"
+                ),
+            ]
+        )
+
+    def _testing_prompt(self, context: RunContext) -> str:
+        configured_command = context.task_config.test_command.command
+        return "\n\n".join(
+            [
+                _system_rules("testing", "TestingPlan"),
+                _schema_block(TestingPlan),
+                "Task inputs, implementation artifacts, and visible project files:",
+                _visible_context(
+                    context,
+                    include_failure_logs=False,
+                    max_context_chars=self.max_context_chars,
+                ),
+                (
+                    "Return only JSON. Generate meaningful visible tests that the "
+                    "project test framework can discover. Test patches must target "
+                    "tests/ or test_*.py paths only. The command must run the generated "
+                    "tests and must not reference hidden benchmark directories such as "
+                    "oracle_tests, evaluation, or expected_result.json. Do not use "
+                    "py_compile as the testing command; py_compile is only a syntax "
+                    "smoke check and does not count as product testing. The command "
+                    "will already run from the configured project root, so do not use "
+                    "`cd project &&`, `cd workspace &&`, or prefix paths with "
+                    "`project/` or `workspace/`. Prefer the "
+                    f"configured public test command when it is safe: {configured_command!r}."
                 ),
             ]
         )
@@ -149,6 +219,11 @@ class PlanGenerationService:
                     f"Attempt {attempt}/{attempts}. Error: {_redact(str(last_error))}"
                 )
             try:
+                emit_progress(
+                    "agent_status",
+                    stage=_stage_name_for_schema(schema),
+                    message=f"正在调用 LLM 生成 {schema.__name__}（第 {attempt}/{attempts} 次）",
+                )
                 response = model.invoke(retry_prompt)
             except Exception as exc:
                 last_error = exc
@@ -173,6 +248,11 @@ class PlanGenerationService:
                     response_text=response_text,
                 )
                 _write_attempt_audit(context, schema, audit)
+                emit_progress(
+                    "agent_status",
+                    stage=_stage_name_for_schema(schema),
+                    message=f"LLM 已生成有效的 {schema.__name__}",
+                )
                 return value
             except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
                 last_error = exc
@@ -225,7 +305,28 @@ def _normalize_generated_plan(plan: SchemaT, project_root: Path) -> SchemaT:
             )
             for change in plan.changes
         ]
-        return plan.model_copy(update={"changes": changes})  # type: ignore[return-value]
+        return plan.model_copy(
+            update={
+                "changes": changes,
+                "verification_command": _normalize_testing_command(
+                    plan.verification_command,
+                    project_root,
+                ),
+            }
+        )  # type: ignore[return-value]
+    if isinstance(plan, TestingPlan):
+        changes = [
+            change.model_copy(
+                update={"path": _project_relative_path(change.path, project_root)}
+            )
+            for change in plan.changes
+        ]
+        return plan.model_copy(
+            update={
+                "changes": changes,
+                "command": _normalize_testing_command(plan.command, project_root),
+            }
+        )  # type: ignore[return-value]
     return plan
 
 
@@ -260,6 +361,9 @@ def _validate_generated_plan_targets(plan: BaseModel, context: RunContext) -> No
             errors.append(
                 f"generated plan targets sensitive or generated path: {normalized}"
             )
+            continue
+        if isinstance(plan, TestingPlan) and not _is_allowed_test_target(normalized):
+            errors.append(f"testing plan target is not a test path: {normalized}")
     if errors:
         raise ValueError("; ".join(errors))
 
@@ -268,6 +372,8 @@ def _generated_plan_target_paths(plan: BaseModel) -> list[Path]:
     if isinstance(plan, ImplementationPlan):
         return [change.path for change in plan.changes] + list(plan.syntax_check_targets)
     if isinstance(plan, RepairPlan):
+        return [change.path for change in plan.changes]
+    if isinstance(plan, TestingPlan):
         return [change.path for change in plan.changes]
     return []
 
@@ -292,6 +398,42 @@ def _is_hidden_benchmark_target(path: str) -> bool:
         or "oracle_tests" in parts
         or any(part == "expected_result.json" for part in parts)
     )
+
+
+def _is_allowed_test_target(path: str) -> bool:
+    posix_path = PurePosixPath(path.replace("\\", "/"))
+    return "tests" in posix_path.parts or posix_path.name.startswith("test_")
+
+
+def _normalize_testing_command(command: str, project_root: Path) -> str:
+    normalized = command.strip()
+    prefixes = _wrapper_prefixes(project_root)
+    for prefix in prefixes:
+        escaped = re.escape(prefix)
+        normalized = re.sub(
+            rf"^\s*cd\s+['\"]?{escaped}['\"]?\s*(?:&&|;)\s*",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    for prefix in prefixes:
+        if fs.exists(project_root / prefix):
+            continue
+        escaped = re.escape(prefix)
+        normalized = re.sub(
+            rf"(?<![A-Za-z0-9_.-]){escaped}[\\/]",
+            "",
+            normalized,
+        )
+    return normalized.strip()
+
+
+def _wrapper_prefixes(project_root: Path) -> set[str]:
+    return {
+        "project",
+        "workspace",
+        project_root.resolve().name,
+    }
 
 
 def _project_relative_path(raw_path: Path, project_root: Path) -> Path:
@@ -389,6 +531,17 @@ def _visible_context(
             return "\n\n".join(sections)
 
     if include_failure_logs:
+        for artifact_path in _stage_evidence_paths(context):
+            budget = _append_file_section(
+                sections,
+                label=f"stage_artifact/{artifact_path.name}",
+                path=artifact_path,
+                budget=budget,
+            )
+            if budget <= 0:
+                break
+        if budget <= 0:
+            return "\n\n".join(sections)
         for log_path in _failure_log_paths(context):
             budget = _append_file_section(
                 sections,
@@ -462,6 +615,35 @@ def _failure_log_paths(context: RunContext) -> list[Path]:
     return paths
 
 
+def _stage_evidence_paths(context: RunContext) -> list[Path]:
+    candidates = [
+        context.stage_dirs[Stage.TEST] / "test_command.json",
+        context.stage_dirs[Stage.TEST] / "test_result.json",
+        context.stage_dirs[Stage.TEST] / "test_report.json",
+        context.stage_dirs[Stage.TEST] / "test_report.md",
+        context.stage_dirs[Stage.TEST] / "stage_result.json",
+        context.stage_dirs[Stage.DEBUG] / "failure_summary.md",
+        context.stage_dirs[Stage.DEBUG] / "root_cause.md",
+        context.stage_dirs[Stage.DEBUG] / "repair_plan.md",
+        context.stage_dirs[Stage.DEBUG] / "debug_report.md",
+    ]
+    return [path for path in candidates if fs.exists(path) and fs.is_file(path)]
+
+
+def _latest_testing_command(context: RunContext) -> str | None:
+    command_path = context.stage_dirs[Stage.TEST] / "test_command.json"
+    if not fs.exists(command_path):
+        return None
+    try:
+        data = json.loads(fs.read_text(command_path))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    command = data.get("command")
+    return str(command).strip() if command else None
+
+
 def _new_attempt_audit(
     *,
     prompt: str,
@@ -503,7 +685,12 @@ def _write_attempt_audit(
     schema: type[BaseModel],
     audit: dict[str, Any],
 ) -> None:
-    stage = Stage.REPAIR if issubclass(schema, RepairPlan) else Stage.IMPLEMENT
+    if issubclass(schema, RepairPlan):
+        stage = Stage.REPAIR
+    elif issubclass(schema, TestingPlan):
+        stage = Stage.TEST
+    else:
+        stage = Stage.IMPLEMENT
     stage_dir = context.stage_dirs[stage]
     _mkdir(stage_dir)
     _write_text(
@@ -555,6 +742,14 @@ def _approval(context: RunContext, *, interrupt_id: str, comment: str) -> Approv
     )
 
 
+def _stage_name_for_schema(schema: type[BaseModel]) -> str:
+    if issubclass(schema, TestingPlan):
+        return "testing"
+    if issubclass(schema, RepairPlan):
+        return "repair"
+    return "implementation"
+
+
 def _response_text(response: Any) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
@@ -576,20 +771,7 @@ def _extract_json(text: str) -> str:
 
 
 def _redact(text: str) -> str:
-    redacted = re.sub(r"sk(?:-or)?-[A-Za-z0-9_-]+", "<redacted>", text)
-    redacted = re.sub(
-        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+",
-        "Bearer <redacted>",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)\b(api[_-]?key|authorization|token|secret|password)"
-        r"(\s*[:=]\s*)"
-        r"([^\s,;]+)",
-        r"\1\2<redacted>",
-        redacted,
-    )
-    return redacted
+    return redact_sensitive_text(text)
 
 
 def _truncate(text: str, *, limit: int) -> str:

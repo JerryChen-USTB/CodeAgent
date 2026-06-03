@@ -9,9 +9,9 @@ from codeagent import __version__
 
 console = Console()
 
-ROOT_HELP = """CLI-based LangGraph and LangChain software-engineering agent.
+ROOT_HELP = """基于 LangGraph 和 LangChain 的本地软件工程智能体。
 
-Examples:
+示例:
 
   codeagent wizard
   codeagent run --config task.yaml
@@ -25,6 +25,7 @@ app = typer.Typer(
     help=ROOT_HELP,
     no_args_is_help=True,
     invoke_without_command=True,
+    add_completion=False,
 )
 
 
@@ -33,10 +34,10 @@ def root(
     version: bool = typer.Option(
         False,
         "--version",
-        help="Show CodeAgent version and exit.",
+        help="显示 CodeAgent 版本并退出。",
     ),
 ) -> None:
-    """Run CodeAgent commands."""
+    """运行 CodeAgent 命令。"""
     if version:
         console.print(f"codeagent {__version__}")
         raise typer.Exit()
@@ -44,7 +45,7 @@ def root(
 
 @app.command()
 def wizard() -> None:
-    """Launch the guided task setup flow."""
+    """启动中文任务表单并在确认后直接运行 Agent。"""
     from codeagent.cli.wizard import wizard_command
 
     wizard_command()
@@ -56,33 +57,33 @@ def run(
         None,
         "--config",
         "-c",
-        help="Path to a YAML or JSON task configuration file.",
+        help="YAML 或 JSON 任务配置文件路径。",
     ),
     project: str | None = typer.Option(
         None,
         "--project",
         "-p",
-        help="Project directory to operate on when no config file is supplied.",
+        help="未提供配置文件时要操作的项目目录。",
     ),
     stages: str | None = typer.Option(
         None,
         "--stages",
-        help="Comma-separated stage list, for example implement,test,debug,repair.",
+        help="用逗号分隔的阶段列表，例如 implement,test,debug,repair。",
     ),
     output_dir: str | None = typer.Option(
         None,
         "--output-dir",
-        help="Directory under which a unique run directory will be created.",
+        help="用于创建唯一运行目录的输出根目录。",
     ),
     test_cmd: str | None = typer.Option(
         None,
         "--test-cmd",
-        help="Test command used by testing/debugging/repair stages.",
+        help="testing/debugging/repair 阶段使用的测试命令。",
     ),
 ) -> None:
-    """Run a task from config or CLI options.
+    """从配置文件或 CLI 参数运行任务。
 
-    Example: codeagent run --config task.yaml
+    示例: codeagent run --config task.yaml
     """
     from codeagent.config.cli_mapping import task_config_from_run_options
 
@@ -104,23 +105,23 @@ def implement(
         ...,
         "--project",
         "-p",
-        help="Project directory to implement changes in.",
+        help="要写入实现变更的项目目录。",
     ),
     requirements: str = typer.Option(
         ...,
         "--requirements",
         "-r",
-        help="Requirements document path.",
+        help="需求文档路径。",
     ),
     output_dir: str | None = typer.Option(
         None,
         "--output-dir",
-        help="Directory under which a unique run directory will be created.",
+        help="用于创建唯一运行目录的输出根目录。",
     ),
 ) -> None:
-    """Run the implementation stage.
+    """运行实现阶段。
 
-    Example: codeagent implement --project ./repo --requirements requirements.md
+    示例: codeagent implement --project ./repo --requirements requirements.md
     """
     from codeagent.config.cli_mapping import task_config_for_stage_command
 
@@ -141,22 +142,22 @@ def test_command(
         ...,
         "--project",
         "-p",
-        help="Project directory to test.",
+        help="要测试的项目目录。",
     ),
     test_cmd: str = typer.Option(
         "pytest -q",
         "--test-cmd",
-        help="Test command to run after approval.",
+        help="审批后运行的测试命令。",
     ),
     output_dir: str | None = typer.Option(
         None,
         "--output-dir",
-        help="Directory under which a unique run directory will be created.",
+        help="用于创建唯一运行目录的输出根目录。",
     ),
 ) -> None:
-    """Run the testing stage.
+    """运行测试阶段。
 
-    Example: codeagent test --project ./repo --test-cmd "pytest -q"
+    示例: codeagent test --project ./repo --test-cmd "pytest -q"
     """
     from codeagent.config.cli_mapping import task_config_for_stage_command
 
@@ -177,27 +178,27 @@ def debug(
         ...,
         "--project",
         "-p",
-        help="Project directory to inspect.",
+        help="要分析的项目目录。",
     ),
     test_cmd: str = typer.Option(
         "pytest -q",
         "--test-cmd",
-        help="Failing test command.",
+        help="失败复现用测试命令。",
     ),
     log: str | None = typer.Option(
         None,
         "--log",
-        help="Path to a failing test log.",
+        help="失败测试日志路径。",
     ),
     output_dir: str | None = typer.Option(
         None,
         "--output-dir",
-        help="Directory under which a unique run directory will be created.",
+        help="用于创建唯一运行目录的输出根目录。",
     ),
 ) -> None:
-    """Run the debugging stage.
+    """运行调试阶段。
 
-    Example: codeagent debug --project ./repo --test-cmd "pytest -q" --log failing.log
+    示例: codeagent debug --project ./repo --test-cmd "pytest -q" --log failing.log
     """
     from codeagent.config.cli_mapping import task_config_for_stage_command
 
@@ -219,22 +220,22 @@ def repair(
         ...,
         "--project",
         "-p",
-        help="Project directory to repair.",
+        help="要修复的项目目录。",
     ),
     test_cmd: str = typer.Option(
         "pytest -q",
         "--test-cmd",
-        help="Regression test command.",
+        help="回归验证测试命令。",
     ),
     output_dir: str | None = typer.Option(
         None,
         "--output-dir",
-        help="Directory under which a unique run directory will be created.",
+        help="用于创建唯一运行目录的输出根目录。",
     ),
 ) -> None:
-    """Run the repair stage.
+    """运行修复阶段。
 
-    Example: codeagent repair --project ./repo --test-cmd "pytest -q"
+    示例: codeagent repair --project ./repo --test-cmd "pytest -q"
     """
     from codeagent.config.cli_mapping import task_config_for_stage_command
 
@@ -255,12 +256,12 @@ def benchmark(
         ...,
         "--config",
         "-c",
-        help="Benchmark YAML configuration file.",
+        help="Benchmark YAML 配置文件。",
     ),
 ) -> None:
-    """Run benchmark cases and aggregate results.
+    """运行 benchmark case 并汇总结果。
 
-    Example: codeagent benchmark --config benchmark/benchmark.yaml
+    示例: codeagent benchmark --config benchmark/benchmark.yaml
     """
     from codeagent.benchmark.runner import BenchmarkRunner
     from codeagent.cli.progress import ProgressReporter
@@ -269,15 +270,15 @@ def benchmark(
     try:
         result = BenchmarkRunner(reporter=ProgressReporter(console)).run_config(config)
     except (ConfigLoadError, ValueError, OSError) as exc:
-        console.print(f"Invalid benchmark configuration: {exc}")
+        console.print(f"Benchmark 配置无效：{exc}")
         raise typer.Exit(1) from exc
     console.print(
-        "Benchmark completed: "
+        "Benchmark 已完成："
         f"success_rate={result.success_rate:.2f} "
         f"({result.success_cases}/{result.total_cases}) "
         f"blocked={result.blocked_cases}"
     )
-    console.print(f"Benchmark directory: {result.benchmark_run_dir}")
+    console.print(f"Benchmark 目录：{result.benchmark_run_dir}")
 
 
 @app.command()
@@ -285,22 +286,22 @@ def resume(
     run_id: str = typer.Option(
         ...,
         "--run-id",
-        help="Existing run identifier under codeagent_runs/.",
+        help="codeagent_runs/ 下已有的运行 ID。",
     ),
     output_root: str = typer.Option(
         "codeagent_runs",
         "--output-root",
-        help="Directory containing CodeAgent run directories.",
+        help="包含 CodeAgent 运行目录的输出根目录。",
     ),
     decision_json: str | None = typer.Option(
         None,
         "--decision-json",
-        help="JSON value used to resume a pending interrupt.",
+        help="用于恢复 pending interrupt 的 JSON 决策值。",
     ),
 ) -> None:
-    """Planned skeleton: resume or inspect a previous run.
+    """检查或恢复已有运行。
 
-    Example: codeagent resume --run-id <run_id>
+    示例: codeagent resume --run-id <run_id>
     """
     from codeagent.cli.resume import (
         inspect_run_for_resume,
@@ -317,16 +318,16 @@ def resume(
         try:
             resume_value = parse_resume_value(decision_json)
         except ValueError as exc:
-            console.print(f"Invalid --decision-json: {exc}")
+            console.print(f"--decision-json 无效：{exc}")
             raise typer.Exit(1) from exc
         result = resume_run_from_checkpoint(
             output_root,
             run_id,
             resume_value=resume_value,
         )
-        console.print(f"Resumed run {run_id}.")
+        console.print(f"已恢复运行 {run_id}。")
         if isinstance(result, dict) and result.get("final_status"):
-            console.print(f"Final status: {result['final_status']}")
+            console.print(f"最终状态：{result['final_status']}")
         return
     console.print(render_resume_summary(summary))
 
@@ -335,14 +336,14 @@ def _build_or_exit(builder):
     try:
         return builder()
     except ValueError as exc:
-        console.print(f"Invalid task configuration: {exc}")
+        console.print(f"任务配置无效：{exc}")
         raise typer.Exit(1) from exc
     except Exception as exc:
         from codeagent.config.loader import ConfigLoadError
 
         if not isinstance(exc, ConfigLoadError):
             raise
-        console.print(f"Invalid task configuration: {exc}")
+        console.print(f"任务配置无效：{exc}")
         raise typer.Exit(1) from exc
 
 
@@ -351,7 +352,7 @@ def _execute_or_exit(task_config) -> None:
     from codeagent.cli.progress import ProgressReporter
 
     result = execute_task_config(task_config, reporter=ProgressReporter(console))
-    console.print(f"Final status: {result.final_status}")
+    console.print(f"最终状态：{result.final_status}")
     if result.final_status != "succeeded":
         raise typer.Exit(1)
 

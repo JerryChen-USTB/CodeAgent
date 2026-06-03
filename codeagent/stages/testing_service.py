@@ -34,6 +34,7 @@ from codeagent.services.patch_service import (
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
+from codeagent.workflow.progress_events import emit_progress
 
 
 TESTING_STAGE = "testing"
@@ -451,6 +452,12 @@ class TestingService:
             )
         )
         try:
+            emit_progress(
+                "tool_started",
+                stage=TESTING_STAGE,
+                tool_name="run_shell",
+                message=f"正在执行测试命令：{command}",
+            )
             shell = self._run_command(command, request)
         except RuntimeError as exc:
             result = self._failed_result(
@@ -469,6 +476,16 @@ class TestingService:
                 changed_files=changed_files,
             )
         parsed = parse_shell_result(framework=plan.framework, shell_result=shell)
+        emit_progress(
+            "test_result",
+            stage=TESTING_STAGE,
+            passed=parsed.passed,
+            failed=parsed.failed,
+            errors=parsed.errors,
+            skipped=parsed.skipped,
+            total=parsed.total,
+            success=parsed.success,
+        )
         result_path = self._write_test_result(parsed.to_json_dict())
         artifacts.append(
             self._record_artifact(
@@ -491,13 +508,15 @@ class TestingService:
                 "Testing report",
             )
         )
-        if parsed.success:
+        if _is_no_tests_result(parsed):
+            result = self._no_tests_result(started_at=started_at, artifact_ids=artifacts)
+        elif parsed.success:
             result = StageResult(
                 stage=TESTING_STAGE,
                 status="succeeded",
                 started_at=started_at,
                 ended_at=utc_timestamp(),
-                summary="Testing command passed.",
+                summary=_test_summary(parsed),
                 artifact_ids=artifacts,
             )
         else:
@@ -520,6 +539,11 @@ class TestingService:
 
     def run(self, request: TestingRequest) -> StageResult:
         started_at = utc_timestamp()
+        emit_progress(
+            "phase_started",
+            stage=TESTING_STAGE,
+            message="测试阶段开始：准备审阅测试方案",
+        )
         edited_plan = self._request_from_plan_edit(request, started_at=started_at)
         if isinstance(edited_plan, StageResult):
             return self._finalize_result(
@@ -541,6 +565,12 @@ class TestingService:
             )
 
         fs.mkdir(self.stage_dir)
+        emit_progress(
+            "artifact_written",
+            stage=TESTING_STAGE,
+            artifact="testing/test_plan.md",
+            message="测试方案已生成，正在生成测试补丁",
+        )
         candidates = [request.plan, *request.alternate_plans][
             : max(1, request.max_patch_attempts)
         ]
@@ -591,6 +621,12 @@ class TestingService:
         plan_json_path = self._write_plan_json(prepared.plan)
         patch_path = self.stage_dir / "test.patch.diff"
         fs.write_text(patch_path, prepared.patch.text)
+        emit_progress(
+            "artifact_written",
+            stage=TESTING_STAGE,
+            artifact="testing/test.patch.diff",
+            message="测试补丁已生成，正在校验并准备应用",
+        )
         attempts_path = self._write_attempts(attempts)
         artifacts.extend(
             [
@@ -645,6 +681,12 @@ class TestingService:
             )
 
         try:
+            emit_progress(
+                "tool_started",
+                stage=TESTING_STAGE,
+                tool_name="apply_patch",
+                message="正在应用测试补丁到可见项目工作区",
+            )
             applied = self.patch_service.apply_patch(
                 patch_path,
                 self.run_context.task_config.project_path,
@@ -668,6 +710,13 @@ class TestingService:
             )
 
         changed_files_path = self._write_changed_files(applied.changed_files)
+        emit_progress(
+            "tool_finished",
+            stage=TESTING_STAGE,
+            tool_name="apply_patch",
+            status="succeeded",
+            message=f"测试补丁已应用，新增/修改 {len(applied.changed_files)} 个测试文件",
+        )
         artifacts.append(
             self._record_artifact(
                 "testing_changed_files",
@@ -716,6 +765,12 @@ class TestingService:
             )
         )
         try:
+            emit_progress(
+                "tool_started",
+                stage=TESTING_STAGE,
+                tool_name="run_shell",
+                message=f"正在执行 Agent 自测命令：{command}",
+            )
             shell = self._run_command(command, request)
         except RuntimeError as exc:
             result = self._failed_result(
@@ -735,6 +790,16 @@ class TestingService:
                 changed_files=applied.changed_files,
             )
         parsed = parse_shell_result(framework=prepared.plan.framework, shell_result=shell)
+        emit_progress(
+            "test_result",
+            stage=TESTING_STAGE,
+            passed=parsed.passed,
+            failed=parsed.failed,
+            errors=parsed.errors,
+            skipped=parsed.skipped,
+            total=parsed.total,
+            success=parsed.success,
+        )
         result_path = self._write_test_result(parsed.to_json_dict())
         artifacts.append(
             self._record_artifact(
@@ -758,13 +823,15 @@ class TestingService:
             )
         )
 
-        if parsed.success:
+        if _is_no_tests_result(parsed):
+            result = self._no_tests_result(started_at=started_at, artifact_ids=artifacts)
+        elif parsed.success:
             result = StageResult(
                 stage=TESTING_STAGE,
                 status="succeeded",
                 started_at=started_at,
                 ended_at=utc_timestamp(),
-                summary="Testing command passed.",
+                summary=_test_summary(parsed),
                 artifact_ids=artifacts,
             )
         else:
@@ -1188,6 +1255,8 @@ class TestingService:
             f"- Failed: {test_result.get('failed')}",
             f"- Errors: {test_result.get('errors')}",
             f"- Skipped: {test_result.get('skipped')}",
+            f"- Total: {test_result.get('total')}",
+            f"- Timed out: {test_result.get('timed_out')}",
         ]
         if test_result.get("error_summary"):
             lines.extend(["", "## Failure Summary", "", str(test_result["error_summary"])])
@@ -1221,6 +1290,25 @@ class TestingService:
                 retryable=True,
             ),
             next_suggestion=next_suggestion,
+        )
+
+    def _no_tests_result(
+        self,
+        *,
+        started_at: str,
+        artifact_ids: list[str],
+    ) -> StageResult:
+        return self._failed_result(
+            started_at=started_at,
+            summary="Testing command completed but no tests were collected.",
+            category="validation",
+            message=(
+                "The testing stage must execute generated pytest/unittest tests. "
+                "A zero-test result, including py_compile-only smoke checks, is not "
+                "accepted as a successful verification."
+            ),
+            artifact_ids=artifact_ids,
+            next_suggestion="Generate visible tests under tests/ or test_*.py and run them.",
         )
 
     def _finalize_result(
@@ -1443,6 +1531,25 @@ def _render_plan(plan: TestingPlan) -> str:
         )
     lines.extend(["", "## Command", "", f"`{plan.command}`"])
     return "\n".join(lines) + "\n"
+
+
+def _test_summary(parsed) -> str:
+    return (
+        f"{parsed.passed} passed, {parsed.failed} failed, "
+        f"{parsed.errors} errors, {parsed.skipped} skipped"
+    )
+
+
+def _is_no_tests_result(parsed) -> bool:
+    if parsed.total > 0:
+        return False
+    text = f"{parsed.raw_summary}\n{parsed.error_summary}".lower()
+    return (
+        parsed.success
+        or "ran 0 tests" in text
+        or "no tests ran" in text
+        or "collected 0 items" in text
+    )
 
 
 def _last_attempt_error(attempts: list[dict[str, object]]) -> str:

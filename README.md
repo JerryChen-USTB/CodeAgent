@@ -37,6 +37,7 @@ python -m codeagent test --project ./repo --test-cmd "pytest -q"
 python -m codeagent debug --project ./repo --test-cmd "pytest -q"
 python -m codeagent repair --project ./repo --test-cmd "pytest -q"
 python -m codeagent benchmark --config benchmark/benchmark.yaml
+python -m codeagent benchmark --config benchmark/selfbuilt/meeting_room_demo_benchmark.yaml
 python -m codeagent benchmark --config benchmark/selfbuilt/selfbuilt_benchmark.yaml
 python -m codeagent resume --run-id <run_id>
 ```
@@ -44,6 +45,12 @@ python -m codeagent resume --run-id <run_id>
 Task configs define stages, project path, input materials, test command, visibility
 rules, model settings, and approval/runtime policy. In benchmark mode, patch and
 test approvals are auto-approved but still written to the decision trace.
+
+`python -m codeagent wizard` opens a Chinese semi-interactive form. In a real
+terminal, stage selection and input-material selection use arrow-key choices and
+multi-select controls. After the user confirms the form, CodeAgent starts the
+agent run immediately while still saving the normalized `task_config.yaml` for
+audit and reproduction.
 
 ## Run Outputs
 
@@ -62,7 +69,10 @@ output directory is configured. Important files include:
 Benchmark runs write aggregate `benchmark_result.json` and `benchmark_report.md`
 plus clean per-case workspaces and oracle logs under the benchmark output root.
 Original benchmark case templates are copied before execution and are checked for
-unchanged source snapshots.
+unchanged source snapshots. Each benchmark case records both Agent-visible
+self-tests (`agent_test_success`, `agent_test_total`, `agent_test_command`) and
+runner-only hidden oracle evaluation (`oracle_success`). A zero-test Agent
+self-test is treated as a failed verification, not as success.
 
 ## Resume
 
@@ -82,8 +92,14 @@ python -m codeagent benchmark --config benchmark/benchmark.yaml
 Self-built benchmark:
 
 ```powershell
+python -m codeagent benchmark --config benchmark/selfbuilt/meeting_room_demo_benchmark.yaml
 python -m codeagent benchmark --config benchmark/selfbuilt/selfbuilt_benchmark.yaml
 ```
+
+`meeting_room_demo_benchmark.yaml` runs only the meeting-room Flask API case and
+is the recommended low-cost live demo. The full `selfbuilt_benchmark.yaml` runs
+all five self-built cases and should be reserved for final acceptance or explicit
+regression runs because it costs more time and tokens.
 
 The BugsInPy case is environment-gated. If WSL/conda/Python 3.8.3 readiness is
 missing, the benchmark records an explicit blocker instead of silently skipping it.

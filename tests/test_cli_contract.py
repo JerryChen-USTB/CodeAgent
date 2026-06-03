@@ -22,38 +22,38 @@ def test_root_help_lists_required_commands() -> None:
         "resume",
     ]:
         assert command in result.output
-    assert "Examples:" in result.output
+    assert "示例:" in result.output
     assert "codeagent run --config task.yaml" in result.output
 
 
 def test_core_command_help_contracts() -> None:
     implemented_commands = [
-        (["run", "--help"], "Run a task from config or CLI options."),
-        (["implement", "--help"], "Run the implementation stage."),
-        (["test", "--help"], "Run the testing stage."),
-        (["debug", "--help"], "Run the debugging stage."),
-        (["repair", "--help"], "Run the repair stage."),
-        (["benchmark", "--help"], "Run benchmark cases and aggregate results."),
+        (["run", "--help"], "从配置文件或 CLI 参数运行任务。"),
+        (["implement", "--help"], "运行实现阶段。"),
+        (["test", "--help"], "运行测试阶段。"),
+        (["debug", "--help"], "运行调试阶段。"),
+        (["repair", "--help"], "运行修复阶段。"),
+        (["benchmark", "--help"], "运行 benchmark case 并汇总结果。"),
     ]
     for command, description in implemented_commands:
         result = runner.invoke(app, command)
         assert result.exit_code == 0
         assert "Usage:" in result.output
         assert description in result.output
-        assert "Example:" in result.output
+        assert "示例:" in result.output
 
     for command in [["resume", "--help"]]:
         result = runner.invoke(app, command)
         assert result.exit_code == 0
         assert "Usage:" in result.output
-        assert "Planned skeleton" in result.output
-        assert "Example:" in result.output
+        assert "检查或恢复已有运行。" in result.output
+        assert "示例:" in result.output
 
 
 def test_run_requires_config_or_project() -> None:
     result = runner.invoke(app, ["run"])
     assert result.exit_code != 0
-    assert "Provide --config or --project" in result.output
+    assert "请提供 --config 或 --project" in result.output
 
 
 def test_benchmark_command_prints_summary_for_temp_config(tmp_path) -> None:
@@ -66,5 +66,5 @@ def test_benchmark_command_prints_summary_for_temp_config(tmp_path) -> None:
     result = runner.invoke(app, ["benchmark", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "Benchmark completed" in result.output
+    assert "Benchmark 已完成" in result.output
     assert "success_rate=0.00" in result.output

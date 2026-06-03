@@ -423,6 +423,16 @@ Scope boundaries for this implementation pass:
 - Risks and mitigations: large scope and external dependencies in Flask case; run easier CLI cases first, install generated dependencies only in isolated benchmark env.
 - Status: done.
 
+### M28 Agent Self-Test, Chinese Wizard, and Streaming UX Hardening
+
+- Scope: replace direct configured-command testing with LLM-generated visible tests through `TestingService`; reject zero-test verification; upgrade `wizard` to a Chinese form that runs the Agent immediately; localize CLI progress output; emit stage-internal streaming progress; enrich benchmark reports with Agent self-test evidence.
+- Key files/modules: `codeagent/agents/plan_generation.py`, `codeagent/cli/executor.py`, `codeagent/stages/testing_service.py`, `codeagent/cli/wizard.py`, `codeagent/cli/progress.py`, `codeagent/workflow/events.py`, `codeagent/benchmark/*`.
+- Acceptance criteria: benchmark cases include nonzero Agent self-tests before hidden oracle evaluation; `0 passed`/0 collected tests fail; `codeagent wizard` uses Chinese selection/multi-select form and directly starts the run; progress output is Chinese and includes stage-internal LLM/tool/test status; README/demo/dev report document the new behavior.
+- Verification commands: `python -m pytest tests/unit -q`; `python -m pytest tests/integration/test_testing_stage.py tests/integration/test_benchmark_runner.py tests/integration/test_cli_wizard.py tests/integration/test_cli_run.py -q`; `python -m pytest -q`; cost-controlled real LLM self-built validation with 1-2 selected cases. Full `benchmark/selfbuilt/selfbuilt_benchmark.yaml` should be reserved for explicit final acceptance because it is time/token expensive.
+- Unit/integration tests to add: testing request schema generation, hidden oracle exclusion in testing prompt, zero-test failure, multi-mode stream event normalization, wizard direct-run scripted backend, benchmark self-test fields.
+- Risks and mitigations: live LLM variability in generated tests; use strict schema validation, hidden-path checks, nonzero test enforcement, benchmark oracle separation, and fake model injection for deterministic CI tests.
+- Status: done.
+
 ## 4. Risk Register
 
 | ID | Risk | Impact | Likelihood | Mitigation | Owner/status |
@@ -1080,3 +1090,26 @@ Use this section as an append-only engineering log. Every completed small module
 - Commands run: `python -m pytest tests\unit\runtime\test_run_context.py::test_create_run_context_closes_checkpoint_connection tests\unit\workflow\test_checkpoint.py::test_checkpoint_manager_closes_sqlite_connections -q` -> initially 2 failed with Windows file-lock `PermissionError`, then 2 passed after `contextlib.closing`.
 - Commands run: `python -m pytest tests\unit\agents\test_plan_generation.py tests\integration\test_implementation_stage.py -q` -> 25 passed.
 - Commands run: `python -m pytest tests\unit\runtime\test_run_context.py tests\unit\workflow\test_checkpoint.py tests\unit\reports\test_writer.py tests\unit\benchmark\test_report.py -q` -> 22 passed.
+
+### 2026-06-03 M28 Agent Self-Test, Chinese Wizard, and Streaming UX Hardening
+
+- User-reported gaps: benchmark testing showed `0 passed` and skipped meaningful Agent self-tests; wizard was an English fill-in flow and required a second `run --config`; progress output was sparse, English-heavy, and only printed after graph nodes completed.
+- Implementation changes: `PlanGenerationService` now creates `TestingRequest` from LLM-generated `TestingPlan`; CLI testing stage uses full `TestingService` instead of directly running a configured command; `TestingService` rejects zero collected tests including `py_compile`-only smoke checks, `Ran 0 tests`, `NO TESTS RAN`, and `collected 0 items`.
+- Interaction changes: `codeagent wizard` is now a Chinese form. In real terminals it uses questionary selection/multi-select controls; in non-TTY tests it uses a scriptable fallback. Confirming the form directly starts Agent execution while preserving `task_config.yaml` for audit.
+- Streaming changes: main graph execution now requests `stream_mode=["updates", "custom", "messages"]`; executor and testing service emit custom events for LLM planning, patch generation/application, command execution, artifact writes, and parsed test results. CLI progress formatting is Chinese and flushes after each line.
+- Benchmark reporting changes: per-case results now include `agent_test_success`, `agent_test_total`, `agent_test_command`, and `agent_test_report`; evaluator requires nonzero Agent-visible self-test success in addition to final workflow success and runner-only oracle success.
+- Follow-up hardening after real benchmark: split Agent self-test timeout from runner-only oracle timeout, so short hidden-oracle budgets no longer interrupt generated public tests; default `ModelConfig.max_tokens` is now `16384` to avoid OpenRouter overbudget errors from provider-default 65536 output windows; shared redaction now removes OpenRouter key-management links and user identifiers from model error reports.
+- Repair-loop hardening: repair prompts now include `testing/test_command.json`, `testing/test_result.json`, `testing/test_report.md`, debug summaries, and failure logs, and prefer the latest Agent self-test command instead of falling back to py_compile or hidden oracle commands.
+- Documentation updates: README, demo flow, project implementation report, design 05/08/10, and the M28 developer report explain direct wizard execution, Agent self-tests, hidden oracle separation, streaming progress, and the cost-controlled benchmark policy. Added `benchmark/selfbuilt/meeting_room_demo_benchmark.yaml` for single-case meeting-room API demonstrations.
+- CLI localization follow-up: root/command help descriptions, config validation errors, wizard path errors, and approval-console parsing errors are now Chinese; `resume` no longer advertises itself as a planned skeleton. Typer's built-in `--help` description remains framework-provided English text.
+- Commands run: `python -m py_compile codeagent\context\redaction.py codeagent\config\defaults.py codeagent\config\schema.py codeagent\agents\plan_generation.py codeagent\cli\executor.py codeagent\benchmark\runner.py codeagent\benchmark\schemas.py codeagent\benchmark\evaluator.py codeagent\stages\testing_service.py` -> passed.
+- Commands run: `python -m pytest tests\unit\models\test_model_factory.py tests\unit\agents\test_plan_generation.py -q` -> 24 passed.
+- Commands run: `python -m pytest tests\integration\test_benchmark_runner.py::test_prepare_case_workspace_preserves_nested_hidden_paths_in_copied_case tests\integration\test_benchmark_runner.py::test_case_evaluator_reports_agent_self_test_timeout_with_collected_count -q` -> 2 passed.
+- Commands run: `python -m pytest tests\unit -q` -> 185 passed.
+- Commands run: `python -m pytest tests\integration\test_testing_stage.py tests\integration\test_benchmark_runner.py tests\integration\test_cli_wizard.py tests\integration\test_cli_run.py -q` -> 55 passed.
+- Commands run: `python -m pytest -q` -> 303 passed.
+- Commands run: `python -m compileall -q codeagent tests` -> passed.
+- Commands run: `python -m codeagent --help`, `python -m codeagent benchmark --help`, `python -m codeagent wizard --help`, and `python -m codeagent resume --help` -> passed.
+- Real OpenRouter validation: created ignored selected-case config `benchmark/selfbuilt/codeagent_runs/m28_selected_benchmark.yaml` with only `01_todo_manager`, then ran `python -m codeagent benchmark --config benchmark\selfbuilt\codeagent_runs\m28_selected_benchmark.yaml` -> success_rate=1.00 (1/1), Agent self-test `43 passed`, `agent_test_total=43`, `oracle_success=True`, and `source_unchanged=True`. Latest aggregate: `benchmark/selfbuilt/codeagent_runs/benchmark/2026-06-03_150709_561194_m28_selected_selfbuilt_4a3e14/benchmark_result.json`.
+- Cost-control note: user requested reduced future test load; full self-built benchmark should not be run routinely. Prefer 1-2 representative cases unless explicit final acceptance requires all cases.
+- Developer report: `docs/dev_reports/M28_agent_selftest_wizard_streaming_hardening.md`.

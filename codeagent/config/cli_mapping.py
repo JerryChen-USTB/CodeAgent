@@ -24,7 +24,7 @@ def task_config_from_run_options(
         config.mode = "run"
         return config
     if project is None:
-        raise ConfigLoadError("Provide --config or --project.")
+        raise ConfigLoadError("请提供 --config 或 --project。")
     return _task_config_from_parts(
         stages=_split_stages(stages or "implement,test,debug,repair"),
         project=project,
@@ -103,7 +103,7 @@ def _split_stages(raw_stages: str) -> list[str]:
         parts = normalized.split()
     stages = [part.strip() for part in parts if part.strip()]
     if not stages:
-        raise ConfigLoadError("At least one stage is required.")
+        raise ConfigLoadError("至少需要选择一个阶段。")
     return stages
 
 
@@ -115,9 +115,9 @@ def _resolve_existing_path(
 ) -> Path:
     path = Path(raw_path).expanduser().resolve()
     if not path.exists():
-        raise ConfigLoadError(f"{label} path does not exist: {path}")
+        raise ConfigLoadError(f"{label} 路径不存在：{path}")
     if must_be_dir and not path.is_dir():
-        raise ConfigLoadError(f"{label} path must be a directory: {path}")
+        raise ConfigLoadError(f"{label} 路径必须是目录：{path}")
     return path
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from codeagent.config import defaults
 from codeagent.config.schema import ModelConfig
 from codeagent.models.factory import ModelClientFactory
 from codeagent.models.secrets import MissingModelSecretError, SecretResolver
@@ -89,6 +90,18 @@ def test_model_factory_maps_model_config_to_chat_openai(monkeypatch) -> None:
     assert model.kwargs["timeout"] == 33
     assert model.kwargs["max_retries"] == 4
     assert model.kwargs["max_tokens"] == 4096
+
+
+def test_model_factory_sets_default_max_tokens_for_openrouter_budgeting(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CODEAGENT_TEST_KEY", "sk-test")
+    monkeypatch.setattr("codeagent.models.factory.ChatOpenAI", FakeChatOpenAI)
+    config = ModelConfig(api_key_env="CODEAGENT_TEST_KEY")
+
+    model = ModelClientFactory(secret_resolver=SecretResolver()).create(config)
+
+    assert model.kwargs["max_tokens"] == defaults.DEFAULT_MODEL_MAX_TOKENS
 
 
 def test_model_factory_rejects_unsupported_provider(monkeypatch) -> None:

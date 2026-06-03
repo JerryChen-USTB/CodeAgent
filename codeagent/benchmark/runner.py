@@ -27,6 +27,7 @@ from codeagent.benchmark.schemas import (
     CaseExecutionContext,
 )
 from codeagent.cli.executor import execute_task_config
+from codeagent.config import defaults
 from codeagent.cli.progress import ProgressReporter
 from codeagent.config.schema import BenchmarkConfig
 from codeagent.config.loader import load_task_config
@@ -185,11 +186,17 @@ class BenchmarkRunner:
             run_case_dir.as_posix(),
         )
         oracle_command: str | None = None
+        oracle_timeout_seconds = task_config.test_command.timeout_seconds
         if _hidden_command_error(command, hidden_paths=hidden_paths, cwd=run_case_dir):
             oracle_command = command
             task_config.test_command.command = _agent_safe_test_command(
                 task_config.project_path,
                 hidden_paths=hidden_paths,
+            )
+            task_config.test_command.timeout_seconds = max(
+                task_config.test_command.timeout_seconds,
+                task_config.runtime.command_timeout_seconds,
+                defaults.DEFAULT_COMMAND_TIMEOUT_SECONDS,
             )
         else:
             task_config.test_command.command = _normalize_project_relative_command(
@@ -218,6 +225,7 @@ class BenchmarkRunner:
             ),
             oracle_command=oracle_command,
             oracle_framework=task_config.test_framework,
+            oracle_timeout_seconds=oracle_timeout_seconds if oracle_command else None,
         )
 
     def _prepare_case(

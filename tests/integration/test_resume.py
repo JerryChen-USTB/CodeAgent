@@ -277,5 +277,5 @@ def test_cli_resume_invalid_decision_json_fails_cleanly(tmp_path) -> None:
     )
 
     assert result.exit_code != 0
-    assert "Invalid --decision-json" in result.output
+    assert "--decision-json 无效" in result.output
     assert "Traceback" not in result.output

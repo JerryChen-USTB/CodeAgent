@@ -29,7 +29,7 @@ class ModelConfig(BaseModel):
     temperature: float = 0.2
     timeout_seconds: int = 120
     max_retries: int = 2
-    max_tokens: int | None = None
+    max_tokens: int | None = defaults.DEFAULT_MODEL_MAX_TOKENS
 
 
 class RuntimeConfig(BaseModel):

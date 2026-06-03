@@ -31,27 +31,27 @@ def normalize_stage(raw: str | "Stage") -> "Stage":
     normalized = str(raw).strip().lower().replace("-", "_")
     canonical = STAGE_ALIASES.get(normalized)
     if canonical is None:
-        raise ValueError(f"Unsupported stage: {raw!r}")
+        raise ValueError(f"不支持的阶段：{raw!r}")
     return Stage(canonical)
 
 
 def validate_stage_sequence(raw_stages: Iterable[str | "Stage"]) -> list["Stage"]:
     """Return canonical stages after enforcing order and contiguity."""
     if raw_stages is None:
-        raise ValueError("At least one stage is required.")
+        raise ValueError("至少需要选择一个阶段。")
     if isinstance(raw_stages, (str, bytes)):
-        raise ValueError("stages must be a list, not a scalar string.")
+        raise ValueError("stages 必须是阶段列表，不能是单个字符串。")
     if not isinstance(raw_stages, Iterable):
-        raise ValueError("stages must be an iterable list of stage names.")
+        raise ValueError("stages 必须是可迭代的阶段名称列表。")
     stages = [normalize_stage(stage) for stage in raw_stages]
     if not stages:
-        raise ValueError("At least one stage is required.")
+        raise ValueError("至少需要选择一个阶段。")
 
     indices = [STAGE_ORDER.index(stage.value) for stage in stages]
     if len(set(indices)) != len(indices):
-        raise ValueError("Stages must not contain duplicates.")
+        raise ValueError("阶段列表不能包含重复项。")
     if indices != sorted(indices):
-        raise ValueError("Stages must follow implement -> test -> debug -> repair order.")
+        raise ValueError("阶段必须遵循 implement -> test -> debug -> repair 顺序。")
     if len(indices) > 1 and indices != list(range(indices[0], indices[-1] + 1)):
-        raise ValueError("Selected stages must be contiguous.")
+        raise ValueError("选择的阶段必须连续。")
     return stages

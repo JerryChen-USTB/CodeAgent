@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -20,6 +21,7 @@ from codeagent.cli.wizard import (
     render_task_summary,
     write_wizard_cancellation_report,
 )
+from codeagent.runtime.run_context import create_run_context
 from codeagent.tools.hitl import ApprovalRequest
 
 
@@ -67,7 +69,7 @@ def test_wizard_answers_build_normalized_task_config_and_summary(tmp_path) -> No
     assert config.input_materials[0].material_type == "requirements"
     assert config.input_materials[0].path == requirements.resolve()
     assert config.test_command.command == "python -m pytest tests -q"
-    assert "Stages: implement, test" in summary
+    assert "执行阶段：implement, test" in summary
     assert str(project.resolve()) in summary
     assert "python -m pytest tests -q" in summary
 
@@ -76,7 +78,7 @@ def test_wizard_rejects_file_as_project_path(tmp_path) -> None:
     project_file = tmp_path / "not_a_project.py"
     project_file.write_text("print('not a directory')\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="project path must be a directory"):
+    with pytest.raises(ValueError, match="项目目录 必须是目录"):
         build_task_config_from_answers(
             WizardPromptAnswers(
                 stages="implement",
@@ -86,7 +88,7 @@ def test_wizard_rejects_file_as_project_path(tmp_path) -> None:
         )
 
 
-def test_wizard_command_accepts_scripted_input_and_initializes_run(tmp_path) -> None:
+def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypatch) -> None:
     project, requirements = _project(tmp_path)
     output_dir = tmp_path / "runs"
     scripted_input = "\n".join(
@@ -94,6 +96,7 @@ def test_wizard_command_accepts_scripted_input_and_initializes_run(tmp_path) -> 
             "implement,test",
             str(project),
             str(requirements),
+            "",
             str(output_dir),
             "pytest -q",
             "y",
@@ -101,17 +104,23 @@ def test_wizard_command_accepts_scripted_input_and_initializes_run(tmp_path) -> 
         ]
     )
 
+    def fake_run(config):
+        context = create_run_context(config, output_root=config.output_dir)
+        return SimpleNamespace(final_status="succeeded", run_dir=context.run_dir)
+
+    monkeypatch.setattr("codeagent.cli.wizard._run_agent_from_wizard", fake_run)
+
     result = runner.invoke(app, ["wizard"], input=scripted_input)
 
     assert result.exit_code == 0
-    assert "CodeAgent wizard" in result.output
-    assert "Stages (comma-separated, contiguous)" in result.output
-    assert "Project path" in result.output
-    assert "Input material path (blank to skip)" in result.output
-    assert "Output directory" in result.output
-    assert "Test command" in result.output
-    assert "Task Summary" in result.output
-    assert "Run initialized" in result.output
+    assert "CodeAgent 中文任务表单" in result.output
+    assert "选择要执行的阶段组合" in result.output
+    assert "项目目录" in result.output
+    assert "选择输入材料" in result.output
+    assert "输出目录" in result.output
+    assert "测试命令" in result.output
+    assert "任务摘要" in result.output
+    assert "正在启动 CodeAgent" in result.output
     run_dirs = [path for path in output_dir.iterdir() if path.is_dir()]
     assert len(run_dirs) == 1
     task_config = (run_dirs[0] / "task_config.yaml").read_text(encoding="utf-8")
@@ -154,8 +163,11 @@ def test_wizard_cancellation_writes_final_report_without_touching_project(tmp_pa
     [
         ("a", "approve"),
         ("approve", "approve"),
+        ("批准", "approve"),
         ("r", "reject"),
+        ("拒绝", "reject"),
         ("cancel", "cancel"),
+        ("取消", "cancel"),
     ],
 )
 def test_approval_console_parses_basic_decisions(raw: str, decision_type: str) -> None:
@@ -178,7 +190,7 @@ def test_approval_console_parses_edit_payload_and_rejects_disallowed_choice() ->
     assert decision.decision_type == "edit"
     assert decision.edited_payload == {"command": "python -m pytest tests/unit -q"}
     assert decision.comment == "narrow the command"
-    with pytest.raises(ApprovalInputError, match="not allowed"):
+    with pytest.raises(ApprovalInputError, match="不适用于"):
         parse_approval_decision("respond", request=request, comment="explain first")
 
 
@@ -216,9 +228,9 @@ def test_progress_formatter_and_reporter_render_stream_events() -> None:
     reporter.render_events(events)
     output = console.export_text()
 
-    assert lines[0] == "[stage] testing completed"
-    assert "[route] testing -> debugging: tests failed" in lines
-    assert "[result] testing failed: 2 tests failed" in lines
-    assert "[tool] run_shell succeeded" in lines
-    assert "[final] failed" in lines
-    assert "[result] testing failed: 2 tests failed" in output
+    assert lines[0] == "[节点] 测试阶段 已完成"
+    assert "[路由] 测试阶段 -> 调试阶段: tests failed" in lines
+    assert "[结果] 测试阶段 失败: 2 tests failed" in lines
+    assert "[工具] run_shell 成功" in lines
+    assert "[最终结果] 失败" in lines
+    assert "[结果] 测试阶段 失败: 2 tests failed" in output

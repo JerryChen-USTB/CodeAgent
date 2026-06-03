@@ -48,6 +48,7 @@ class CaseExecutionContext:
     oracle_logs_dir: Path | None = None
     oracle_command: str | None = None
     oracle_framework: str | None = None
+    oracle_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,10 @@ class CaseEvaluation:
     oracle_success: bool | None = None
     oracle_command: str | None = None
     oracle_logs_dir: Path | None = None
+    agent_test_success: bool | None = None
+    agent_test_total: int | None = None
+    agent_test_command: str | None = None
+    agent_test_report: Path | None = None
     source_snapshot_before: str | None = None
     source_snapshot_after: str | None = None
     source_unchanged: bool | None = None
@@ -79,6 +84,12 @@ class CaseEvaluation:
             "oracle_command": self.oracle_command,
             "oracle_logs_dir": (
                 self.oracle_logs_dir.as_posix() if self.oracle_logs_dir else None
+            ),
+            "agent_test_success": self.agent_test_success,
+            "agent_test_total": self.agent_test_total,
+            "agent_test_command": self.agent_test_command,
+            "agent_test_report": (
+                self.agent_test_report.as_posix() if self.agent_test_report else None
             ),
             "source_snapshot_before": self.source_snapshot_before,
             "source_snapshot_after": self.source_snapshot_after,
