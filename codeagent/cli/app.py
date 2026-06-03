@@ -274,7 +274,8 @@ def benchmark(
     console.print(
         "Benchmark completed: "
         f"success_rate={result.success_rate:.2f} "
-        f"({result.success_cases}/{result.total_cases})"
+        f"({result.success_cases}/{result.total_cases}) "
+        f"blocked={result.blocked_cases}"
     )
     console.print(f"Benchmark directory: {result.benchmark_run_dir}")
 

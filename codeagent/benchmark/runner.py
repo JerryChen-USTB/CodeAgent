@@ -7,11 +7,16 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from codeagent.benchmark.case_loader import CaseLoader
+from codeagent.benchmark.environment import (
+    BugsInPyEnvironmentDetector,
+    EnvironmentStatus,
+)
 from codeagent.benchmark.evaluator import CaseEvaluator
 from codeagent.benchmark.report import write_benchmark_reports
 from codeagent.benchmark.schemas import (
@@ -27,6 +32,7 @@ from codeagent.config.loader import load_task_config
 
 
 HIDDEN_BENCHMARK_NAMES = {"evaluation", "oracle_tests", "expected_result.json"}
+PrepareExecutorResult = tuple[int, Path, Path, str]
 
 
 class BenchmarkRunner:
@@ -36,19 +42,27 @@ class BenchmarkRunner:
         loader: CaseLoader | None = None,
         evaluator: CaseEvaluator | None = None,
         reporter: ProgressReporter | None = None,
+        environment_detectors: dict[str, object] | None = None,
+        prepare_executor=None,
     ) -> None:
         self.loader = loader or CaseLoader()
         self.evaluator = evaluator or CaseEvaluator()
         self.reporter = reporter or ProgressReporter()
+        self.environment_detectors = environment_detectors or {
+            "bugsinpy_wsl_conda": BugsInPyEnvironmentDetector()
+        }
+        self.prepare_executor = prepare_executor or _run_prepare_command
 
     def run_config(self, path: str | Path) -> BenchmarkResult:
         loaded = self.loader.load(path)
-        return self.run_all(loaded.config, loaded.enabled_cases)
+        return self.run_all(loaded.config, loaded.enabled_cases, blocked_cases=loaded.blocked_cases)
 
     def run_all(
         self,
         config: BenchmarkConfig,
         cases: list[BenchmarkCase],
+        *,
+        blocked_cases: list[BenchmarkCase] | None = None,
     ) -> BenchmarkResult:
         benchmark_id = config.benchmark_id or config.name or "benchmark"
         benchmark_run_dir = _create_benchmark_run_dir(
@@ -77,6 +91,14 @@ class BenchmarkRunner:
                 )
                 continue
             try:
+                blocked = self._environment_blocker(context)
+                if blocked is not None:
+                    evaluations.append(blocked)
+                    continue
+                prepare_failed = self._prepare_case(context, benchmark_run_dir)
+                if prepare_failed is not None:
+                    evaluations.append(prepare_failed)
+                    continue
                 cli_result = execute_task_config(
                     context.task_config,
                     reporter=self.reporter,
@@ -98,6 +120,14 @@ class BenchmarkRunner:
                     failure_reason=f"benchmark case execution failed: {exc}",
                 )
                 evaluations.append(_attach_source_snapshot(evaluation, context))
+        disabled_blockers = [
+            _blocked_case_evaluation(case, benchmark_run_dir=benchmark_run_dir)
+            for case in blocked_cases or []
+        ]
+        blocked_evaluations = [
+            evaluation for evaluation in evaluations if evaluation.final_status == "blocked"
+        ]
+        blockers = [*disabled_blockers, *blocked_evaluations]
         success_cases = sum(1 for evaluation in evaluations if evaluation.success)
         total_cases = len(evaluations)
         result = BenchmarkResult(
@@ -105,9 +135,11 @@ class BenchmarkRunner:
             benchmark_run_dir=benchmark_run_dir,
             total_cases=total_cases,
             success_cases=success_cases,
-            failed_cases=total_cases - success_cases,
+            failed_cases=total_cases - success_cases - len(blocked_evaluations),
+            blocked_cases=len(blockers),
             success_rate=(success_cases / total_cases) if total_cases else 0.0,
             cases=evaluations,
+            blockers=blockers,
         )
         write_benchmark_reports(result)
         return result
@@ -164,6 +196,11 @@ class BenchmarkRunner:
                 project_path=task_config.project_path,
                 run_case_dir=run_case_dir,
             )
+        if task_config.prepare_command is not None:
+            task_config.prepare_command.command = task_config.prepare_command.command.replace(
+                "{{CASE_DIR}}",
+                run_case_dir.as_posix(),
+            )
         return CaseExecutionContext(
             case_id=case.case_id,
             source_case_dir=case.source_case_dir,
@@ -182,6 +219,89 @@ class BenchmarkRunner:
             oracle_framework=task_config.test_framework,
         )
 
+    def _prepare_case(
+        self,
+        context: CaseExecutionContext,
+        benchmark_run_dir: Path,
+    ) -> CaseEvaluation | None:
+        command = (
+            context.task_config.prepare_command.command
+            if context.task_config.prepare_command is not None
+            else None
+        )
+        if not command:
+            return None
+        timeout_seconds = context.task_config.prepare_command.timeout_seconds
+        logs_dir = benchmark_run_dir / "prepare_logs" / context.case_id
+        allowed_error = _prepare_command_error(command, run_case_dir=context.run_case_dir)
+        if allowed_error:
+            return _attach_source_snapshot(
+                CaseEvaluation(
+                    case_id=context.case_id,
+                    success=False,
+                    score=0.0,
+                    final_status="failed",
+                    run_dir=None,
+                    run_case_dir=context.run_case_dir,
+                    failure_reason=allowed_error,
+                ),
+                context,
+            )
+        exit_code, stdout_log, stderr_log, error = self.prepare_executor(
+            command,
+            cwd=Path.cwd(),
+            logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        if exit_code == 0:
+            return None
+        reason = f"BugsInPy prepare command failed with exit_code={exit_code}"
+        if error:
+            reason += f": {error}"
+        reason += f"; stdout_log={stdout_log.as_posix()}; stderr_log={stderr_log.as_posix()}"
+        return _attach_source_snapshot(
+            CaseEvaluation(
+                case_id=context.case_id,
+                success=False,
+                score=0.0,
+                final_status="failed",
+                run_dir=None,
+                run_case_dir=context.run_case_dir,
+                failure_reason=reason,
+            ),
+            context,
+        )
+
+    def _environment_blocker(
+        self,
+        context: CaseExecutionContext,
+    ) -> CaseEvaluation | None:
+        detector_key = _environment_detector_key(context.task_config)
+        if detector_key is None:
+            return None
+        detector = self.environment_detectors.get(detector_key)
+        if detector is None:
+            status = EnvironmentStatus(
+                name=detector_key,
+                available=False,
+                blockers=[f"environment detector is not configured: {detector_key}"],
+            )
+        else:
+            status = detector.detect()  # type: ignore[attr-defined]
+        if status.available:
+            return None
+        reason = "; ".join(status.blockers) or f"environment is unavailable: {status.name}"
+        evaluation = CaseEvaluation(
+            case_id=context.case_id,
+            success=False,
+            score=0.0,
+            final_status="blocked",
+            run_dir=None,
+            run_case_dir=context.run_case_dir,
+            failure_reason=reason,
+        )
+        return _attach_source_snapshot(evaluation, context)
+
 
 def _create_benchmark_run_dir(output_root: Path, *, benchmark_id: str) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
@@ -195,6 +315,79 @@ def _create_benchmark_run_dir(output_root: Path, *, benchmark_id: str) -> Path:
             continue
         return path
     raise RuntimeError("Unable to create a unique benchmark run directory.")
+
+
+def _run_prepare_command(
+    command: str,
+    *,
+    cwd: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+) -> PrepareExecutorResult:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = logs_dir / "prepare.stdout.log"
+    stderr_log = logs_dir / "prepare.stderr.log"
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        stdout_log.write_text(completed.stdout, encoding="utf-8")
+        stderr_log.write_text(completed.stderr, encoding="utf-8")
+        return completed.returncode, stdout_log, stderr_log, ""
+    except subprocess.TimeoutExpired as exc:
+        stdout = _coerce_process_output(exc.stdout)
+        stderr = _coerce_process_output(exc.stderr)
+        stderr = f"{stderr}\nCommand timed out after {timeout_seconds} seconds.".strip()
+        stdout_log.write_text(stdout, encoding="utf-8")
+        stderr_log.write_text(stderr + "\n", encoding="utf-8")
+        return 124, stdout_log, stderr_log, "prepare command timed out"
+
+
+def _blocked_case_evaluation(
+    case: BenchmarkCase,
+    *,
+    benchmark_run_dir: Path,
+) -> CaseEvaluation:
+    reason = "disabled optional benchmark case"
+    if case.note:
+        reason += f": {case.note}"
+    return CaseEvaluation(
+        case_id=case.case_id,
+        success=False,
+        score=0.0,
+        final_status="blocked",
+        run_dir=None,
+        run_case_dir=benchmark_run_dir / "case_workspaces" / case.case_id,
+        failure_reason=reason,
+    )
+
+
+def _environment_detector_key(task_config) -> str | None:
+    environment = getattr(task_config, "execution_environment", None)
+    recommended = getattr(environment, "recommended", None)
+    if recommended == "wsl_conda":
+        return "bugsinpy_wsl_conda"
+    return None
+
+
+def _prepare_command_error(command: str, *, run_case_dir: Path) -> str | None:
+    lowered = command.lower().replace("\\", "/")
+    if any(separator in lowered for separator in (";", "&&", "||", "|", "`n", "`r")):
+        return "prepare command is not allowed: shell chaining is not allowed"
+    if "prepare_bugsinpy_wsl_conda.ps1" not in lowered:
+        return "prepare command is not allowed: expected prepare_bugsinpy_wsl_conda.ps1"
+    if "-casedir" not in lowered:
+        return "prepare command is not allowed: missing -CaseDir"
+    expected = run_case_dir.as_posix().lower()
+    if expected not in lowered:
+        return "prepare command is not allowed: -CaseDir must reference the copied case"
+    return None
 
 
 def _attach_source_snapshot(
@@ -247,6 +440,14 @@ def _snapshot_case_dir(path: Path) -> str:
 
 def _append_reason(existing: str, reason: str) -> str:
     return f"{existing}; {reason}" if existing else reason
+
+
+def _coerce_process_output(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _case_visibility_paths(

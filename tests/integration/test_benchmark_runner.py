@@ -6,6 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from codeagent.benchmark.case_loader import CaseLoader
+from codeagent.benchmark.environment import EnvironmentStatus
 from codeagent.benchmark.evaluator import CaseEvaluator
 from codeagent.benchmark.runner import BenchmarkRunner
 from codeagent.cli.app import app
@@ -25,6 +26,35 @@ class _MutatingEvaluator(CaseEvaluator):
             run_dir=run_dir,
             final_status=final_status,
         )
+
+
+class _UnavailableEnvironmentDetector:
+    def detect(self) -> EnvironmentStatus:
+        return EnvironmentStatus(
+            name="bugsinpy_wsl_conda",
+            available=False,
+            blockers=["WSL is not available for BugsInPy."],
+            details={"conda_env": "codeagent-bugsinpy-py383"},
+        )
+
+
+class _ReadyEnvironmentDetector:
+    def detect(self) -> EnvironmentStatus:
+        return EnvironmentStatus(
+            name="bugsinpy_wsl_conda",
+            available=True,
+            blockers=[],
+            details={"conda_env": "codeagent-bugsinpy-py383"},
+        )
+
+
+class _RecordingPrepareExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def __call__(self, command: str, *, cwd: Path, logs_dir: Path, timeout_seconds: int):
+        self.commands.append(command)
+        return 0, logs_dir / "prepare.stdout.log", logs_dir / "prepare.stderr.log", ""
 
 
 def _write_unittest_case(
@@ -470,3 +500,211 @@ def test_benchmark_cli_runs_config_and_prints_summary(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Benchmark completed" in result.output
     assert "success_rate=1.00" in result.output
+
+
+def test_disabled_bugsinpy_case_is_reported_as_blocked_not_silently_skipped(
+    tmp_path,
+) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_enabled")
+    blocked_case = tmp_path / "cases" / "case_bugsinpy"
+    blocked_case.mkdir(parents=True)
+    (blocked_case / "task_config.yaml").write_text(
+        """
+case_id: case_bugsinpy
+stages: [test]
+project_path: workspace
+enabled: false
+execution_environment:
+  recommended: wsl_conda
+  conda_env: codeagent-bugsinpy-py383
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "benchmark.yaml"
+    config_path.write_text(
+        """
+schema_version: 1
+name: disabled_fixture
+default_output_dir: runs
+cases:
+  - case_id: case_enabled
+    config: cases/case_enabled/task_config.yaml
+    enabled: true
+  - case_id: case_bugsinpy
+    config: cases/case_bugsinpy/task_config.yaml
+    enabled: false
+    note: "BugsInPy requires WSL and conda"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = BenchmarkRunner().run_config(config_path)
+
+    assert result.total_cases == 1
+    assert result.success_cases == 1
+    assert result.blocked_cases == 1
+    assert len(result.blockers) == 1
+    blocker = result.blockers[0]
+    assert blocker.case_id == "case_bugsinpy"
+    assert blocker.final_status == "blocked"
+    assert "disabled optional benchmark case" in blocker.failure_reason
+    aggregate = json.loads(
+        (result.benchmark_run_dir / "benchmark_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert aggregate["blocked_cases"] == 1
+    assert aggregate["blockers"][0]["case_id"] == "case_bugsinpy"
+
+    cli = runner.invoke(app, ["benchmark", "--config", str(config_path)])
+
+    assert cli.exit_code == 0
+    assert "blocked=1" in cli.output
+
+
+def test_enabled_bugsinpy_case_blocks_before_execution_when_environment_missing(
+    tmp_path,
+) -> None:
+    case_dir = tmp_path / "cases" / "case_bugsinpy_enabled"
+    (case_dir / "workspace" / "black").mkdir(parents=True)
+    (case_dir / "task_config.yaml").write_text(
+        """
+case_id: case_bugsinpy_enabled
+stages: [test]
+project_path: workspace/black
+test_command:
+  command: "powershell -ExecutionPolicy Bypass -File scripts/run_bugsinpy_wsl_conda.ps1 -CaseDir {{CASE_DIR}}"
+execution_environment:
+  recommended: wsl_conda
+  conda_env: codeagent-bugsinpy-py383
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "benchmark.yaml"
+    config_path.write_text(
+        """
+schema_version: 1
+name: enabled_bugsinpy_fixture
+default_output_dir: runs
+cases:
+  - case_id: case_bugsinpy_enabled
+    config: cases/case_bugsinpy_enabled/task_config.yaml
+    enabled: true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = BenchmarkRunner(
+        environment_detectors={"bugsinpy_wsl_conda": _UnavailableEnvironmentDetector()}
+    ).run_config(config_path)
+
+    assert result.total_cases == 1
+    assert result.success_cases == 0
+    assert result.failed_cases == 0
+    assert result.blocked_cases == 1
+    assert result.blockers[0].case_id == "case_bugsinpy_enabled"
+    case_result = result.cases[0]
+    assert case_result.final_status == "blocked"
+    assert case_result.source_unchanged is True
+    assert "WSL is not available for BugsInPy" in case_result.failure_reason
+    assert not (case_dir / "codeagent_runs").exists()
+
+
+def test_ready_bugsinpy_case_runs_prepare_against_clean_copy_before_workflow(
+    tmp_path,
+) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_bugsinpy_ready")
+    task_config = tmp_path / "cases" / "case_bugsinpy_ready" / "task_config.yaml"
+    task_config.write_text(
+        """
+case_id: case_bugsinpy_ready
+stages: [test]
+project_path: workspace
+test_framework: unittest
+test_command:
+  command: "python -m unittest discover -s {{CASE_DIR}}/workspace/tests"
+prepare_command:
+  command: "powershell -ExecutionPolicy Bypass -File scripts/prepare_bugsinpy_wsl_conda.ps1 -CaseDir {{CASE_DIR}}"
+  timeout_seconds: 120
+execution_environment:
+  recommended: wsl_conda
+  conda_env: codeagent-bugsinpy-py383
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path = _benchmark_config(tmp_path, "case_bugsinpy_ready")
+    prepare_executor = _RecordingPrepareExecutor()
+
+    result = BenchmarkRunner(
+        environment_detectors={"bugsinpy_wsl_conda": _ReadyEnvironmentDetector()},
+        prepare_executor=prepare_executor,
+    ).run_config(config_path)
+
+    assert result.success_cases == 1
+    assert len(prepare_executor.commands) == 1
+    command = prepare_executor.commands[0].replace("\\", "/")
+    case_result = result.cases[0]
+    assert case_result.run_case_dir.as_posix() in command
+    assert "{{CASE_DIR}}" not in command
+    assert (tmp_path / "cases" / "case_bugsinpy_ready").as_posix() not in command
+    assert case_result.source_unchanged is True
+
+
+def test_benchmark_runner_rejects_unsafe_prepare_command(tmp_path) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_unsafe_prepare")
+    task_config = tmp_path / "cases" / "case_unsafe_prepare" / "task_config.yaml"
+    task_config.write_text(
+        """
+case_id: case_unsafe_prepare
+stages: [test]
+project_path: workspace
+test_framework: unittest
+test_command:
+  command: "python -m unittest discover -s tests"
+prepare_command:
+  command: "powershell -ExecutionPolicy Bypass -File scripts/remove_everything.ps1 -CaseDir {{CASE_DIR}}"
+execution_environment:
+  recommended: wsl_conda
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path = _benchmark_config(tmp_path, "case_unsafe_prepare")
+
+    result = BenchmarkRunner(
+        environment_detectors={"bugsinpy_wsl_conda": _ReadyEnvironmentDetector()},
+        prepare_executor=_RecordingPrepareExecutor(),
+    ).run_config(config_path)
+
+    assert result.success_cases == 0
+    assert result.failed_cases == 1
+    assert "prepare command is not allowed" in result.cases[0].failure_reason
+
+
+def test_benchmark_runner_rejects_prepare_command_shell_chaining(tmp_path) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_chained_prepare")
+    task_config = tmp_path / "cases" / "case_chained_prepare" / "task_config.yaml"
+    task_config.write_text(
+        """
+case_id: case_chained_prepare
+stages: [test]
+project_path: workspace
+test_framework: unittest
+test_command:
+  command: "python -m unittest discover -s tests"
+prepare_command:
+  command: "powershell -ExecutionPolicy Bypass -File scripts/prepare_bugsinpy_wsl_conda.ps1 -CaseDir {{CASE_DIR}}; powershell -Command Write-Host unsafe"
+execution_environment:
+  recommended: wsl_conda
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path = _benchmark_config(tmp_path, "case_chained_prepare")
+
+    result = BenchmarkRunner(
+        environment_detectors={"bugsinpy_wsl_conda": _ReadyEnvironmentDetector()},
+        prepare_executor=_RecordingPrepareExecutor(),
+    ).run_config(config_path)
+
+    assert result.success_cases == 0
+    assert result.failed_cases == 1
+    assert "shell chaining is not allowed" in result.cases[0].failure_reason

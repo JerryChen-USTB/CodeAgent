@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,10 @@ class LoadedBenchmark:
     @property
     def enabled_cases(self) -> list[BenchmarkCase]:
         return [case for case in self.cases if case.enabled]
+
+    @property
+    def blocked_cases(self) -> list[BenchmarkCase]:
+        return [case for case in self.cases if not case.enabled]
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,8 @@ class BenchmarkResult:
     failed_cases: int
     success_rate: float
     cases: list[CaseEvaluation]
+    blocked_cases: int = 0
+    blockers: list[CaseEvaluation] = field(default_factory=list)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +105,8 @@ class BenchmarkResult:
             "total_cases": self.total_cases,
             "success_cases": self.success_cases,
             "failed_cases": self.failed_cases,
+            "blocked_cases": self.blocked_cases,
             "success_rate": self.success_rate,
             "cases": [case.to_json_dict() for case in self.cases],
+            "blockers": [case.to_json_dict() for case in self.blockers],
         }

@@ -28,6 +28,7 @@ def _render_markdown(result: BenchmarkResult) -> str:
         f"- Total cases: {result.total_cases}",
         f"- Success cases: {result.success_cases}",
         f"- Failed cases: {result.failed_cases}",
+        f"- Blocked cases: {result.blocked_cases}",
         f"- Success rate: {result.success_rate:.2f}",
         "",
         (
@@ -48,6 +49,23 @@ def _render_markdown(result: BenchmarkResult) -> str:
             f"{_cell(case.run_dir.as_posix() if case.run_dir else '-')} | "
             f"{_cell(case.failure_reason or '-')} |"
         )
+    if result.blockers:
+        lines.extend(
+            [
+                "",
+                "## Blockers",
+                "",
+                "| case_id | final_status | reason |",
+                "|---|---|---|",
+            ]
+        )
+        for case in result.blockers:
+            lines.append(
+                "| "
+                f"{_cell(case.case_id)} | "
+                f"{_cell(case.final_status)} | "
+                f"{_cell(case.failure_reason or '-')} |"
+            )
     return "\n".join(lines) + "\n"
 
 

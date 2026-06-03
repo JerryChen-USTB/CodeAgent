@@ -1,16 +1,33 @@
 param(
-    [string]$CaseDir = "benchmark\cases\bugsinpy_black_001",
+    [string]$CaseDir = "",
     [string]$Project = "black",
     [string]$BugId = "1",
     [string]$Version = "0",
-    [string]$CondaEnv = "codeagent-bugsinpy-py383"
+    [string]$CondaEnv = "codeagent-bugsinpy-py383",
+    [int]$WslCommandTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($CaseDir)) {
+    throw "CaseDir is required. Pass a clean copied benchmark case directory."
+}
 $CasePath = Join-Path $RepoRoot $CaseDir
 $WorkspacePath = Join-Path $CasePath "workspace"
+
+function Test-AllowedCasePath {
+    param([string]$Path)
+
+    $Resolved = (Resolve-Path -Path $Path).Path
+    $BenchmarkRoot = (Resolve-Path -Path (Join-Path $RepoRoot "benchmark")).Path
+    $RunsRoot = (Join-Path $BenchmarkRoot "codeagent_runs")
+    $UnderBenchmark = $Resolved.StartsWith($BenchmarkRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    $IsCaseTemplate = $Resolved.Contains("\benchmark\cases\", [System.StringComparison]::OrdinalIgnoreCase)
+    $IsCaseWorkspace = $Resolved.Contains("\case_workspaces\", [System.StringComparison]::OrdinalIgnoreCase)
+    $UnderRuns = $Resolved.StartsWith($RunsRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    return ($UnderBenchmark -and ($IsCaseTemplate -or ($UnderRuns -and $IsCaseWorkspace)))
+}
 
 function Remove-Tree {
     param([string]$Path)
@@ -20,9 +37,8 @@ function Remove-Tree {
     }
 
     $Resolved = (Resolve-Path -Path $Path).Path
-    $Allowed = (Resolve-Path -Path (Join-Path $RepoRoot "benchmark")).Path
-    if (-not $Resolved.StartsWith($Allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to remove path outside benchmark: $Resolved"
+    if (-not (Test-AllowedCasePath -Path $Resolved)) {
+        throw "Refusing to remove path outside allowed benchmark workspaces: $Resolved"
     }
 
     Get-ChildItem -LiteralPath $Resolved -Recurse -Force -ErrorAction SilentlyContinue |
@@ -39,15 +55,109 @@ function ConvertTo-WslPath {
 
     $Resolved = (Resolve-Path -Path $Path).Path
     $WindowsPathArg = $Resolved -replace "\\", "/"
-    $Converted = & wsl -- wslpath -a $WindowsPathArg
-    if ($LASTEXITCODE -ne 0) {
+    $Converted = Invoke-WslPath -WindowsPathArg $WindowsPathArg
+    if ([string]::IsNullOrWhiteSpace($Converted)) {
         throw "Failed to convert path to WSL path: $Resolved"
     }
-    return (($Converted | Select-Object -First 1).Trim())
+    return $Converted
+}
+
+function Invoke-WslPath {
+    param(
+        [string]$WindowsPathArg,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = "wsl"
+    $EscapedPath = $WindowsPathArg.Replace('"', '\"')
+    $StartInfo.Arguments = "-- wslpath -a `"$EscapedPath`""
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $Process.Kill() } catch {}
+        throw "WSL path conversion timed out after $TimeoutSeconds seconds."
+    }
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    if ($Process.ExitCode -ne 0) {
+        throw "Failed to convert path to WSL path: $Stderr"
+    }
+    return (($Stdout | Select-Object -First 1).Trim())
+}
+
+function Test-WslBashAvailable {
+    param([int]$TimeoutSeconds = 20)
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = "wsl"
+    $StartInfo.Arguments = "-- bash -lc `"echo CODEAGENT_WSL_READY`""
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $Process.Kill() } catch {}
+        throw "WSL bash preflight timed out after $TimeoutSeconds seconds."
+    }
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    if ($Process.ExitCode -ne 0 -or -not $Stdout.Contains("CODEAGENT_WSL_READY")) {
+        throw "WSL bash preflight failed: $Stderr"
+    }
+}
+
+function Invoke-WslBash {
+    param(
+        [string]$InputText,
+        [int]$TimeoutSeconds
+    )
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = "wsl"
+    $StartInfo.Arguments = "-- bash -lc `"tr -d '\r' | bash -s`""
+    $StartInfo.RedirectStandardInput = $true
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    $Process.StandardInput.Write($InputText)
+    $Process.StandardInput.Close()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $Process.Kill() } catch {}
+        throw "WSL bash command timed out after $TimeoutSeconds seconds."
+    }
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    if (-not [string]::IsNullOrWhiteSpace($Stdout)) {
+        Write-Host $Stdout
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Stderr)) {
+        Write-Host $Stderr
+    }
+    return $Process.ExitCode
 }
 
 $RepoWsl = ConvertTo-WslPath $RepoRoot
 $CaseWsl = ConvertTo-WslPath $CasePath
+if (-not (Test-AllowedCasePath -Path $CasePath)) {
+    throw "Refusing to prepare path outside allowed benchmark workspaces: $CasePath"
+}
+Test-WslBashAvailable
 
 Remove-Tree $WorkspacePath
 New-Item -ItemType Directory -Force -Path $WorkspacePath | Out-Null
@@ -62,8 +172,8 @@ repo_root="$RepoWsl"
 case_dir="$CaseWsl"
 bugsinpy_bin="`$repo_root/dataset/BugsInPy/framework/bin"
 
-if [[ "`$case_dir" != "`$repo_root"/benchmark/cases/* ]]; then
-  echo "Refusing to prepare path outside benchmark cases: `$case_dir" >&2
+if [[ "`$case_dir" != "`$repo_root"/benchmark/cases/* && "`$case_dir" != "`$repo_root"/benchmark/codeagent_runs/*/case_workspaces/* ]]; then
+  echo "Refusing to prepare path outside allowed benchmark workspaces: `$case_dir" >&2
   exit 2
 fi
 
@@ -82,5 +192,5 @@ echo "[bugsinpy] workspace ready: `$case_dir/workspace/$Project"
 "@
 
 $BashCommand = $BashCommand -replace "`r`n", "`n"
-$BashCommand | wsl -- bash -lc "tr -d '\r' | bash -s"
-exit $LASTEXITCODE
+$ExitCode = Invoke-WslBash -InputText $BashCommand -TimeoutSeconds $WslCommandTimeoutSeconds
+exit $ExitCode

@@ -411,7 +411,7 @@ Scope boundaries for this implementation pass:
 - Verification commands: copy `benchmark/cases/bugsinpy_black_001` to a clean `<copied_case_dir>`, then run `powershell -ExecutionPolicy Bypass -File scripts/run_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir> -AllowTestFailure`.
 - Unit/integration tests to add: environment detection unit tests and disabled-case reporting.
 - Risks and mitigations: Windows/WSL filesystem and Python 3.8.3 complexity; keep optional, explicit, and well documented.
-- Status: pending.
+- Status: done.
 
 ### M26 Self-Built Benchmark Pass and Final Developer Docs
 
@@ -1009,3 +1009,23 @@ Use this section as an append-only engineering log. Every completed small module
 - Commands run: `python -m codeagent benchmark --config benchmark\benchmark.yaml` -> 6/6 passed, success_rate=1.00.
 - Developer report: `docs/dev_reports/M24A_llm_orchestration_hardening.md`.
 - Next step: run full repository verification, finalize M24A status, then continue to M25 optional BugsInPy readiness detection.
+
+### 2026-06-03 M25 BugsInPy Optional Path and Environment Detection Complete
+
+- Backup before doc update: `docs/_backups/20260603-150954/M25_docs/plans.md`.
+- Alignment review: checked M25 against SRS benchmark/logging/failure-handling expectations and design 07/09/10 requirements for explicit blockers, reproducible reports, clean case copies, and runner-only hidden material boundaries.
+- Environment detector: added `codeagent/benchmark/environment.py` with `BugsInPyEnvironmentDetector`, covering WSL path conversion, WSL bash availability, conda profile, `codeagent-bugsinpy-py383`, Python 3.8.3, `dos2unix`, and official BugsInPy framework scripts.
+- Blocker reporting: disabled optional cases now appear in `benchmark_result.json` / `benchmark_report.md` as `blocked_cases` and `blockers`; explicitly enabled BugsInPy cases preflight before workflow execution and are marked `blocked` when the detector reports missing environment readiness.
+- Clean-copy prepare path: BenchmarkRunner now preserves `prepare_command`, substitutes `{{CASE_DIR}}` to the copied run case, executes allowed BugsInPy prepare wrappers before workflow when the environment is ready, and rejects unsafe prepare commands.
+- Script hardening: `prepare_bugsinpy_wsl_conda.ps1` and `run_bugsinpy_wsl_conda.ps1` now require explicit `-CaseDir`, allow clean `benchmark/codeagent_runs/**/case_workspaces/**` copies, reject paths outside allowed benchmark workspaces, and add WSL path/batch-command timeout blockers to prevent hangs.
+- Current machine blocker: standalone detector reports `available=False` with WSL path conversion returning an empty repository path; manual wrapper smoke on a clean copied BugsInPy case returns `WSL bash command timed out after 60 seconds` instead of hanging indefinitely.
+- Real benchmark evidence: `python -m codeagent benchmark --config benchmark\benchmark.yaml` completed the 6 enabled public cases with real OpenRouter calls, `success_rate=1.00`, and reported `blocked=1` for `bugsinpy_black_001`. Latest aggregate: `benchmark/codeagent_runs/benchmark/2026-06-03_070800_221548_codeagent_course_benchmark_adfcde/benchmark_result.json`.
+- Secret scan: latest public benchmark run artifacts and aggregate reports had no OpenRouter key, bearer token, or `OPENROUTER_API_KEY=` value matches.
+- Commands run: `python -m pytest tests\unit\benchmark tests\integration\test_benchmark_runner.py tests\test_cli_contract.py tests\unit\config -q` -> 60 passed.
+- Commands run: `python -m pytest tests\unit\config tests\unit\tools\test_shell_runner.py -q` -> 43 passed.
+- Commands run: `python -m pytest -q` -> 269 passed.
+- Commands run: `python -m compileall -q codeagent scripts` -> passed.
+- Commands run: `python -m compileall -q codeagent` -> passed.
+- Commands run: copied `benchmark/cases/bugsinpy_black_001` to `benchmark/codeagent_runs/manual_m25/20260603-150516/case_workspaces/bugsinpy_black_001`, then ran `powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir> -AllowTestFailure` -> exit_code=1 with explicit `WSL bash command timed out after 60 seconds` blocker.
+- Developer report: `docs/dev_reports/M25_bugsinpy_environment_detection.md`.
+- Next step: continue M26 Self-Built Benchmark Pass and Final Developer Docs.

@@ -82,6 +82,12 @@ class AgentVisibility(BaseModel):
     hidden_paths: list[Path] = Field(default_factory=list)
 
 
+class ExecutionEnvironment(BaseModel):
+    recommended: str | None = None
+    conda_env: str | None = None
+    reason: str | None = None
+
+
 class TaskConfig(BaseModel):
     """Normalized task configuration used by CLI and benchmark cases."""
 
@@ -100,6 +106,7 @@ class TaskConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     test_command: CommandConfig = Field(default_factory=CommandConfig)
+    prepare_command: CommandConfig | None = None
     language: Literal["python"] = defaults.DEFAULT_LANGUAGE
     test_framework: Literal["pytest", "unittest"] = defaults.DEFAULT_TEST_FRAMEWORK
     mode: Literal["wizard", "run", "benchmark"] = "run"
@@ -108,6 +115,7 @@ class TaskConfig(BaseModel):
     log_truncation_chars: int = defaults.DEFAULT_LOG_TRUNCATION_CHARS
     auto_approve_in_benchmark: bool = False
     agent_visibility: AgentVisibility = Field(default_factory=AgentVisibility)
+    execution_environment: ExecutionEnvironment | None = None
 
     @model_validator(mode="before")
     @classmethod
