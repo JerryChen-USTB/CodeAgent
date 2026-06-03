@@ -75,7 +75,7 @@ Scope in:
 - Configured benchmark command execution, including current benchmark cases that use `python -m unittest discover`.
 - LangGraph/LangChain orchestration, OpenRouter-compatible model access, patch-first file changes, HITL, reports, and benchmarks.
 
-Scope out for MVP:
+Scope boundaries for this implementation pass:
 
 - IDE plugin, LSP, Web front end, and mobile integration.
 - Full multi-language support; Java is adapter-reserved only.
@@ -177,7 +177,7 @@ Scope out for MVP:
 
 ### M03 Python Package Scaffold and Dependency Baseline
 
-- Scope: create minimal Python package, `pyproject.toml`, dependency groups, test folders, examples folder.
+- Scope: create the foundational Python package, `pyproject.toml`, dependency groups, test folders, examples folder.
 - Key files/modules: `pyproject.toml`, `codeagent/__init__.py`, `codeagent/__main__.py`, `tests/`.
 - Acceptance criteria: package imports, `python -m pytest -q` runs, dependencies include LangGraph/LangChain/OpenAI-compatible support, Typer/Rich, Pydantic, PyYAML.
 - Verification commands: `python -m pytest -q`; `python -m codeagent --help`.
@@ -387,12 +387,20 @@ Scope out for MVP:
 
 ### M24 Public Benchmark Pass: HumanEval, MBPP, QuixBugs
 
-- Scope: run 2 HumanEval cases, 2 MBPP cases, and 2 QuixBugs cases from `benchmark/benchmark.yaml`; iterate on CodeAgent failures.
-- Key files/modules: benchmark configs plus all implementation/runtime modules.
-- Acceptance criteria: enabled public cases report success or clear failure categories with logs; target is all enabled public cases passing.
-- Verification commands: `codeagent benchmark --config benchmark/benchmark.yaml`.
-- Unit/integration tests to add: regression tests for any failure discovered in public benchmark.
-- Risks and mitigations: model variability and hidden-answer leakage; use deterministic prompts, no golden answers, repeated isolated runs.
+- Scope: run 2 HumanEval cases, 2 MBPP cases, and 2 QuixBugs cases from `benchmark/benchmark.yaml`; drive implementation and repair with real OpenRouter LLM calls; iterate on CodeAgent architecture, prompts, schemas, validation, and reports until failures are either fixed or classified with evidence.
+- Key files/modules: `codeagent/agents`, `codeagent/models`, `codeagent/cli/executor.py`, stage services, benchmark configs, and any runtime/report modules exposed by real benchmark failures.
+- Acceptance criteria: enabled public cases report success or evidence-backed failure categories with logs; target is all enabled public cases passing; every failure must be investigated from run artifacts, produce a code or prompt improvement when actionable, and add a regression test when the failure is reproducible.
+- Verification commands: `codeagent benchmark --config benchmark/benchmark.yaml`; targeted real LLM smoke for generated implementation/repair plans; `python -m pytest -q`.
+- Unit/integration tests to add: LLM request/response schema tests, prompt hidden-context tests, CLI handler tests for generated implementation/repair requests, regression tests for each benchmark failure class, and at least one self-designed public-style micro-benchmark that exercises LLM implementation plus hidden oracle isolation.
+- Risks and mitigations: model variability and hidden-answer leakage; use deterministic temperatures, schema validation, retries with validation feedback, hidden-path prompt tests, repeated isolated runs, and failure taxonomy rather than silent skips.
+- Status: done.
+
+### M24A LLM Orchestration Hardening and Benchmark Regression Pack
+
+- Scope: harden the LLM-driven implementation/repair loop after the first public benchmark pass by adding richer context selection, redaction, retry diagnostics, structured failure classes, and a self-designed benchmark regression pack that covers implementation, repair, hidden oracle, nested hidden paths, and malformed model output.
+- Key files/modules: `codeagent/agents/plan_generation.py`, `codeagent/agents/prompts.py`, `codeagent/models/structured_outputs.py`, `codeagent/benchmark/**`, `benchmark/selfbuilt/**` or new public-style regression cases.
+- Acceptance criteria: LLM calls are auditable without secret leakage; malformed/partial model responses produce actionable errors; prompt context excludes hidden and sensitive files by test; custom benchmark pack runs in clean copies and reports stable outcomes.
+- Verification commands: `python -m pytest tests/unit/agents tests/unit/models tests/integration/test_benchmark_runner.py -q`; run custom benchmark config; rerun `benchmark/benchmark.yaml`.
 - Status: pending.
 
 ### M25 BugsInPy Optional Path and Environment Detection
@@ -949,3 +957,33 @@ Use this section as an append-only engineering log. Every completed small module
 - Reviews: M23 spec review initially requested runner-only hidden oracle execution and then nested hidden-root filtering; final result APPROVED. M23 quality review initially requested copied-path preservation and per-case preparation isolation, then requested the same hidden-root smoke filtering; final result APPROVED.
 - Developer report: `docs/dev_reports/M23_benchmark_runner.md`.
 - Next step: continue M24 Public Benchmark Pass with real LLM-driven planning/implementation/repair integration.
+
+### 2026-06-03 M24 Public Benchmark Pass Start
+
+- Backup before doc update: `docs/_backups/20260603-115727/plans.md`.
+- Alignment review in progress: rechecking public benchmark failures against SRS FR-31 implementation plan generation, FR-55 repair suggestion generation, FR-58 repair patch generation, AI-01~AI-05 model access/error handling, and design docs for LLM-driven implementation/repair subgraphs.
+- Baseline failure observed: public benchmark runner completes all 6 enabled cases, but implementation cases fail because the CLI executor still reports “structured implementation plan required,” and QuixBugs repair loops fail because no structured repair plan is generated.
+- OpenRouter readiness: user-level `OPENROUTER_API_KEY` is present and usable through `SecretResolver`; both a small smoke prompt and the configured default model `anthropic/claude-opus-4.8` returned successfully via `ModelClientFactory`.
+- Engineering direction: build LLM plan generation as an auditable orchestration layer over the existing deterministic `ImplementationService` and `RepairService`, then iterate on context selection, schema validation, retry diagnostics, prompt quality, patch risk control, and benchmark evidence until the public cases converge.
+- Next step: add failing tests for LLM-generated implementation/repair requests and non-interactive CLI handlers that no longer fail only because a structured plan was missing.
+
+### 2026-06-03 M24 Quality Escalation Directive
+
+- User directive: do not treat the remaining work as a passable MVP. The target is a mature, high-completion product that is responsible for real environments, real OpenRouter calls, repeatable benchmark evidence, and robust failure handling.
+- Plan adjustment: M24 is expanded from a single public benchmark pass into a benchmark-driven LLM integration and hardening phase, and M24A is added for LLM orchestration hardening plus a self-designed regression benchmark pack.
+- Allowed iteration: later M24 work may return to earlier stage services, prompt registry, model wrappers, benchmark runner, or reports when real LLM/benchmark evidence reveals design gaps. Fixes should be tested, documented, and reviewed rather than worked around.
+- Quality bar: avoid placeholder success, silent skip, or “environment not configured” pass paths; missing external readiness must be a clear failure/blocker record with evidence, while configured environments must execute directly.
+
+### 2026-06-03 M24 Public Benchmark Pass Complete
+
+- Backup before completion doc update: `docs/_backups/20260603-125156/plans.md`.
+- Alignment review: checked M24 against SRS FR-30~FR-37 implementation, FR-49~FR-56 debugging, FR-57~FR-66 repair, FR-70~FR-77 logging/benchmark, FR-81~FR-84 failure handling, AI-01 model configuration, and design docs 02/05/10 for module boundaries, clean benchmark copies, hidden oracle isolation, and output artifacts.
+- Real LLM integration: `PlanGenerationService` now calls OpenRouter through `ModelClientFactory` to produce validated `ImplementationPlan` and `RepairPlan` payloads, feeds deterministic stage services, retries invalid model output, normalizes model paths to project-root-relative paths, and keeps hidden/secret benchmark paths out of prompts.
+- Benchmark-driven hardening: fixed copied benchmark context filtering under `codeagent_runs`, project-relative command normalization, UTF-8 BOM/CRLF patch preservation, Windows long-path command logs, CLI stage-runtime error classification, and debug evidence selection when ShellRunner shortens log filenames.
+- Real benchmark evidence: `codeagent benchmark --config benchmark\benchmark.yaml` with real OpenRouter calls completed 6/6 public cases; latest aggregate report: `benchmark/codeagent_runs/benchmark/2026-06-03_053939_990694_codeagent_course_benchmark_b44835/benchmark_result.json`, success_rate=1.00.
+- Commands run: `python -m pytest tests\unit\tools\test_shell_runner.py tests\integration\test_implementation_stage.py tests\integration\test_cli_run.py tests\unit\agents tests\unit\models tests\unit\tools\test_patch_service.py tests\integration\test_benchmark_runner.py tests\test_cli_contract.py -q` -> 70 passed.
+- Commands run: `python -m pytest -q` -> 250 passed.
+- Commands run: `python -m compileall -q codeagent` -> passed.
+- Commands run: `codeagent benchmark --config benchmark\benchmark.yaml` -> latest run completed 6 cases, success_rate=1.00 (6/6), no hidden oracle material exposed to Agent-visible workflow.
+- Developer report: `docs/dev_reports/M24_public_benchmark_llm_pass.md`.
+- Next step: continue M24A LLM Orchestration Hardening and Benchmark Regression Pack, including self-designed public-style regression cases and richer malformed-response diagnostics.

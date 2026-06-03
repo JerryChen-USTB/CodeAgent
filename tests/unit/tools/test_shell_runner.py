@@ -245,6 +245,40 @@ def test_shell_runner_allows_py_compile_inside_cwd(tmp_path) -> None:
     assert result.exit_code == 0
 
 
+def test_shell_runner_shortens_log_names_for_long_run_paths(tmp_path) -> None:
+    project = tmp_path / "project"
+    _write(project / "module.py", "VALUE = 1\n")
+    prefix = "nested_benchmark_case_path_"
+    segment_chars = 20
+    while True:
+        long_segment = prefix + ("x" * segment_chars)
+        candidate_logs_dir = tmp_path / long_segment / "implementation" / "logs"
+        default_path_len = len(
+            str(candidate_logs_dir / "implementation_syntax_check.command.json")
+        )
+        shortened_path_len = len(str(candidate_logs_dir / "cmd-4a751d370486.command.json"))
+        if default_path_len > 240 and shortened_path_len <= 240:
+            break
+        segment_chars += 1
+    logs_dir = tmp_path / long_segment / "implementation" / "logs"
+    runner = ShellRunner(logs_dir=logs_dir)
+
+    result = runner.run(
+        f"{sys.executable} -m py_compile module.py",
+        cwd=project,
+        timeout_seconds=10,
+        approval=_approval("implementation_syntax_check"),
+    )
+
+    assert result.exit_code == 0
+    assert len(str(result.stdout_log)) <= 240
+    assert len(str(result.stderr_log)) <= 240
+    assert len(str(result.record_path)) <= 240
+    assert result.stdout_log.exists()
+    assert result.stderr_log.exists()
+    assert result.record_path.exists()
+
+
 def test_shell_runner_records_benchmark_auto_approval(tmp_path) -> None:
     project = tmp_path / "project"
     _write(project / "test_ok.py", "def test_ok():\n    assert True\n")

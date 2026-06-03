@@ -214,6 +214,34 @@ def test_apply_raises_when_patch_context_does_not_match(tmp_path) -> None:
         service.apply_patch(patch_path, project, operation_id="op-4")
 
 
+def test_apply_preserves_utf8_bom_and_crlf_when_context_matches(tmp_path) -> None:
+    project = tmp_path / "project"
+    source = project / "calc.py"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        b"\xef\xbb\xbfdef add(left, right):\r\n    return left - right\r\n"
+    )
+    patch_path = _patch(
+        tmp_path / "crlf.diff",
+        """--- a/calc.py
++++ b/calc.py
+@@ -1,2 +1,2 @@
+ def add(left, right):
+-    return left - right
++    return left + right
+""",
+    )
+    service = PatchService()
+
+    result = service.apply_patch(patch_path, project, operation_id="op-crlf")
+
+    assert result.applied is True
+    content = source.read_bytes()
+    assert content.startswith(b"\xef\xbb\xbf")
+    assert b"\r\n" in content
+    assert b"return left + right" in content
+
+
 def test_apply_rejects_delete_patch_that_leaves_remaining_lines(tmp_path) -> None:
     project = tmp_path / "project"
     _write(project / "src" / "app.py", "line 1\nline 2\n")

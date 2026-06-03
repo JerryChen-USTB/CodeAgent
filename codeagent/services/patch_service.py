@@ -119,6 +119,13 @@ class PlannedFileChange:
 
 
 @dataclass(frozen=True)
+class TextFileSnapshot:
+    lines: list[str]
+    newline: str = "\n"
+    utf8_bom: bool = False
+
+
+@dataclass(frozen=True)
 class FileBackup:
     path: Path
     existed: bool
@@ -265,7 +272,7 @@ class PatchService:
                     change.path.unlink()
                 elif change.action == "write":
                     change.path.parent.mkdir(parents=True, exist_ok=True)
-                    change.path.write_text(change.content or "", encoding="utf-8")
+                    change.path.write_bytes((change.content or "").encode("utf-8"))
         except OSError as exc:
             _rollback_file_changes(backups)
             raise PatchApplyError(f"failed to apply patch: {exc}") from exc
@@ -370,8 +377,8 @@ class PatchService:
         if file_patch.old_path is None:
             new_content = _content_from_lines(_new_hunk_lines(file_patch))
             if target_path.exists():
-                current = _read_lines(target_path)
-                if _is_already_applied(current, file_patch):
+                current = _read_file_snapshot(target_path)
+                if _is_already_applied(current.lines, file_patch):
                     return PlannedFileChange("already", target_path, relative_path)
                 raise PatchApplyError(f"target file already exists: {relative_path}")
             return PlannedFileChange("write", target_path, relative_path, new_content)
@@ -379,23 +386,30 @@ class PatchService:
         if file_patch.new_path is None:
             if not target_path.exists():
                 return PlannedFileChange("already", target_path, relative_path)
-            current = _read_lines(target_path)
-            remaining_lines = _apply_hunks(current, file_patch)
+            current = _read_file_snapshot(target_path)
+            remaining_lines = _apply_hunks(current.lines, file_patch)
             if remaining_lines:
                 raise PatchApplyError("delete patch does not remove entire file")
             return PlannedFileChange("delete", target_path, relative_path)
 
         if not target_path.exists():
             raise PatchApplyError(f"target file does not exist: {relative_path}")
-        current = _read_lines(target_path)
+        current = _read_file_snapshot(target_path)
         try:
-            new_lines = _apply_hunks(current, file_patch)
+            new_lines = _apply_hunks(current.lines, file_patch)
         except PatchApplyError:
-            if _is_already_applied(current, file_patch):
+            if _is_already_applied(current.lines, file_patch):
                 return PlannedFileChange("already", target_path, relative_path)
             raise
         return PlannedFileChange(
-            "write", target_path, relative_path, _content_from_lines(new_lines)
+            "write",
+            target_path,
+            relative_path,
+            _content_from_lines(
+                new_lines,
+                newline=current.newline,
+                utf8_bom=current.utf8_bom,
+            ),
         )
 
 
@@ -541,12 +555,22 @@ def _split_content(content: str | None) -> list[str]:
     return content.splitlines()
 
 
-def _read_lines(path: Path) -> list[str]:
-    return path.read_text(encoding="utf-8").splitlines()
+def _read_file_snapshot(path: Path) -> TextFileSnapshot:
+    raw = path.read_bytes()
+    utf8_bom = raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig")
+    newline = "\r\n" if text.count("\r\n") > text.count("\n") - text.count("\r\n") else "\n"
+    return TextFileSnapshot(lines=text.splitlines(), newline=newline, utf8_bom=utf8_bom)
 
 
-def _content_from_lines(lines: list[str]) -> str:
-    return "\n".join(lines) + ("\n" if lines else "")
+def _content_from_lines(
+    lines: list[str],
+    *,
+    newline: str = "\n",
+    utf8_bom: bool = False,
+) -> str:
+    content = newline.join(lines) + (newline if lines else "")
+    return ("\ufeff" + content) if utf8_bom else content
 
 
 def _new_hunk_lines(file_patch: FilePatch) -> list[str]:

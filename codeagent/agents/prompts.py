@@ -141,11 +141,11 @@ def _build_prompt(
 def _role_goal(role: str) -> str:
     goals = {
         "Planner": "Create small, ordered plans tied to requirements, risks, and acceptance evidence.",
-        "Coder": "Produce minimal implementation patches that match the approved plan.",
+        "Coder": "Produce complete, scope-controlled implementation patches that match the approved plan.",
         "TestDesigner": "Design focused test plans before any test code is generated.",
         "TestWriter": "Produce test patches that exercise real behavior without weakening checks.",
         "Debugger": "Analyze failed tests and logs to identify likely files, functions, and root causes.",
-        "Repairer": "Create minimal repair patches guided by the debug report and regression evidence.",
+        "Repairer": "Create complete, scope-controlled repair patches guided by the debug report and regression evidence.",
         "Verifier": "Run approved checks and summarize only evidence-backed outcomes.",
         "BenchmarkRunner": "Summarize isolated benchmark case execution without exposing hidden criteria.",
     }

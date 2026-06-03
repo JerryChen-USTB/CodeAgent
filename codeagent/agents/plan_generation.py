@@ -1,0 +1,419 @@
+"""LLM-backed implementation and repair plan generation."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, TypeVar
+
+from pydantic import BaseModel, ValidationError
+
+from codeagent.config.schema import Stage
+from codeagent.context.sensitive_filter import (
+    GENERATED_DIRS,
+    SENSITIVE_FILENAMES,
+    SENSITIVE_NAME_PARTS,
+    SENSITIVE_SUFFIXES,
+)
+from codeagent.models.factory import ModelClientFactory
+from codeagent.runtime.run_context import RunContext
+from codeagent.stages.implementation_service import (
+    PATCH_INTERRUPT_ID,
+    ImplementationPlan,
+    ImplementationRequest,
+)
+from codeagent.stages.repair_service import (
+    REPAIR_COMMAND_INTERRUPT_ID,
+    REPAIR_PATCH_INTERRUPT_ID,
+    RepairPlan,
+    RepairRequest,
+)
+from codeagent.tools.hitl import ApprovalDecision
+
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
+TEXT_EXTENSIONS = {".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml"}
+
+
+class PlanGenerationError(RuntimeError):
+    """Raised when the LLM cannot produce a valid structured plan."""
+
+
+class PlanGenerationService:
+    def __init__(
+        self,
+        *,
+        model_factory: ModelClientFactory | None = None,
+        max_context_chars: int = 80_000,
+    ) -> None:
+        self.model_factory = model_factory or ModelClientFactory()
+        self.max_context_chars = max_context_chars
+
+    def create_implementation_request(
+        self,
+        context: RunContext,
+    ) -> ImplementationRequest:
+        prompt = self._implementation_prompt(context)
+        plan = self._invoke_schema(context, prompt, ImplementationPlan)
+        return ImplementationRequest(
+            plan=plan,
+            approval=_approval(
+                context,
+                interrupt_id=PATCH_INTERRUPT_ID,
+                comment="Auto-approved generated implementation patch.",
+            ),
+            max_patch_attempts=max(1, context.task_config.model.max_retries + 1),
+            command_timeout_seconds=context.task_config.test_command.timeout_seconds,
+        )
+
+    def create_repair_request(self, context: RunContext) -> RepairRequest:
+        prompt = self._repair_prompt(context)
+        plan = self._invoke_schema(context, prompt, RepairPlan)
+        return RepairRequest(
+            plan=plan,
+            patch_approval=_approval(
+                context,
+                interrupt_id=REPAIR_PATCH_INTERRUPT_ID,
+                comment="Auto-approved generated repair patch.",
+            ),
+            command_approval=_approval(
+                context,
+                interrupt_id=REPAIR_COMMAND_INTERRUPT_ID,
+                comment="Auto-approved generated repair verification command.",
+            ),
+            max_patch_attempts=max(1, context.task_config.model.max_retries + 1),
+            command_timeout_seconds=context.task_config.test_command.timeout_seconds,
+        )
+
+    def _implementation_prompt(self, context: RunContext) -> str:
+        return "\n\n".join(
+            [
+                _system_rules("implementation", "ImplementationPlan"),
+                _schema_block(ImplementationPlan),
+                "Task inputs and visible project files:",
+                _visible_context(
+                    context,
+                    include_failure_logs=False,
+                    max_context_chars=self.max_context_chars,
+                ),
+                (
+                    "Return only JSON. Include exact old_content when modifying an "
+                    "existing file and full new_content for every changed file. "
+                    "Use project-root-relative paths."
+                ),
+            ]
+        )
+
+    def _repair_prompt(self, context: RunContext) -> str:
+        return "\n\n".join(
+            [
+                _system_rules("repair", "RepairPlan"),
+                _schema_block(RepairPlan),
+                "Visible project files and failure evidence:",
+                _visible_context(
+                    context,
+                    include_failure_logs=True,
+                    max_context_chars=self.max_context_chars,
+                ),
+                (
+                    "Return only JSON. Produce a complete, scope-controlled "
+                    "source-code repair with enough context for audit. Do not modify "
+                    "tests. Set verification_command to the configured command unless "
+                    f"a safer equivalent is required: "
+                    f"{context.task_config.test_command.command!r}."
+                ),
+            ]
+        )
+
+    def _invoke_schema(
+        self,
+        context: RunContext,
+        prompt: str,
+        schema: type[SchemaT],
+    ) -> SchemaT:
+        model = self.model_factory.create(context.task_config.model)
+        last_error: Exception | None = None
+        attempts = max(1, context.task_config.model.max_retries + 1)
+        for attempt in range(1, attempts + 1):
+            retry_prompt = prompt
+            if last_error is not None:
+                retry_prompt += (
+                    "\n\nPrevious response failed schema validation. "
+                    f"Attempt {attempt}/{attempts}. Error: {_redact(str(last_error))}"
+                )
+            response = model.invoke(retry_prompt)
+            try:
+                payload = json.loads(_extract_json(_response_text(response)))
+                value = schema.model_validate(payload)
+                return _normalize_generated_plan(value, context.task_config.project_path)
+            except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
+                last_error = exc
+        raise PlanGenerationError(
+            f"Failed to generate valid {schema.__name__}: {_redact(str(last_error))}"
+        )
+
+
+def _system_rules(stage: str, schema_name: str) -> str:
+    return (
+        f"You are CodeAgent's {stage} planner. Generate a {schema_name} that can be "
+        "validated by Pydantic and applied as a complete, scope-controlled patch. "
+        "Use only visible inputs and visible project files supplied below. Never infer or request "
+        "hidden benchmark oracle material, evaluation directories, expected answers, "
+        "secret files, API keys, tokens, or credentials. Do not claim tests pass; "
+        "the system will run verification commands after applying the patch."
+    )
+
+
+def _normalize_generated_plan(plan: SchemaT, project_root: Path) -> SchemaT:
+    if isinstance(plan, ImplementationPlan):
+        changes = [
+            change.model_copy(
+                update={"path": _project_relative_path(change.path, project_root)}
+            )
+            for change in plan.changes
+        ]
+        syntax_targets = [
+            _project_relative_path(target, project_root)
+            for target in plan.syntax_check_targets
+        ]
+        return plan.model_copy(
+            update={"changes": changes, "syntax_check_targets": syntax_targets}
+        )  # type: ignore[return-value]
+    if isinstance(plan, RepairPlan):
+        changes = [
+            change.model_copy(
+                update={"path": _project_relative_path(change.path, project_root)}
+            )
+            for change in plan.changes
+        ]
+        return plan.model_copy(update={"changes": changes})  # type: ignore[return-value]
+    return plan
+
+
+def _project_relative_path(raw_path: Path, project_root: Path) -> Path:
+    project_root = project_root.resolve()
+    path = Path(raw_path)
+    if path.is_absolute():
+        try:
+            return path.resolve().relative_to(project_root)
+        except ValueError:
+            return path
+    parts = path.parts
+    if not parts:
+        return path
+    stripped = Path(*parts[1:]) if len(parts) > 1 else path
+    should_consider_prefix = parts[0] in {project_root.name, "workspace", "project"}
+    if not should_consider_prefix:
+        return path
+    original_candidate = project_root / path
+    stripped_candidate = project_root / stripped
+    original_parent_exists = original_candidate.parent.exists()
+    stripped_parent_exists = stripped_candidate.parent.exists()
+    if (
+        not original_candidate.exists()
+        and (stripped_candidate.exists() or (stripped_parent_exists and not original_parent_exists))
+    ):
+        return stripped
+    return path
+
+
+def _schema_block(schema: type[BaseModel]) -> str:
+    return "JSON schema:\n" + json.dumps(
+        schema.model_json_schema(),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _visible_context(
+    context: RunContext,
+    *,
+    include_failure_logs: bool,
+    max_context_chars: int,
+) -> str:
+    hidden_paths = [path.resolve() for path in context.task_config.agent_visibility.hidden_paths]
+    visible_roots = [
+        path.resolve() for path in context.task_config.agent_visibility.visible_paths
+    ]
+    sections: list[str] = []
+    budget = max(0, max_context_chars)
+
+    project_root = context.task_config.project_path.resolve()
+    for material in context.task_config.input_materials:
+        material_root = _context_root_for_material(material.path)
+        for path in _iter_text_files(material.path):
+            if not _is_visible_file(
+                path,
+                visible_roots=visible_roots,
+                hidden_paths=hidden_paths,
+                context_roots=visible_roots or [material_root],
+            ):
+                continue
+            budget = _append_file_section(
+                sections,
+                label=f"input/{path.name}",
+                path=path,
+                budget=budget,
+            )
+            if budget <= 0:
+                return "\n\n".join(sections)
+
+    for path in _iter_text_files(project_root):
+        if not _is_visible_file(
+            path,
+            visible_roots=visible_roots,
+            hidden_paths=hidden_paths,
+            context_roots=visible_roots or [project_root],
+        ):
+            continue
+        try:
+            label = path.resolve().relative_to(project_root).as_posix()
+        except ValueError:
+            label = path.name
+        budget = _append_file_section(
+            sections,
+            label=f"project/{label}",
+            path=path,
+            budget=budget,
+        )
+        if budget <= 0:
+            return "\n\n".join(sections)
+
+    if include_failure_logs:
+        for log_path in _failure_log_paths(context):
+            budget = _append_file_section(
+                sections,
+                label=f"failure_log/{log_path.name}",
+                path=log_path,
+                budget=budget,
+            )
+            if budget <= 0:
+                break
+    return "\n\n".join(sections) if sections else "(no visible context files found)"
+
+
+def _iter_text_files(path: Path) -> list[Path]:
+    path = path.resolve()
+    if path.is_file():
+        return [path] if path.suffix.lower() in TEXT_EXTENSIONS else []
+    if not path.is_dir():
+        return []
+    return [
+        candidate
+        for candidate in sorted(path.rglob("*"))
+        if candidate.is_file() and candidate.suffix.lower() in TEXT_EXTENSIONS
+    ]
+
+
+def _context_root_for_material(path: Path) -> Path:
+    resolved = path.resolve()
+    if resolved.is_file():
+        return resolved.parent
+    return resolved
+
+
+def _append_file_section(
+    sections: list[str],
+    *,
+    label: str,
+    path: Path,
+    budget: int,
+) -> int:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return budget
+    if len(text) > budget:
+        text = text[:budget] + "\n[truncated]\n"
+    sections.append(f"### {label}\n{text}")
+    return budget - len(text)
+
+
+def _failure_log_paths(context: RunContext) -> list[Path]:
+    logs_dir = context.stage_dirs[Stage.TEST] / "logs"
+    return [
+        path
+        for path in (
+            logs_dir / "testing_cli_command.stdout.log",
+            logs_dir / "testing_cli_command.stderr.log",
+        )
+        if path.exists()
+    ]
+
+
+def _is_visible_file(
+    path: Path,
+    *,
+    visible_roots: list[Path],
+    hidden_paths: list[Path],
+    context_roots: list[Path],
+) -> bool:
+    resolved = path.resolve()
+    if visible_roots and not any(_is_relative_to(resolved, root) for root in visible_roots):
+        return False
+    if any(_is_relative_to(resolved, hidden) for hidden in hidden_paths):
+        return False
+    parts = _relative_parts_for_policy(resolved, context_roots=context_roots)
+    if any(part in GENERATED_DIRS for part in parts):
+        return False
+    name = resolved.name.lower()
+    if name in SENSITIVE_FILENAMES or resolved.suffix.lower() in SENSITIVE_SUFFIXES:
+        return False
+    return not any(part in name for part in SENSITIVE_NAME_PARTS)
+
+
+def _relative_parts_for_policy(path: Path, *, context_roots: list[Path]) -> tuple[str, ...]:
+    for root in context_roots:
+        if _is_relative_to(path, root):
+            return path.relative_to(root).parts
+    return path.parts
+
+
+def _approval(context: RunContext, *, interrupt_id: str, comment: str) -> ApprovalDecision:
+    benchmark_auto = (
+        context.task_config.mode == "benchmark"
+        or context.task_config.auto_approve_in_benchmark
+        or context.task_config.runtime.auto_approve_in_benchmark
+    )
+    return ApprovalDecision(
+        interrupt_id=interrupt_id,
+        decision_type="approve",
+        comment=comment,
+        decided_by="benchmark" if benchmark_auto else "cli",
+        auto=benchmark_auto,
+    )
+
+
+def _response_text(response: Any) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(item) for item in content)
+    return str(content)
+
+
+def _extract_json(text: str) -> str:
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("model response did not contain a JSON object")
+    return text[start : end + 1]
+
+
+def _redact(text: str) -> str:
+    return re.sub(r"sk(?:-or)?-[A-Za-z0-9_-]+", "<redacted>", text)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True

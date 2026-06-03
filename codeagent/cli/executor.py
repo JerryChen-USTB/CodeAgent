@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from codeagent.adapters.test_result import TestResult
+from codeagent.agents.plan_generation import PlanGenerationError, PlanGenerationService
 from codeagent.config.schema import Stage, TaskConfig
 from codeagent.errors.exceptions import ErrorRecord, utc_timestamp
 from codeagent.reports import ArtifactKind, ArtifactRecord, ReportWriter, StageResult
 from codeagent.reports.schemas import HumanDecision
-from codeagent.runtime.commands import CommandApproval
+from codeagent.runtime.commands import CommandApproval, ShellResult
 from codeagent.runtime.run_context import RunContext, create_run_context
 from codeagent.stages.debugging_service import (
     DEBUGGING_STAGE,
@@ -20,6 +22,8 @@ from codeagent.stages.debugging_service import (
     DebuggingRequest,
     DebuggingService,
 )
+from codeagent.stages.implementation_service import ImplementationService
+from codeagent.stages.repair_service import RepairService
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
@@ -81,21 +85,50 @@ def execute_task_config(
 
 def _stage_handlers_for_cli(context: RunContext) -> dict[str, StageHandler]:
     return {
-        "implementation": _unsupported_stage_handler(
-            context,
-            stage="implementation",
-            summary="Implementation stage requires a structured implementation plan before execution.",
-            next_suggestion="Run after the LLM planner/coder stage supplies an ImplementationPlan.",
-        ),
+        "implementation": _implementation_handler(context),
         "testing": _testing_command_handler(context),
         "debugging": _debugging_handler(context),
-        "repair": _unsupported_stage_handler(
-            context,
-            stage="repair",
-            summary="Repair stage requires a structured repair plan before execution.",
-            next_suggestion="Run debugging first and provide a RepairPlan from the repair agent.",
-        ),
+        "repair": _repair_handler(context),
     }
+
+
+def _implementation_handler(context: RunContext) -> StageHandler:
+    service = ImplementationService(run_context=context)
+
+    def run(state: AgentState) -> dict[str, Any]:
+        started_at = utc_timestamp()
+        try:
+            request = PlanGenerationService().create_implementation_request(context)
+        except Exception as exc:
+            result = _llm_generation_failed_result(
+                stage="implementation",
+                started_at=started_at,
+                exc=exc,
+                summary="Implementation plan generation failed.",
+                next_suggestion=(
+                    "Inspect model configuration, visible inputs, and schema validation "
+                    "errors, then regenerate the implementation plan."
+                ),
+            )
+            _writer(context).write_stage_report(result)
+            return _state_update_from_result(state, result)
+        try:
+            result = service.run(request)
+        except Exception as exc:
+            result = _stage_execution_failed_result(
+                stage="implementation",
+                started_at=started_at,
+                exc=exc,
+                summary="Implementation stage execution failed.",
+                next_suggestion=(
+                    "Inspect implementation artifacts, command logs, and patch "
+                    "application state, then retry the stage after fixing the runtime issue."
+                ),
+            )
+            _writer(context).write_stage_report(result)
+        return _state_update_from_result(state, result)
+
+    return run
 
 
 def _testing_command_handler(context: RunContext) -> StageHandler:
@@ -139,6 +172,7 @@ def _testing_command_handler(context: RunContext) -> StageHandler:
             result = _testing_result_from_parsed(
                 context,
                 parsed,
+                shell=shell,
                 started_at=started_at,
             )
         except (CommandDeniedError, ValueError, RuntimeError) as exc:
@@ -167,23 +201,40 @@ def _debugging_handler(context: RunContext) -> StageHandler:
     return run
 
 
-def _unsupported_stage_handler(
-    context: RunContext,
-    *,
-    stage: str,
-    summary: str,
-    next_suggestion: str,
-) -> StageHandler:
+def _repair_handler(context: RunContext) -> StageHandler:
+    service = RepairService(run_context=context)
+
     def run(state: AgentState) -> dict[str, Any]:
-        result = _failed_stage_result(
-            stage=stage,
-            started_at=utc_timestamp(),
-            summary=summary,
-            category="validation",
-            message=summary,
-            next_suggestion=next_suggestion,
-        )
-        _writer(context).write_stage_report(result)
+        started_at = utc_timestamp()
+        try:
+            request = PlanGenerationService().create_repair_request(context)
+        except Exception as exc:
+            result = _llm_generation_failed_result(
+                stage="repair",
+                started_at=started_at,
+                exc=exc,
+                summary="Repair plan generation failed.",
+                next_suggestion=(
+                    "Inspect model configuration, debug evidence, visible source, "
+                    "and schema validation errors, then regenerate the repair plan."
+                ),
+            )
+            _writer(context).write_stage_report(result)
+            return _state_update_from_result(state, result)
+        try:
+            result = service.run(request)
+        except Exception as exc:
+            result = _stage_execution_failed_result(
+                stage="repair",
+                started_at=started_at,
+                exc=exc,
+                summary="Repair stage execution failed.",
+                next_suggestion=(
+                    "Inspect repair artifacts, command logs, and patch application state, "
+                    "then retry the stage after fixing the runtime issue."
+                ),
+            )
+            _writer(context).write_stage_report(result)
         return _state_update_from_result(state, result)
 
     return run
@@ -217,7 +268,7 @@ def _debugging_request_from_config(
 
 def _failure_logs_from_config(context: RunContext, state: AgentState) -> list[Path]:
     testing_logs = _testing_log_paths(context)
-    if "testing" in state.get("stage_results", {}) and testing_logs:
+    if "testing" in state.get("stage_results", {}):
         return testing_logs
     paths = [
         material.path
@@ -232,14 +283,24 @@ def _failure_logs_from_config(context: RunContext, state: AgentState) -> list[Pa
 
 def _testing_log_paths(context: RunContext) -> list[Path]:
     logs_dir = context.stage_dirs[Stage.TEST] / "logs"
-    return [
-        path
-        for path in (
-            logs_dir / "testing_cli_command.stdout.log",
-            logs_dir / "testing_cli_command.stderr.log",
-        )
-        if path.exists()
+    candidates = [
+        logs_dir / "testing_cli_command.stdout.log",
+        logs_dir / "testing_cli_command.stderr.log",
     ]
+    if logs_dir.exists():
+        candidates.extend(sorted(logs_dir.glob("*.stdout.log")))
+        candidates.extend(sorted(logs_dir.glob("*.stderr.log")))
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if not path.exists():
+            continue
+        key = path.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(path)
+    return resolved
 
 
 def _testing_report_path(context: RunContext, state: AgentState) -> Path | None:
@@ -261,6 +322,7 @@ def _testing_result_from_parsed(
     context: RunContext,
     parsed: TestResult,
     *,
+    shell: ShellResult | None = None,
     started_at: str,
 ) -> StageResult:
     stage_dir = context.stage_dirs[Stage.TEST]
@@ -289,11 +351,24 @@ def _testing_result_from_parsed(
             "Testing report",
         ),
     ]
-    for artifact_id, path, summary in (
-        ("testing_stdout_log", stage_dir / "logs" / "testing_cli_command.stdout.log", "Testing stdout log"),
-        ("testing_stderr_log", stage_dir / "logs" / "testing_cli_command.stderr.log", "Testing stderr log"),
-        ("testing_command_record", stage_dir / "logs" / "testing_cli_command.command.json", "Testing command record"),
-    ):
+    log_artifacts = (
+        (
+            "testing_stdout_log",
+            shell.stdout_log if shell is not None else stage_dir / "logs" / "testing_cli_command.stdout.log",
+            "Testing stdout log",
+        ),
+        (
+            "testing_stderr_log",
+            shell.stderr_log if shell is not None else stage_dir / "logs" / "testing_cli_command.stderr.log",
+            "Testing stderr log",
+        ),
+        (
+            "testing_command_record",
+            shell.record_path if shell is not None else stage_dir / "logs" / "testing_cli_command.command.json",
+            "Testing command record",
+        ),
+    )
+    for artifact_id, path, summary in log_artifacts:
         if path.exists():
             artifacts.append(
                 _record_artifact(
@@ -389,6 +464,47 @@ def _failed_stage_result(
         ),
         next_suggestion=next_suggestion,
     )
+
+
+def _llm_generation_failed_result(
+    *,
+    stage: str,
+    started_at: str,
+    exc: Exception,
+    summary: str,
+    next_suggestion: str,
+) -> StageResult:
+    return _failed_stage_result(
+        stage=stage,
+        started_at=started_at,
+        summary=summary,
+        category="model" if isinstance(exc, PlanGenerationError) else "model",
+        message=_redact_exception(exc),
+        next_suggestion=next_suggestion,
+    )
+
+
+def _stage_execution_failed_result(
+    *,
+    stage: str,
+    started_at: str,
+    exc: Exception,
+    summary: str,
+    next_suggestion: str,
+) -> StageResult:
+    return _failed_stage_result(
+        stage=stage,
+        started_at=started_at,
+        summary=summary,
+        category="tool",
+        message=_redact_exception(exc),
+        next_suggestion=next_suggestion,
+    )
+
+
+def _redact_exception(exc: Exception) -> str:
+    text = f"{type(exc).__name__}: {exc}"
+    return re.sub(r"sk(?:-or)?-[A-Za-z0-9_-]+", "<redacted>", text)
 
 
 def _state_update_from_result(state: AgentState, result: StageResult) -> dict[str, Any]:

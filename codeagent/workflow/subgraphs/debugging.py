@@ -62,7 +62,7 @@ def create_debugging_stage_handler(
 
 
 def build_debugging_subgraph(handler: StageHandler):
-    """Build a minimal debugging subgraph around an injected stage handler."""
+    """Build a focused debugging subgraph around an injected stage handler."""
 
     graph = StateGraph(AgentState)
     graph.add_node(DEBUGGING_STAGE, handler)

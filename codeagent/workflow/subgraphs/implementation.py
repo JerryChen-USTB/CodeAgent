@@ -62,7 +62,7 @@ def create_implementation_stage_handler(
 
 
 def build_implementation_subgraph(handler: StageHandler):
-    """Build a minimal implementation subgraph around an injected stage handler."""
+    """Build a focused implementation subgraph around an injected stage handler."""
 
     graph = StateGraph(AgentState)
     graph.add_node(IMPLEMENTATION_STAGE, handler)

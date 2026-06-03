@@ -135,7 +135,27 @@ def test_prepare_case_workspace_copies_case_and_keeps_original_reusable(tmp_path
     assert not (case_dir / "workspace" / "copied.txt").exists()
     assert context.task_config.project_path == context.run_case_dir / "workspace"
     assert "{{CASE_DIR}}" not in context.task_config.test_command.command
-    assert context.run_case_dir.as_posix() in context.task_config.test_command.command
+    assert context.task_config.test_command.command == "python -m unittest discover -s tests"
+
+
+def test_prepare_case_workspace_normalizes_project_relative_test_paths(tmp_path) -> None:
+    _write_unittest_case(
+        tmp_path / "cases",
+        "case_project_relative_command",
+        command="python -m unittest discover -s workspace/tests",
+    )
+    config_path = _benchmark_config(tmp_path, "case_project_relative_command")
+    loaded = CaseLoader().load(config_path)
+    benchmark_run_dir = tmp_path / "runs" / "benchmark_run"
+
+    context = BenchmarkRunner().prepare_case_workspace(
+        loaded.enabled_cases[0],
+        benchmark_run_dir=benchmark_run_dir,
+        benchmark_config=loaded.config,
+    )
+
+    assert context.task_config.project_path == context.run_case_dir / "workspace"
+    assert context.task_config.test_command.command == "python -m unittest discover -s tests"
 
 
 def test_benchmark_runner_executes_clean_copy_and_writes_aggregate_reports(tmp_path) -> None:

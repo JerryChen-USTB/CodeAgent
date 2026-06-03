@@ -63,7 +63,7 @@ def create_repair_stage_handler(
 
 
 def build_repair_subgraph(handler: StageHandler):
-    """Build a minimal repair subgraph around an injected stage handler."""
+    """Build a focused repair subgraph around an injected stage handler."""
 
     graph = StateGraph(AgentState)
     graph.add_node(REPAIR_STAGE, handler)

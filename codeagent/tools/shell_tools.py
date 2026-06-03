@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shlex
 import subprocess
 import time
+from os import PathLike
 from pathlib import Path
 
 from codeagent.runtime.commands import (
@@ -31,6 +33,7 @@ PYTHON_EXECUTABLE_NAMES = {
     "py",
     "py.exe",
 }
+MAX_PORTABLE_PATH_CHARS = 240
 
 
 class CommandDeniedError(PermissionError):
@@ -59,7 +62,7 @@ class ShellRunner:
         if not policy.allowed:
             raise CommandDeniedError(f"command not allowed: {policy.reason}")
 
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        _mkdir(self.logs_dir)
         stdout_log, stderr_log, record_path = self._operation_paths(approval.operation_id)
         started = time.perf_counter()
         stdout = ""
@@ -88,8 +91,8 @@ class ShellRunner:
             timed_out = True
 
         duration_seconds = time.perf_counter() - started
-        stdout_log.write_text(stdout, encoding="utf-8")
-        stderr_log.write_text(stderr, encoding="utf-8")
+        _write_text(stdout_log, stdout)
+        _write_text(stderr_log, stderr)
         (
             stdout_preview,
             stdout_truncated,
@@ -136,19 +139,22 @@ class ShellRunner:
             stdout_log=str(stdout_log),
             stderr_log=str(stderr_log),
         )
-        record_path.write_text(
-            json.dumps(record.to_json_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_text(record_path, json.dumps(record.to_json_dict(), indent=2, ensure_ascii=False))
         return result
 
     def _operation_paths(self, operation_id: str) -> tuple[Path, Path, Path]:
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", operation_id).strip("_") or "command"
-        return (
-            self.logs_dir / f"{safe_id}.stdout.log",
-            self.logs_dir / f"{safe_id}.stderr.log",
-            self.logs_dir / f"{safe_id}.command.json",
-        )
+        paths = _log_paths_for_stem(self.logs_dir, safe_id)
+        if _paths_are_portable(paths):
+            return paths
+        digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:12]
+        for prefix_length in (24, 16, 8, 0):
+            prefix = safe_id[:prefix_length].strip("._-")
+            stem = f"{prefix}-{digest}" if prefix else f"cmd-{digest}"
+            paths = _log_paths_for_stem(self.logs_dir, stem)
+            if _paths_are_portable(paths):
+                return paths
+        return _log_paths_for_stem(self.logs_dir, f"cmd-{digest}")
 
 
 def classify_command(command: str, *, cwd: str | Path | None = None) -> CommandPolicyDecision:
@@ -177,6 +183,38 @@ def classify_command(command: str, *, cwd: str | Path | None = None) -> CommandP
         "only pytest, unittest, or py_compile commands are allowed",
         argv,
     )
+
+
+def _log_paths_for_stem(logs_dir: Path, stem: str) -> tuple[Path, Path, Path]:
+    return (
+        logs_dir / f"{stem}.stdout.log",
+        logs_dir / f"{stem}.stderr.log",
+        logs_dir / f"{stem}.command.json",
+    )
+
+
+def _paths_are_portable(paths: tuple[Path, Path, Path]) -> bool:
+    return all(len(str(path)) <= MAX_PORTABLE_PATH_CHARS for path in paths)
+
+
+def _mkdir(path: Path) -> None:
+    Path(_long_path(path)).mkdir(parents=True, exist_ok=True)
+
+
+def _write_text(path: Path, text: str) -> None:
+    Path(_long_path(path)).write_text(text, encoding="utf-8")
+
+
+def _long_path(path: Path | str | PathLike[str]) -> str:
+    raw = str(path)
+    if os.name != "nt":
+        return raw
+    if raw.startswith("\\\\?\\"):
+        return raw
+    resolved = str(Path(raw).resolve())
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved.lstrip("\\")
+    return "\\\\?\\" + resolved
 
 
 def _split_command(command: str) -> list[str]:

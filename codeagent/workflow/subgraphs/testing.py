@@ -64,7 +64,7 @@ def create_testing_stage_handler(
 
 
 def build_testing_subgraph(handler: StageHandler):
-    """Build a minimal testing subgraph around an injected stage handler."""
+    """Build a focused testing subgraph around an injected stage handler."""
 
     graph = StateGraph(AgentState)
     graph.add_node(TESTING_STAGE, handler)

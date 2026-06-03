@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shlex
 import shutil
 from datetime import datetime, timezone
@@ -157,7 +158,11 @@ class BenchmarkRunner:
                 hidden_paths=hidden_paths,
             )
         else:
-            task_config.test_command.command = command
+            task_config.test_command.command = _normalize_project_relative_command(
+                command,
+                project_path=task_config.project_path,
+                run_case_dir=run_case_dir,
+            )
         return CaseExecutionContext(
             case_id=case.case_id,
             source_case_dir=case.source_case_dir,
@@ -265,6 +270,87 @@ def _agent_safe_test_command(project_path: Path, *, hidden_paths: list[Path]) ->
         for path in python_files
     ]
     return "python -m py_compile " + " ".join(relative_files)
+
+
+def _normalize_project_relative_command(
+    command: str,
+    *,
+    project_path: Path,
+    run_case_dir: Path,
+) -> str:
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return command
+    changed = False
+    normalized_tokens: list[str] = []
+    for token in tokens:
+        normalized = _normalize_command_token(
+            token,
+            project_path=project_path,
+            run_case_dir=run_case_dir,
+        )
+        if normalized != token:
+            changed = True
+        normalized_tokens.append(normalized)
+    if not changed:
+        return command
+    return " ".join(_quote_command_path(token) for token in normalized_tokens)
+
+
+def _normalize_command_token(
+    token: str,
+    *,
+    project_path: Path,
+    run_case_dir: Path,
+) -> str:
+    token = _strip_outer_quotes(token)
+    if "=" in token and token.startswith("-"):
+        option, value = token.split("=", 1)
+        normalized_value = _normalize_path_value(
+            value,
+            project_path=project_path,
+            run_case_dir=run_case_dir,
+        )
+        return f"{option}={normalized_value}"
+    return _normalize_path_value(
+        token,
+        project_path=project_path,
+        run_case_dir=run_case_dir,
+    )
+
+
+def _normalize_path_value(
+    value: str,
+    *,
+    project_path: Path,
+    run_case_dir: Path,
+) -> str:
+    unquoted = _strip_outer_quotes(value)
+    path = Path(unquoted)
+    if not _looks_like_path(path):
+        return unquoted
+    project_root = project_path.resolve()
+    case_root = run_case_dir.resolve()
+    candidate = path.resolve() if path.is_absolute() else (case_root / path).resolve()
+    if _is_relative_to(candidate, project_root) and candidate.exists():
+        return candidate.relative_to(project_root).as_posix()
+    if path.is_absolute():
+        return unquoted
+    parts = path.parts
+    if not parts or parts[0] != project_root.name:
+        return unquoted
+    stripped = Path(*parts[1:]) if len(parts) > 1 else Path(".")
+    stripped_candidate = (project_root / stripped).resolve()
+    if stripped_candidate.exists() or stripped_candidate.parent.exists():
+        return stripped.as_posix()
+    return unquoted
+
+
+def _strip_outer_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _quote_command_path(path: str) -> str:
