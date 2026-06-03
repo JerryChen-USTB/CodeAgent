@@ -196,7 +196,10 @@ def _system_rules(stage: str, schema_name: str) -> str:
         "Use only visible inputs and visible project files supplied below. Never infer or request "
         "hidden benchmark oracle material, evaluation directories, expected answers, "
         "secret files, API keys, tokens, or credentials. Do not claim tests pass; "
-        "the system will run verification commands after applying the patch."
+        "the system will run verification commands after applying the patch. "
+        "When generating SQLite code, close every sqlite3.Connection explicitly, "
+        "for example with contextlib.closing or try/finally; context manager alone "
+        "does not close sqlite3.Connection, which can leave database files locked on Windows."
     )
 
 
@@ -303,18 +306,21 @@ def _project_relative_path(raw_path: Path, project_root: Path) -> Path:
     if not parts:
         return path
     stripped = Path(*parts[1:]) if len(parts) > 1 else path
-    if len(parts) > 1 and parts[0] == project_root.name:
-        return stripped
     should_consider_prefix = parts[0] in {project_root.name, "workspace", "project"}
     if not should_consider_prefix:
         return path
     original_candidate = project_root / path
     stripped_candidate = project_root / stripped
-    original_parent_exists = original_candidate.parent.exists()
-    stripped_parent_exists = stripped_candidate.parent.exists()
+    prefixed_directory = project_root / parts[0]
+    original_parent_exists = fs.exists(original_candidate.parent)
+    stripped_parent_exists = fs.exists(stripped_candidate.parent)
     if (
-        not original_candidate.exists()
-        and (stripped_candidate.exists() or (stripped_parent_exists and not original_parent_exists))
+        not fs.exists(original_candidate)
+        and (
+            fs.exists(stripped_candidate)
+            or not fs.exists(prefixed_directory)
+            or (stripped_parent_exists and not original_parent_exists)
+        )
     ):
         return stripped
     return path
@@ -397,20 +403,20 @@ def _visible_context(
 
 def _iter_text_files(path: Path) -> list[Path]:
     path = path.resolve()
-    if path.is_file():
+    if fs.is_file(path):
         return [path] if path.suffix.lower() in TEXT_EXTENSIONS else []
-    if not path.is_dir():
+    if not fs.is_dir(path):
         return []
     return [
         candidate
         for candidate in sorted(path.rglob("*"))
-        if candidate.is_file() and candidate.suffix.lower() in TEXT_EXTENSIONS
+        if fs.is_file(candidate) and candidate.suffix.lower() in TEXT_EXTENSIONS
     ]
 
 
 def _context_root_for_material(path: Path) -> Path:
     resolved = path.resolve()
-    if resolved.is_file():
+    if fs.is_file(resolved):
         return resolved.parent
     return resolved
 
@@ -423,9 +429,9 @@ def _append_file_section(
     budget: int,
 ) -> int:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = fs.read_text(path)
     except UnicodeDecodeError:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = fs.portable_path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return budget
     if len(text) > budget:
@@ -440,13 +446,13 @@ def _failure_log_paths(context: RunContext) -> list[Path]:
         logs_dir / "testing_cli_command.stdout.log",
         logs_dir / "testing_cli_command.stderr.log",
     ]
-    if logs_dir.exists():
+    if fs.exists(logs_dir):
         candidates.extend(sorted(logs_dir.glob("*.stdout.log")))
         candidates.extend(sorted(logs_dir.glob("*.stderr.log")))
     seen: set[Path] = set()
     paths: list[Path] = []
     for path in candidates:
-        if not path.exists() or not path.is_file():
+        if not fs.exists(path) or not fs.is_file(path):
             continue
         resolved = path.resolve()
         if resolved in seen:

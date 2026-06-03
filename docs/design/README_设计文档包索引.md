@@ -26,7 +26,7 @@
 | 记录内容 | 不记录隐藏思维链，改为记录可审计推理摘要、工具调用和 decision trace |
 | Benchmark | 6 个基准案例：实现+测试 2 个，调试+修复 2 个，全流程 2 个 |
 | Git 工作区检查 | 完全不考虑；不依赖 git status、git apply、git commit |
-| 模型接入 | OpenAI-compatible API；默认模型为 `anthropic/claude-opus-4.8`，通过 OpenRouter API Key 调用 |
+| 模型接入 | OpenAI-compatible API；临时默认模型为 `anthropic/claude-sonnet-4.6`，通过 OpenRouter API Key 调用 |
 | IDE 集成 | 不纳入本系统设计范围 |
 
 ## 3. 文档清单

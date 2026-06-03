@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from codeagent import filesystem as fs
 from codeagent.benchmark.case_loader import CaseLoader
 from codeagent.benchmark.environment import (
     BugsInPyEnvironmentDetector,
@@ -152,7 +153,7 @@ class BenchmarkRunner:
         benchmark_config: BenchmarkConfig,
     ) -> CaseExecutionContext:
         run_case_dir = benchmark_run_dir / "case_workspaces" / case.case_id
-        if run_case_dir.exists():
+        if fs.exists(run_case_dir):
             raise FileExistsError(f"benchmark run case directory already exists: {run_case_dir}")
         source_snapshot_before = _snapshot_case_dir(case.source_case_dir)
         shutil.copytree(case.source_case_dir, run_case_dir)
@@ -304,13 +305,13 @@ class BenchmarkRunner:
 
 
 def _create_benchmark_run_dir(output_root: Path, *, benchmark_id: str) -> Path:
-    output_root.mkdir(parents=True, exist_ok=True)
+    fs.mkdir(output_root)
     for _ in range(20):
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S_%f")
         digest = hashlib.sha256(f"{benchmark_id}|{stamp}".encode("utf-8")).hexdigest()[:6]
         path = output_root / f"{stamp}_{benchmark_id}_{digest}"
         try:
-            path.mkdir(parents=True)
+            fs.mkdir(path, exist_ok=False)
         except FileExistsError:
             continue
         return path
@@ -324,7 +325,7 @@ def _run_prepare_command(
     logs_dir: Path,
     timeout_seconds: int,
 ) -> PrepareExecutorResult:
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    fs.mkdir(logs_dir)
     stdout_log = logs_dir / "prepare.stdout.log"
     stderr_log = logs_dir / "prepare.stderr.log"
     try:
@@ -337,15 +338,15 @@ def _run_prepare_command(
             timeout=timeout_seconds,
             check=False,
         )
-        stdout_log.write_text(completed.stdout, encoding="utf-8")
-        stderr_log.write_text(completed.stderr, encoding="utf-8")
+        fs.write_text(stdout_log, completed.stdout)
+        fs.write_text(stderr_log, completed.stderr)
         return completed.returncode, stdout_log, stderr_log, ""
     except subprocess.TimeoutExpired as exc:
         stdout = _coerce_process_output(exc.stdout)
         stderr = _coerce_process_output(exc.stderr)
         stderr = f"{stderr}\nCommand timed out after {timeout_seconds} seconds.".strip()
-        stdout_log.write_text(stdout, encoding="utf-8")
-        stderr_log.write_text(stderr + "\n", encoding="utf-8")
+        fs.write_text(stdout_log, stdout)
+        fs.write_text(stderr_log, stderr + "\n")
         return 124, stdout_log, stderr_log, "prepare command timed out"
 
 
@@ -423,7 +424,7 @@ def _snapshot_case_dir(path: Path) -> str:
     root = path.resolve()
     entries: list[dict[str, object]] = []
     for candidate in sorted(root.rglob("*")):
-        if not candidate.is_file():
+        if not fs.is_file(candidate):
             continue
         stat = candidate.stat()
         relative = candidate.relative_to(root).as_posix()
@@ -431,7 +432,7 @@ def _snapshot_case_dir(path: Path) -> str:
             {
                 "path": relative,
                 "size": stat.st_size,
-                "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                "sha256": hashlib.sha256(fs.read_bytes(candidate)).hexdigest(),
             }
         )
     payload = json.dumps(entries, sort_keys=True, separators=(",", ":"))
@@ -518,7 +519,7 @@ def _agent_safe_test_command(project_path: Path, *, hidden_paths: list[Path]) ->
     ]
     if not python_files:
         smoke_file = project_path / "__codeagent_benchmark_smoke.py"
-        smoke_file.write_text("# benchmark smoke file for visible workflow tests\n", encoding="utf-8")
+        fs.write_text(smoke_file, "# benchmark smoke file for visible workflow tests\n")
         python_files = [smoke_file]
     relative_files = [
         _quote_command_path(path.relative_to(project_path).as_posix())
@@ -588,7 +589,7 @@ def _normalize_path_value(
     project_root = project_path.resolve()
     case_root = run_case_dir.resolve()
     candidate = path.resolve() if path.is_absolute() else (case_root / path).resolve()
-    if _is_relative_to(candidate, project_root) and candidate.exists():
+    if _is_relative_to(candidate, project_root) and fs.exists(candidate):
         return candidate.relative_to(project_root).as_posix()
     if path.is_absolute():
         return unquoted
@@ -597,7 +598,7 @@ def _normalize_path_value(
         return unquoted
     stripped = Path(*parts[1:]) if len(parts) > 1 else Path(".")
     stripped_candidate = (project_root / stripped).resolve()
-    if stripped_candidate.exists() or stripped_candidate.parent.exists():
+    if fs.exists(stripped_candidate) or fs.exists(stripped_candidate.parent):
         return stripped.as_posix()
     return unquoted
 

@@ -161,7 +161,7 @@ class ImplementationService:
                 attempts=_read_attempts(attempts_path),
             )
 
-        if not patch_path.exists():
+        if not fs.exists(patch_path):
             result = self._build_failed_result(
                 started_at=started_at,
                 summary="Approved implementation patch is missing.",
@@ -176,7 +176,7 @@ class ImplementationService:
                 artifact_ids=artifacts,
                 attempts=_read_attempts(attempts_path),
             )
-        patch_text = patch_path.read_text(encoding="utf-8")
+        patch_text = fs.read_text(patch_path)
         if approved_patch_sha256 and _sha256_text(patch_text) != approved_patch_sha256:
             result = self._build_failed_result(
                 started_at=started_at,
@@ -696,9 +696,9 @@ class ImplementationService:
             return None
         if SensitiveFilter(root).is_denied(target):
             return None
-        if not target.is_file():
+        if not fs.is_file(target):
             return None
-        return target.read_text(encoding="utf-8")
+        return fs.read_text(target)
 
     def _handle_patch_decision(self, approval: ApprovalDecision) -> StageResult | None:
         if approval.interrupt_id != PATCH_INTERRUPT_ID:
@@ -836,10 +836,10 @@ class ImplementationService:
 
     def _load_prepared_plan(self, fallback_plan: ImplementationPlan) -> ImplementationPlan:
         path = self.stage_dir / "implementation_plan.json"
-        if not path.exists():
+        if not fs.exists(path):
             return fallback_plan
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(fs.read_text(path))
             return ImplementationPlan.model_validate(data)
         except (OSError, json.JSONDecodeError, ValidationError):
             return fallback_plan
@@ -1030,10 +1030,10 @@ class ImplementationService:
         attempts_path: Path,
         fallback_plan: ImplementationPlan,
     ) -> list[str]:
-        if not plan_path.exists():
+        if not fs.exists(plan_path):
             plan_path = self._write_plan(fallback_plan)
         plan_json_path = self.stage_dir / "implementation_plan.json"
-        if not plan_json_path.exists():
+        if not fs.exists(plan_json_path):
             plan_json_path = self._write_plan_json(fallback_plan)
         artifacts = [
             self._record_artifact(
@@ -1051,7 +1051,7 @@ class ImplementationService:
                 "Structured implementation plan",
             )
         )
-        if patch_path.exists():
+        if fs.exists(patch_path):
             artifacts.append(
                 self._record_artifact(
                     "implementation_patch",
@@ -1060,7 +1060,7 @@ class ImplementationService:
                     "Implementation patch diff",
                 )
             )
-        if attempts_path.exists():
+        if fs.exists(attempts_path):
             artifacts.append(
                 self._record_artifact(
                     "implementation_patch_attempts",
@@ -1141,10 +1141,10 @@ def _last_attempt_error(attempts: list[dict[str, object]]) -> str:
 
 
 def _read_attempts(path: Path) -> list[dict[str, object]]:
-    if not path.exists():
+    if not fs.exists(path):
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(fs.read_text(path))
     except (OSError, json.JSONDecodeError):
         return []
     attempts = data.get("attempts") if isinstance(data, dict) else None

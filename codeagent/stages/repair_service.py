@@ -12,6 +12,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from codeagent import filesystem as fs
 from codeagent.config.schema import Stage
 from codeagent.context.sensitive_filter import SensitiveFilter
 from codeagent.errors import ErrorRecord
@@ -139,8 +140,8 @@ class RepairService:
             return preview.result
         patch_path = self.stage_dir / "repair.patch.diff"
         approved_hash = (
-            _sha256_text(patch_path.read_text(encoding="utf-8"))
-            if patch_path.exists()
+            _sha256_text(fs.read_text(patch_path))
+            if fs.exists(patch_path)
             else None
         )
         command_preview = self.apply_patch_and_prepare_command(
@@ -157,7 +158,7 @@ class RepairService:
 
     def prepare_patch_approval(self, request: RepairRequest) -> RepairApprovalPreview:
         started_at = utc_timestamp()
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        fs.mkdir(self.stage_dir)
         edited = self._request_from_patch_edit(request, started_at=started_at)
         if isinstance(edited, StageResult):
             return RepairApprovalPreview(
@@ -195,7 +196,7 @@ class RepairService:
             )
 
         patch_path = self.stage_dir / "repair.patch.diff"
-        patch_path.write_text(prepared.patch_text, encoding="utf-8")
+        fs.write_text(patch_path, prepared.patch_text)
         risk_path = self._write_risk_report(prepared.risk)
         artifacts.extend(
             [
@@ -271,9 +272,9 @@ class RepairService:
             patch_decision = patch_decision.model_copy(update={"artifact_ids": artifacts})
             return RepairApprovalPreview(
                 result=self._finalize_result(patch_decision, artifact_ids=artifacts)
-            )
+        )
         patch_path = self.stage_dir / "repair.patch.diff"
-        if not patch_path.exists():
+        if not fs.exists(patch_path):
             result = self._failed_result(
                 started_at=started_at,
                 summary="Approved repair patch is missing.",
@@ -285,7 +286,7 @@ class RepairService:
             return RepairApprovalPreview(
                 result=self._finalize_result(result, artifact_ids=artifacts)
             )
-        patch_text = patch_path.read_text(encoding="utf-8")
+        patch_text = fs.read_text(patch_path)
         if approved_patch_sha256 and _sha256_text(patch_text) != approved_patch_sha256:
             result = self._failed_result(
                 started_at=started_at,
@@ -455,7 +456,7 @@ class RepairService:
                     self._file_changes_for_plan(plan)
                 )
                 candidate_path = self.stage_dir / f"repair_patch_attempt_{index}.diff"
-                candidate_path.write_text(patch.text, encoding="utf-8")
+                fs.write_text(candidate_path, patch.text)
                 validation = self.patch_service.validate_patch(
                     candidate_path,
                     self.run_context.task_config.project_path,
@@ -552,9 +553,9 @@ class RepairService:
             return None
         if _is_hidden_benchmark_path(relative):
             return None
-        if not target.is_file():
+        if not fs.is_file(target):
             return None
-        return target.read_text(encoding="utf-8")
+        return fs.read_text(target)
 
     def _request_from_patch_edit(
         self,
@@ -710,11 +711,11 @@ class RepairService:
 
     def _write_plan_artifacts(self, plan: RepairPlan) -> list[str]:
         plan_path = self.stage_dir / "repair_plan.final.md"
-        plan_path.write_text(_render_plan(plan), encoding="utf-8")
+        fs.write_text(plan_path, _render_plan(plan))
         plan_json_path = self.stage_dir / "repair_plan.final.json"
-        plan_json_path.write_text(
+        fs.write_text(
+            plan_json_path,
             json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return [
             self._record_artifact(
@@ -733,44 +734,45 @@ class RepairService:
 
     def _load_prepared_plan(self, fallback_plan: RepairPlan) -> RepairPlan:
         path = self.stage_dir / "repair_plan.final.json"
-        if not path.exists():
+        if not fs.exists(path):
             return fallback_plan
         try:
-            return RepairPlan.model_validate(json.loads(path.read_text(encoding="utf-8")))
+            return RepairPlan.model_validate(json.loads(fs.read_text(path)))
         except (OSError, json.JSONDecodeError, ValidationError):
             return fallback_plan
 
     def _write_attempts(self, attempts: list[dict[str, object]]) -> Path:
         path = self.stage_dir / "repair_patch_attempts.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps({"attempts": attempts}, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
     def _write_risk_report(self, risk: RepairRiskReport) -> Path:
         path = self.stage_dir / "repair_risk.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(risk.to_json_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
     def _write_changed_files(self, changed_files: list[str]) -> Path:
         path = self.stage_dir / "changed_files.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(
                 {"stage": REPAIR_STAGE, "changed_files": changed_files},
                 indent=2,
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
         return path
 
     def _write_after_test_log(self, shell: ShellResult) -> Path:
         path = self.stage_dir / "after_test.log"
-        path.write_text(
+        fs.write_text(
+            path,
             "\n".join(
                 [
                     f"Command: {shell.command}",
@@ -783,15 +785,14 @@ class RepairService:
                     shell.stderr,
                 ]
             ),
-            encoding="utf-8",
         )
         return path
 
     def _write_test_result(self, payload: dict[str, object]) -> Path:
         path = self.stage_dir / "repair_test_result.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
@@ -834,11 +835,11 @@ class RepairService:
         )
         if not success:
             lines.extend(["", "## Testing failed", "", str(test_result.get("error_summary") or "")])
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
     def _register_existing_artifacts(self, fallback_plan: RepairPlan) -> list[str]:
-        if not (self.stage_dir / "repair_plan.final.md").exists():
+        if not fs.exists(self.stage_dir / "repair_plan.final.md"):
             artifacts = self._write_plan_artifacts(fallback_plan)
         else:
             artifacts = [
@@ -863,7 +864,7 @@ class RepairService:
         ]
         for artifact_id, kind, filename, summary in existing:
             path = self.stage_dir / filename
-            if path.exists():
+            if fs.exists(path):
                 artifacts.append(self._record_artifact(artifact_id, kind, path, summary))
         return artifacts
 
@@ -897,13 +898,13 @@ class RepairService:
         )
 
     def _finalize_result(self, result: StageResult, *, artifact_ids: list[str]) -> StageResult:
-        if self.stage_dir.exists() and not (self.stage_dir / "repair_report.md").exists():
+        if fs.exists(self.stage_dir) and not fs.exists(self.stage_dir / "repair_report.md"):
             report_path = self.stage_dir / "repair_report.md"
-            report_path.write_text(
+            fs.write_text(
+                report_path,
                 "# Repair Report\n\n"
                 f"## Status\n\n{result.summary}\n\n"
                 f"## Next\n\n{result.next_suggestion}\n",
-                encoding="utf-8",
             )
             artifact_ids = [
                 *artifact_ids,
@@ -1052,10 +1053,10 @@ def _last_attempt_error(attempts: list[dict[str, object]]) -> str:
 
 
 def _read_changed_files(path: Path) -> list[str]:
-    if not path.exists():
+    if not fs.exists(path):
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(fs.read_text(path))
     except (OSError, json.JSONDecodeError):
         return []
     changed = data.get("changed_files") if isinstance(data, dict) else None

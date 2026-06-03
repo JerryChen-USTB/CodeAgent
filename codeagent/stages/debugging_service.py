@@ -13,6 +13,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from codeagent import filesystem as fs
 from codeagent.config.schema import Stage
 from codeagent.context.sensitive_filter import SensitiveFilter
 from codeagent.errors import ErrorRecord
@@ -124,7 +125,7 @@ class DebuggingService:
         self,
         request: DebuggingRequest,
     ) -> DebuggingApprovalPreview:
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        fs.mkdir(self.stage_dir)
         if not request.test_command:
             return DebuggingApprovalPreview(result=self.run(request))
         return DebuggingApprovalPreview(
@@ -154,7 +155,7 @@ class DebuggingService:
 
     def run(self, request: DebuggingRequest) -> StageResult:
         started_at = utc_timestamp()
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        fs.mkdir(self.stage_dir)
         artifacts: list[str] = []
 
         evidence = self._collect_evidence(request, started_at=started_at)
@@ -431,9 +432,9 @@ class DebuggingService:
                     message=f"failure log path is denied: {path}",
                     artifact_ids=[],
                     next_suggestion="Provide a visible non-secret failure log path.",
-                )
+            )
             try:
-                contents.append(allowed.read_text(encoding="utf-8"))
+                contents.append(fs.read_text(allowed))
             except OSError as exc:
                 return self._failed_result(
                     started_at=utc_timestamp(),
@@ -457,9 +458,9 @@ class DebuggingService:
                     message=f"test report path is denied: {request.test_report_path}",
                     artifact_ids=[],
                     next_suggestion="Provide a visible non-secret test report path.",
-                )
+            )
             try:
-                contents.append(allowed_report.read_text(encoding="utf-8"))
+                contents.append(fs.read_text(allowed_report))
             except OSError as exc:
                 return self._failed_result(
                     started_at=utc_timestamp(),
@@ -531,7 +532,7 @@ class DebuggingService:
         candidates: list[FaultCandidate] = []
         for path in _iter_project_python_files(root, sensitive_filter):
             try:
-                content = path.read_text(encoding="utf-8")
+                content = fs.read_text(path)
             except OSError:
                 continue
             matched = [
@@ -602,7 +603,7 @@ class DebuggingService:
             lines.append(
                 "- Note: reproduction command not executed; static evidence was used."
             )
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
     def _write_before_test_log(self, evidence: _EvidenceBundle) -> Path:
@@ -618,30 +619,30 @@ class DebuggingService:
             "## stderr",
             shell.stderr if shell else "",
         ]
-        path.write_text("\n".join(lines), encoding="utf-8")
+        fs.write_text(path, "\n".join(lines))
         return path
 
     def _write_failure_summary(self, summary: str) -> Path:
         path = self.stage_dir / "failure_summary.md"
-        path.write_text(summary, encoding="utf-8")
+        fs.write_text(path, summary)
         return path
 
     def _write_fault_localization(self, localization: FaultLocalization) -> Path:
         path = self.stage_dir / "fault_localization.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(localization.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
     def _write_root_cause(self, root_cause: str) -> Path:
         path = self.stage_dir / "root_cause.md"
-        path.write_text(f"# Root Cause\n\n{root_cause}\n", encoding="utf-8")
+        fs.write_text(path, f"# Root Cause\n\n{root_cause}\n")
         return path
 
     def _write_repair_plan(self, repair_plan: str) -> Path:
         path = self.stage_dir / "repair_plan.md"
-        path.write_text(f"# Repair Plan\n\n{repair_plan}\n", encoding="utf-8")
+        fs.write_text(path, f"# Repair Plan\n\n{repair_plan}\n")
         return path
 
     def _write_debug_trace(
@@ -670,9 +671,9 @@ class DebuggingService:
                 "confidence": localization.confidence,
             },
         ]
-        path.write_text(
+        fs.write_text(
+            path,
             "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
-            encoding="utf-8",
         )
         return path
 
@@ -720,7 +721,7 @@ class DebuggingService:
                 localization.repair_plan,
             ]
         )
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
     def _failed_result(
@@ -886,7 +887,7 @@ def _normalize_candidate_path(raw_path: str, root: Path) -> Path | None:
         relative = target.relative_to(root)
     except ValueError:
         return None
-    if not target.exists():
+    if not fs.exists(target):
         return None
     if _is_hidden_benchmark_path(relative.as_posix()):
         return None

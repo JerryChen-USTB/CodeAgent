@@ -7,16 +7,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from codeagent import filesystem as fs
+
 
 class JsonlRecorder:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.touch(exist_ok=True)
+        fs.mkdir(self.path.parent)
+        fs.touch(self.path)
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
         payload = dict(event)
         payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        fs.append_text(self.path, json.dumps(payload, ensure_ascii=False) + "\n")
         return payload

@@ -46,7 +46,7 @@ Note: `benchmark/**/evaluation`, `benchmark/selfbuilt/**/oracle_tests`, and `ben
 - Cover the continuous workflow `implement -> test -> debug -> repair`, while allowing legal single-stage or contiguous-stage subsets.
 - Use LangGraph for the main workflow, four stage subgraphs, conditional routing, streaming, interrupt/HITL, checkpoint, and resume.
 - Use LangChain for model calls, tools, structured outputs, and tool-level HITL guardrails.
-- Default model access is OpenRouter OpenAI-compatible, temporary cost-control model `anthropic/claude-sonnet-4.6`, with key from `OPENROUTER_API_KEY` or a local secret file held only in memory.
+- Default model access is OpenRouter OpenAI-compatible, temporary cost-control model `anthropic/claude-sonnet-4.6`, with credentials resolved only from `OPENROUTER_API_KEY` or another explicitly configured environment variable; local secret files are forbidden inputs and must not be read.
 - Enforce patch-first for project source/test modifications. Side-effect operations require approval except benchmark-mode auto-approval with decision trace.
 - Persist every run under `codeagent_runs/<run_id>/`, including metadata, normalized task config, transcript, decision trace, artifacts index, stage artifacts, `stage_result.json`, and `final_report.md`.
 - Provide benchmark execution, per-case isolation, success-rate aggregation, and reports.
@@ -1053,3 +1053,30 @@ Use this section as an append-only engineering log. Every completed small module
 - Commands run: `codeagent --help` and `python -m codeagent --help` -> both succeeded.
 - Developer report: `docs/dev_reports/M26_selfbuilt_benchmark_final_docs.md`.
 - Next step: review git diff, ensure generated benchmark artifacts remain ignored, then commit M26 changes.
+
+### 2026-06-03 M26 Review Hardening and Final Validation
+
+- Backup before review-hardening doc/spec updates: `docs/_backups/20260603_172444/`, `docs/_backups/20260603_180254/`, `docs/_backups/20260603_181433/`.
+- Subagent review fixes: tightened generated-path normalization so real top-level directories named like `workspace` or the project root are preserved; kept wrapper-prefix stripping for empty benchmark project roots; removed local-secret-file key-source wording from active specs; corrected README stage subcommand examples; synchronized active design docs to temporary Sonnet 4.6 default; removed contradictory CSV export ordering text from `02_personal_ledger`.
+- Long-path hardening: extended `codeagent.filesystem` with append/touch/is_file helpers and routed run context initialization, transcript/decision trace, checkpoint pending interrupts, artifact index, CLI testing reports, benchmark aggregate reports, benchmark prepare logs, and testing/debugging/repair stage artifact writes through long-path-aware helpers.
+- Real benchmark regression and fix: first fresh self-built Sonnet run after review hardening reported 4/5 because `05_meeting_room_booking` generated SQLite connections that were not closed, causing Windows temp-directory cleanup to fail with locked `booking.db`; fixed by adding prompt coverage for explicit SQLite connection closing and adding the same visible cross-platform requirement to the case input.
+- Current public benchmark evidence: `python -m codeagent benchmark --config benchmark\benchmark.yaml` completed enabled public cases with real Sonnet calls, `success_rate=1.00`, `blocked=1` for the optional BugsInPy environment blocker. Latest aggregate: `benchmark/codeagent_runs/benchmark/2026-06-03_095303_304297_codeagent_course_benchmark_b88270/benchmark_result.json`; every executed case has `source_unchanged=True`.
+- Current self-built benchmark evidence: `python -m codeagent benchmark --config benchmark\selfbuilt\selfbuilt_benchmark.yaml` completed 5/5 with real Sonnet calls, `success_rate=1.00`, `blocked=0`. Latest aggregate: `benchmark/selfbuilt/codeagent_runs/benchmark/2026-06-03_100356_416230_codeagent_selfbuilt_python_benchmark_670ea1/benchmark_result.json`; every case has `oracle_success=True` and `source_unchanged=True`.
+- Commands run: initial red suite for path normalization, active docs, long-path run context/artifact/benchmark/stage writes -> 11 failed as expected.
+- Commands run after fixes: same red suite -> 11 passed.
+- Commands run: `python -m pytest tests\unit\agents tests\unit\docs tests\unit\runtime tests\unit\reports tests\unit\benchmark -q` -> 53 passed.
+- Commands run: `python -m pytest tests\integration\test_testing_stage.py -q` -> 16 passed; `python -m pytest tests\integration\test_debugging_stage.py -q` -> 13 passed; `python -m pytest tests\integration\test_repair_stage.py -q` -> 17 passed.
+- Commands run: `python -m pytest -q` -> 289 passed; `python -m compileall -q codeagent tests` -> passed.
+- Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
+- Commands run: controlled OpenRouter smoke through default `ModelConfig()` -> `OpenRouter smoke OK for anthropic/claude-sonnet-4.6`.
+- Safety checks: strict OpenRouter/Bearer key scan over active code/docs/benchmark input found no real secret values; `git ls-files --others --exclude-standard -- benchmark codeagent_runs docs\_backups` returned no untracked generated benchmark artifacts or backups.
+- Developer report: `docs/dev_reports/M27_review_hardening_and_final_validation.md`.
+
+### 2026-06-03 M27 Review Follow-Up Fixes
+
+- Review follow-up: a read-only subagent found that CodeAgent's own SQLite checkpoint initialization/status checks still relied on `with sqlite3.connect(...)`, and that plan-generation context reads plus implementation resume reads still used some direct `Path` operations.
+- Fixes: checkpoint SQLite connections now use `contextlib.closing`; added regression tests proving `checkpoints.sqlite` can be deleted immediately after run-context initialization, checkpoint status, and SQLite saver setup. Plan-generation visible-context reads, failure-log discovery, and implementation prepared-plan/patch reads now use long-path-aware filesystem helpers.
+- Known path-normalization limitation: wrapper-prefix stripping remains existence-based for `workspace/` and `project/` because benchmark copies commonly expose project roots named `workspace`; if a future visible requirement intentionally creates a new top-level `workspace/` directory from an empty project, the prompt and tests should be extended with an explicit opt-out rule.
+- Commands run: `python -m pytest tests\unit\runtime\test_run_context.py::test_create_run_context_closes_checkpoint_connection tests\unit\workflow\test_checkpoint.py::test_checkpoint_manager_closes_sqlite_connections -q` -> initially 2 failed with Windows file-lock `PermissionError`, then 2 passed after `contextlib.closing`.
+- Commands run: `python -m pytest tests\unit\agents\test_plan_generation.py tests\integration\test_implementation_stage.py -q` -> 25 passed.
+- Commands run: `python -m pytest tests\unit\runtime\test_run_context.py tests\unit\workflow\test_checkpoint.py tests\unit\reports\test_writer.py tests\unit\benchmark\test_report.py -q` -> 22 passed.

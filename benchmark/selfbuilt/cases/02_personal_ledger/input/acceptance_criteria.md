@@ -31,7 +31,7 @@
 
 - 创建目标 CSV。
 - 表头精确等于 `id,date,type,category,amount,note`。
-- 行顺序与 list 一致。
+- 行顺序保持 stored/addition order，即账本记录的存储/添加顺序，不按 list 的日期排序重排。
 
 ## AC-05 异常输入
 

@@ -58,7 +58,7 @@ output_dir: ./codeagent_runs/benchmark
 
 model:
   provider: openai_compatible
-  model_name: anthropic/claude-opus-4.8
+  model_name: anthropic/claude-sonnet-4.6
   base_url: https://openrouter.ai/api/v1
   api_key_env: OPENROUTER_API_KEY
   temperature: 0.2

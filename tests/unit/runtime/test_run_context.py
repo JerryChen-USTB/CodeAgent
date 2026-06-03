@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
+from codeagent import filesystem as fs
 from codeagent.config.schema import Stage, TaskConfig
 from codeagent.runtime.run_context import create_run_context
 
@@ -14,6 +17,12 @@ def _task_config(project_path) -> TaskConfig:
             "project_path": project_path,
         }
     )
+
+
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
 
 
 def test_create_run_context_writes_required_tree(tmp_path) -> None:
@@ -40,6 +49,33 @@ def test_create_run_context_writes_required_tree(tmp_path) -> None:
         (context.run_dir / "artifacts_index.json").read_text(encoding="utf-8")
     )
     assert artifact_index == {"run_id": context.run_id, "artifacts": []}
+
+
+def test_create_run_context_supports_long_windows_output_root(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    output_root = tmp_path / "runs"
+    while len(str(output_root / "placeholder_run" / "artifacts_index.json")) < 285:
+        output_root = output_root / "deep_segment_for_windows_path_limit"
+
+    context = create_run_context(_task_config(project), output_root=output_root)
+
+    readable_run_dir = _long_readable_path(context.run_dir)
+    assert (readable_run_dir / "metadata.json").exists()
+    assert (readable_run_dir / "task_config.yaml").exists()
+    assert (readable_run_dir / "artifacts_index.json").exists()
+    assert (readable_run_dir / "final_report.md").exists()
+
+
+def test_create_run_context_closes_checkpoint_connection(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    context = create_run_context(_task_config(project), output_root=tmp_path / "runs")
+
+    checkpoint_path = context.run_dir / "checkpoints.sqlite"
+    fs.unlink(checkpoint_path)
+    assert not fs.exists(checkpoint_path)
 
 
 def test_run_id_is_unique_and_existing_run_is_not_overwritten(tmp_path) -> None:

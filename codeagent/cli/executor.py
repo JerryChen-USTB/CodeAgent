@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from codeagent import filesystem as fs
 from codeagent.adapters.test_result import TestResult
 from codeagent.agents.plan_generation import PlanGenerationError, PlanGenerationService
 from codeagent.config.schema import Stage, TaskConfig
@@ -135,7 +136,7 @@ def _testing_command_handler(context: RunContext) -> StageHandler:
     def run(state: AgentState) -> dict[str, Any]:
         started_at = utc_timestamp()
         stage_dir = context.stage_dirs[Stage.TEST]
-        stage_dir.mkdir(parents=True, exist_ok=True)
+        fs.mkdir(stage_dir)
         writer = _writer(context)
         command = context.task_config.test_command.command
         approval = CommandApproval(
@@ -287,13 +288,13 @@ def _testing_log_paths(context: RunContext) -> list[Path]:
         logs_dir / "testing_cli_command.stdout.log",
         logs_dir / "testing_cli_command.stderr.log",
     ]
-    if logs_dir.exists():
+    if fs.exists(logs_dir):
         candidates.extend(sorted(logs_dir.glob("*.stdout.log")))
         candidates.extend(sorted(logs_dir.glob("*.stderr.log")))
     resolved: list[Path] = []
     seen: set[Path] = set()
     for path in candidates:
-        if not path.exists():
+        if not fs.exists(path):
             continue
         key = path.resolve()
         if key in seen:
@@ -313,7 +314,7 @@ def _testing_report_path(context: RunContext, state: AgentState) -> Path | None:
         return explicit[0]
     if "testing" in state.get("stage_results", {}):
         path = context.stage_dirs[Stage.TEST] / "test_report.json"
-        if path.exists():
+        if fs.exists(path):
             return path
     return None
 
@@ -328,11 +329,11 @@ def _testing_result_from_parsed(
     stage_dir = context.stage_dirs[Stage.TEST]
     json_path = stage_dir / "test_report.json"
     md_path = stage_dir / "test_report.md"
-    json_path.write_text(
+    fs.write_text(
+        json_path,
         json.dumps(parsed.to_json_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
     )
-    md_path.write_text(_render_test_report(parsed), encoding="utf-8")
+    fs.write_text(md_path, _render_test_report(parsed))
     artifacts = [
         _record_artifact(
             context,
@@ -369,7 +370,7 @@ def _testing_result_from_parsed(
         ),
     )
     for artifact_id, path, summary in log_artifacts:
-        if path.exists():
+        if fs.exists(path):
             artifacts.append(
                 _record_artifact(
                     context,

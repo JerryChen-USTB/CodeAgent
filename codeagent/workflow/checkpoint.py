@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from codeagent import filesystem as fs
 from codeagent.workflow.state import CheckpointSafetyError, state_to_json_dict
 
 
@@ -34,26 +35,28 @@ class CheckpointManager:
         return {"configurable": {"thread_id": self.run_id or self.run_dir.name}}
 
     def initialize_sqlite(self) -> None:
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.checkpoint_path) as conn:
+        fs.mkdir(self.run_dir)
+        with closing(sqlite3.connect(str(fs.portable_path(self.checkpoint_path)))) as conn:
             conn.execute("PRAGMA user_version = 1")
 
     @contextmanager
     def create_sqlite_saver(self) -> Iterator[SqliteSaver]:
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.checkpoint_path, check_same_thread=False)
-        try:
+        fs.mkdir(self.run_dir)
+        with closing(
+            sqlite3.connect(
+                str(fs.portable_path(self.checkpoint_path)),
+                check_same_thread=False,
+            )
+        ) as conn:
             saver = SqliteSaver(conn)
             saver.setup()
             yield saver
-        finally:
-            conn.close()
 
     def checkpoint_status(self) -> CheckpointStatus:
-        if not self.checkpoint_path.exists():
+        if not fs.exists(self.checkpoint_path):
             return "missing"
         try:
-            with sqlite3.connect(self.checkpoint_path) as conn:
+            with closing(sqlite3.connect(str(fs.portable_path(self.checkpoint_path)))) as conn:
                 conn.execute("PRAGMA schema_version").fetchone()
         except sqlite3.DatabaseError:
             return "corrupt"
@@ -63,21 +66,21 @@ class CheckpointManager:
         safe = state_to_json_dict({"pending_interrupt": payload})["pending_interrupt"]
         if not isinstance(safe, dict):
             raise CheckpointSafetyError("pending interrupt payload must be a JSON object")
-        self.pending_interrupt_path.write_text(
+        fs.write_text(
+            self.pending_interrupt_path,
             json.dumps(safe, indent=2, ensure_ascii=False, allow_nan=False),
-            encoding="utf-8",
         )
         return safe
 
     def load_pending_interrupt(self) -> dict[str, Any] | None:
-        if not self.pending_interrupt_path.exists():
+        if not fs.exists(self.pending_interrupt_path):
             return None
         try:
-            payload = json.loads(self.pending_interrupt_path.read_text(encoding="utf-8"))
+            payload = json.loads(fs.read_text(self.pending_interrupt_path))
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
 
     def clear_pending_interrupt(self) -> None:
-        if self.pending_interrupt_path.exists():
-            self.pending_interrupt_path.unlink()
+        if fs.exists(self.pending_interrupt_path):
+            fs.unlink(self.pending_interrupt_path)

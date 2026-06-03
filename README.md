@@ -32,10 +32,10 @@ printed, logged, or written to reports.
 ```powershell
 python -m codeagent --help
 python -m codeagent run --config examples/task.yaml
-python -m codeagent implement --config examples/task.yaml
-python -m codeagent test --config examples/task.yaml
-python -m codeagent debug --config examples/task.yaml
-python -m codeagent repair --config examples/task.yaml
+python -m codeagent implement --project ./repo --requirements requirements.md
+python -m codeagent test --project ./repo --test-cmd "pytest -q"
+python -m codeagent debug --project ./repo --test-cmd "pytest -q"
+python -m codeagent repair --project ./repo --test-cmd "pytest -q"
 python -m codeagent benchmark --config benchmark/benchmark.yaml
 python -m codeagent benchmark --config benchmark/selfbuilt/selfbuilt_benchmark.yaml
 python -m codeagent resume --run-id <run_id>

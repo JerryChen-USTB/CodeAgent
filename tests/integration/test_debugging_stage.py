@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from langgraph.types import Command
 
-from codeagent.config.schema import TaskConfig
+from codeagent.config.schema import Stage, TaskConfig
 from codeagent.reports.artifact_store import ArtifactStore
 from codeagent.reports.schemas import StageResult
 from codeagent.runtime.run_context import create_run_context
@@ -48,6 +49,12 @@ def _decision(kind: str = "approve") -> ApprovalDecision:
         comment=f"{kind} reproduction command.",
         auto=True,
     )
+
+
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
 
 
 def _write_buggy_project(project_root: Path) -> None:
@@ -128,6 +135,26 @@ def test_debugging_service_reproduces_failure_and_writes_evidence(tmp_path) -> N
     assert artifact_store.find("debugging_fault_localization") is not None
     assert "math_utils.py" in (stage_dir / "root_cause.md").read_text(encoding="utf-8")
     assert "math_utils.py" in (stage_dir / "repair_plan.md").read_text(encoding="utf-8")
+
+
+def test_debugging_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    run_context = _run_context(tmp_path, project_root)
+    long_dir = run_context.run_dir / "debugging_long"
+    while len(str(long_dir / "debug_report.md")) < 285:
+        long_dir = long_dir / "deep_segment_for_windows_path_limit"
+    run_context.stage_dirs[Stage.DEBUG] = long_dir
+    service = DebuggingService(run_context=run_context)
+
+    result = service.run(_request())
+
+    readable_stage_dir = _long_readable_path(long_dir)
+    assert result.status == "succeeded"
+    assert (readable_stage_dir / "reproduction_report.md").exists()
+    assert (readable_stage_dir / "fault_localization.json").exists()
+    assert (readable_stage_dir / "debug_report.md").exists()
+    assert (readable_stage_dir / "stage_result.json").exists()
 
 
 def test_debugging_service_rejected_reproduction_uses_static_logs(tmp_path) -> None:

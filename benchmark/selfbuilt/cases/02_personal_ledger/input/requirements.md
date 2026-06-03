@@ -112,7 +112,7 @@ CSV 表头固定为：
 id,date,type,category,amount,note
 ```
 
-导出顺序与 `list` 相同。
+导出顺序保持 stored/addition order，即 JSON 文件中记录的存储/添加顺序，不受 `list` 的日期排序规则影响。
 
 ## 5. 数据文件规则
 

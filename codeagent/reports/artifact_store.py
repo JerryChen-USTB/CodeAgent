@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from codeagent import filesystem as fs
+
 
 class ArtifactKind(str, Enum):
     REPORT = "report"
@@ -46,7 +48,7 @@ class ArtifactStore(BaseModel):
     @classmethod
     def load(cls, run_dir: Path) -> "ArtifactStore":
         path = run_dir / "artifacts_index.json"
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(fs.read_text(path))
         return cls(
             run_id=data["run_id"],
             run_dir=run_dir,
@@ -85,7 +87,7 @@ class ArtifactStore(BaseModel):
                 for artifact in self.artifacts
             ],
         }
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        fs.write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
 
 
 def _relative_artifact_path(run_dir: Path, path: str | Path) -> str:

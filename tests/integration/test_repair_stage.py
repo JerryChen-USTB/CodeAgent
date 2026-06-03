@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 import pytest
 
-from codeagent.config.schema import TaskConfig
+from codeagent.config.schema import Stage, TaskConfig
 from codeagent.reports.artifact_store import ArtifactStore
 from codeagent.reports.schemas import StageResult
 from codeagent.runtime.run_context import create_run_context
@@ -52,6 +53,12 @@ def _decision(kind: str = "approve", *, action_id: str = "repair_patch") -> Appr
         comment=f"{kind} for repair fixture.",
         auto=True,
     )
+
+
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
 
 
 def _write_buggy_project(project_root: Path) -> None:
@@ -246,6 +253,26 @@ def test_repair_service_applies_patch_runs_regression_and_writes_report(tmp_path
         assert (stage_dir / filename).exists()
     assert artifact_store.find("repair_patch") is not None
     assert artifact_store.find("repair_report") is not None
+
+
+def test_repair_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    run_context = _run_context(tmp_path, project_root)
+    long_dir = run_context.run_dir / "repair_long"
+    while len(str(long_dir / "repair_report.md")) < 285:
+        long_dir = long_dir / "deep_segment_for_windows_path_limit"
+    run_context.stage_dirs[Stage.REPAIR] = long_dir
+    service = RepairService(run_context=run_context)
+
+    result = service.run(_request(_good_plan()))
+
+    readable_stage_dir = _long_readable_path(long_dir)
+    assert result.status == "succeeded"
+    assert (readable_stage_dir / "repair_plan.final.md").exists()
+    assert (readable_stage_dir / "repair.patch.diff").exists()
+    assert (readable_stage_dir / "repair_report.md").exists()
+    assert (readable_stage_dir / "stage_result.json").exists()
 
 
 def test_repair_service_rejected_regression_command_fails_without_running(tmp_path) -> None:

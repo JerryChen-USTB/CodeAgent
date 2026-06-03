@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from codeagent.config.schema import TaskConfig
+from codeagent.config.schema import Stage, TaskConfig
 from codeagent.reports.artifact_store import ArtifactStore
 from codeagent.reports.schemas import StageResult
 from codeagent.workflow.checkpoint import CheckpointManager
@@ -51,6 +52,12 @@ def _decision(kind: str = "approve", *, action_id: str = "testing") -> ApprovalD
         comment=f"{kind} for testing fixture.",
         auto=True,
     )
+
+
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
 
 
 def _plan(test_content: str, *, path: str = "tests/test_math_utils.py") -> TestingPlan:
@@ -134,6 +141,33 @@ def test_testing_service_success_applies_tests_runs_command_and_writes_report(tm
     ]:
         assert (stage_dir / filename).exists(), filename
     assert artifact_store.find("testing_test_report") is not None
+
+
+def test_testing_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    run_context = _run_context(tmp_path, project_root)
+    long_dir = run_context.run_dir / "testing_long"
+    while len(str(long_dir / "test_report.md")) < 285:
+        long_dir = long_dir / "deep_segment_for_windows_path_limit"
+    run_context.stage_dirs[Stage.TEST] = long_dir
+    service = TestingService(run_context=run_context)
+    request = _request(
+        _plan(
+            "from math_utils import add\n\n"
+            "def test_add():\n"
+            "    assert add(2, 3) == 5\n"
+        )
+    )
+
+    result = service.run(request)
+
+    readable_stage_dir = _long_readable_path(long_dir)
+    assert result.status == "succeeded"
+    assert (readable_stage_dir / "test_plan.md").exists()
+    assert (readable_stage_dir / "test.patch.diff").exists()
+    assert (readable_stage_dir / "test_report.md").exists()
+    assert (readable_stage_dir / "stage_result.json").exists()
 
 
 def test_testing_service_failed_tests_produce_failed_stage_result(tmp_path) -> None:

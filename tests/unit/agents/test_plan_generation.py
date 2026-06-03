@@ -185,6 +185,64 @@ def test_plan_generation_keeps_visible_context_inside_generated_run_roots(
     assert "def solve()" in model.prompts[0]
 
 
+def test_plan_generation_prompt_requires_sqlite_connections_to_be_closed(
+    tmp_path,
+) -> None:
+    case_dir = tmp_path / "case"
+    input_dir = case_dir / "input"
+    project = case_dir / "workspace"
+    input_dir.mkdir(parents=True)
+    project.mkdir()
+    requirements = input_dir / "requirements.md"
+    requirements.write_text(
+        "Build a Flask API with SQLite persistence.\n",
+        encoding="utf-8",
+    )
+    config = TaskConfig(
+        stages=[Stage.IMPLEMENT],
+        project_path=project,
+        output_dir=tmp_path / "runs",
+        mode="benchmark",
+        input_materials=[
+            InputMaterial(
+                material_type="requirements",
+                path=requirements,
+                required=True,
+            )
+        ],
+        agent_visibility={
+            "visible_paths": [input_dir, project],
+            "hidden_paths": [],
+        },
+        auto_approve_in_benchmark=True,
+    )
+    context = create_run_context(config, output_root=tmp_path / "runs")
+    model = _FakeModel(
+        {
+            "requirements_summary": "Build SQLite API.",
+            "impact_summary": "Add package.",
+            "changes": [
+                {
+                    "path": "meeting_room_booking/__init__.py",
+                    "old_content": None,
+                    "new_content": "VALUE = True\n",
+                    "rationale": "Satisfy visible requirement.",
+                }
+            ],
+            "syntax_check_targets": ["meeting_room_booking/__init__.py"],
+        }
+    )
+
+    PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+        context
+    )
+
+    prompt = model.prompts[0]
+    assert "SQLite" in prompt
+    assert "close" in prompt
+    assert "context manager alone does not close sqlite3.Connection" in prompt
+
+
 def test_plan_generation_strips_duplicate_workspace_prefix_for_empty_project_root(
     tmp_path,
 ) -> None:
@@ -236,6 +294,61 @@ def test_plan_generation_strips_duplicate_workspace_prefix_for_empty_project_roo
 
     assert request.plan.changes[0].path.as_posix() == "meeting_room_booking/app.py"
     assert request.plan.syntax_check_targets[0].as_posix() == "meeting_room_booking/app.py"
+
+
+def test_plan_generation_preserves_existing_directory_named_like_project_root(
+    tmp_path,
+) -> None:
+    case_dir = tmp_path / "case"
+    input_dir = case_dir / "input"
+    project = case_dir / "workspace"
+    package_dir = project / "workspace"
+    input_dir.mkdir(parents=True)
+    package_dir.mkdir(parents=True)
+    requirements = input_dir / "requirements.md"
+    requirements.write_text("Update the nested workspace package.\n", encoding="utf-8")
+    (package_dir / "pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    config = TaskConfig(
+        stages=[Stage.IMPLEMENT],
+        project_path=project,
+        output_dir=tmp_path / "runs",
+        mode="benchmark",
+        input_materials=[
+            InputMaterial(
+                material_type="requirements",
+                path=requirements,
+                required=True,
+            )
+        ],
+        agent_visibility={
+            "visible_paths": [input_dir, project],
+            "hidden_paths": [],
+        },
+        auto_approve_in_benchmark=True,
+    )
+    context = create_run_context(config, output_root=tmp_path / "runs")
+    model = _FakeModel(
+        {
+            "requirements_summary": "Update package file.",
+            "impact_summary": "Modify the existing nested workspace package.",
+            "changes": [
+                {
+                    "path": "workspace/pkg.py",
+                    "old_content": "VALUE = 1\n",
+                    "new_content": "VALUE = 2\n",
+                    "rationale": "Satisfy visible package requirement.",
+                }
+            ],
+            "syntax_check_targets": ["workspace/pkg.py"],
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+        context
+    )
+
+    assert request.plan.changes[0].path.as_posix() == "workspace/pkg.py"
+    assert request.plan.syntax_check_targets[0].as_posix() == "workspace/pkg.py"
 
 
 def test_plan_generation_honors_configured_context_budget(tmp_path) -> None:

@@ -17,7 +17,7 @@
 5. **实现高质量工程，而不是演示型假实现。** CLI、工作流、模型配置、工具、HITL、日志、报告、benchmark 都必须可运行、可复现、可检查。
 6. **持续回顾文档。** 每完成 2–3 个里程碑，回看 SRS 和系统设计，检查实现是否偏离；在 `plans.md` 中追加状态、偏差、修复计划和已完成验证。
 7. **真实验证。** 所有声明必须有命令、日志或报告支撑。不得说“应该通过”；必须运行并记录结果。
-8. **不要泄露密钥。** 项目根目录有 `Software Engineering Project.txt`，里面保存 OpenRouter API Key。只把它当作本地秘密读取，不要打印、不要写入日志、不要提交、不要复制到报告。
+8. **不要泄露密钥。** 如果项目根目录有 `Software Engineering Project.txt`、`.env` 或其他本地 secret 文件，只把它们当作禁止读取、禁止打印、禁止写入日志、禁止提交、禁止复制到报告的敏感文件；运行时只从 `OPENROUTER_API_KEY` 等显式环境变量解析 API Key。
 
 ---
 
@@ -81,7 +81,7 @@
 3. 阶段选择与校验：允许单阶段或连续阶段组合；拒绝不连续或顺序错误组合。
 4. LangGraph 主图 + 四个阶段子图：ImplementationSubgraph、TestingSubgraph、DebuggingSubgraph、RepairSubgraph。
 5. LangChain 模型与工具层：统一模型调用、工具注册、结构化输出和工具级 HITL。
-6. OpenRouter 模型调用：使用 `anthropic/claude-opus-4.8` 驱动本项目的软件工程智能体。
+6. OpenRouter 模型调用：临时使用成本控制模型 `anthropic/claude-sonnet-4.6` 驱动本项目的软件工程智能体。
 7. 工具系统：项目扫描、文件读取、代码搜索、日志读取、patch 生成/校验/应用、shell/pytest 执行、pytest 结果解析、报告写入、artifact 记录。
 8. patch-first：所有项目源码和测试文件修改必须先生成 unified diff，审批后才能应用。
 9. HITL：测试方案、实现 patch、测试 patch、修复 patch、测试/复现/回归命令执行都必须能人工审批；benchmark 模式可自动审批，但必须记录 decision trace。
@@ -101,7 +101,7 @@
 - LangChain
 - `langchain-openai` 或当前官方推荐的 OpenAI-compatible 接入方式
 - OpenRouter OpenAI-compatible API
-- 模型：`anthropic/claude-opus-4.8`
+- 模型：`anthropic/claude-sonnet-4.6`
 - pytest
 - SQLite checkpoint（优先使用 LangGraph SQLite checkpointer；如官方 API 有变化，按最新文档适配并记录）
 - Typer + Rich，或 argparse + Rich
@@ -127,15 +127,15 @@
 
 ## 4. OpenRouter API Key 和模型接入要求
 
-项目根目录存在：
+如果项目根目录存在本地 secret 文件：
 
 ```text
 Software Engineering Project.txt
 ```
 
-这个文件保存 OpenRouter API Key。你必须这样处理：
+这些文件只能作为敏感文件处理，不能作为运行时 key 来源。你必须这样处理：
 
-1. 本地运行和验证时，可以读取该文件获取 API Key。
+1. 本地运行和验证时，不得读取、打印、复制、摘要或解析 `Software Engineering Project.txt`、`.env`、`.env.*` 或任何本地 secret 文件来获取 API Key。
 2. 不要在任何输出中打印完整 key。
 3. 不要把 key 写入 `plans.md`、README、报告、metadata、transcript、测试快照或任何 commit。
 4. 确保 `.gitignore` 包含：
@@ -143,15 +143,15 @@ Software Engineering Project.txt
    - `.env`
    - `.env.*`
    - 任何本地 secret 文件。
-5. 实现时优先支持环境变量：
+5. 实现时只支持通过环境变量解析 OpenRouter API Key：
    - `OPENROUTER_API_KEY`
-6. 如果环境变量缺失，可以在本地开发运行路径中安全读取根目录 `Software Engineering Project.txt`，但只在内存中使用。
+6. 运行时 metadata、transcript、decision trace 和报告只能记录环境变量名，不得记录 secret 值。
 7. 模型配置默认值应为：
 
 ```yaml
 model:
   provider: openai_compatible
-  model_name: anthropic/claude-opus-4.8
+  model_name: anthropic/claude-sonnet-4.6
   base_url: https://openrouter.ai/api/v1
   api_key_env: OPENROUTER_API_KEY
   temperature: 0.2

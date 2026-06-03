@@ -12,6 +12,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from codeagent import filesystem as fs
 from codeagent.config.schema import Stage
 from codeagent.context.sensitive_filter import SensitiveFilter
 from codeagent.errors import ErrorRecord
@@ -128,7 +129,7 @@ class TestingService:
         )
 
     def prepare_plan_review(self, request: TestingRequest) -> TestingApprovalPreview:
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        fs.mkdir(self.stage_dir)
         plan_path = self._write_plan(request.plan)
         plan_json_path = self._write_plan_json(request.plan)
         artifacts = [
@@ -244,7 +245,7 @@ class TestingService:
                 )
             )
         patch_path = self.stage_dir / "test.patch.diff"
-        patch_path.write_text(prepared.patch.text, encoding="utf-8")
+        fs.write_text(patch_path, prepared.patch.text)
         artifacts.append(
             self._record_artifact(
                 "testing_test_patch",
@@ -316,9 +317,9 @@ class TestingService:
                     artifact_ids=artifacts,
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
-            )
+        )
         patch_path = self.stage_dir / "test.patch.diff"
-        if not patch_path.exists():
+        if not fs.exists(patch_path):
             result = self._failed_result(
                 started_at=started_at,
                 summary="Approved testing patch is missing.",
@@ -335,7 +336,7 @@ class TestingService:
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
             )
-        patch_text = patch_path.read_text(encoding="utf-8")
+        patch_text = fs.read_text(patch_path)
         if approved_patch_sha256 and _sha256_text(patch_text) != approved_patch_sha256:
             result = self._failed_result(
                 started_at=started_at,
@@ -539,7 +540,7 @@ class TestingService:
                 attempts=[],
             )
 
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        fs.mkdir(self.stage_dir)
         candidates = [request.plan, *request.alternate_plans][
             : max(1, request.max_patch_attempts)
         ]
@@ -589,7 +590,7 @@ class TestingService:
         plan_path = self._write_plan(prepared.plan)
         plan_json_path = self._write_plan_json(prepared.plan)
         patch_path = self.stage_dir / "test.patch.diff"
-        patch_path.write_text(prepared.patch.text, encoding="utf-8")
+        fs.write_text(patch_path, prepared.patch.text)
         attempts_path = self._write_attempts(attempts)
         artifacts.extend(
             [
@@ -958,7 +959,7 @@ class TestingService:
                     self._file_changes_for_plan(plan)
                 )
                 candidate_path = self.stage_dir / f"test_patch_attempt_{index}.diff"
-                candidate_path.write_text(patch.text, encoding="utf-8")
+                fs.write_text(candidate_path, patch.text)
                 validation = self.patch_service.validate_patch(
                     candidate_path,
                     self.run_context.task_config.project_path,
@@ -1047,9 +1048,9 @@ class TestingService:
             return None
         if SensitiveFilter(root).is_denied(target):
             return None
-        if not target.is_file():
+        if not fs.is_file(target):
             return None
-        return target.read_text(encoding="utf-8")
+        return fs.read_text(target)
 
     def _run_command(self, command: str, request: TestingRequest) -> ShellResult:
         timeout = (
@@ -1086,44 +1087,44 @@ class TestingService:
 
     def _write_plan(self, plan: TestingPlan) -> Path:
         path = self.stage_dir / "test_plan.md"
-        path.write_text(_render_plan(plan), encoding="utf-8")
+        fs.write_text(path, _render_plan(plan))
         return path
 
     def _write_plan_json(self, plan: TestingPlan) -> Path:
         path = self.stage_dir / "test_plan.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
     def _load_prepared_plan(self, fallback_plan: TestingPlan) -> TestingPlan:
         path = self.stage_dir / "test_plan.json"
-        if not path.exists():
+        if not fs.exists(path):
             return fallback_plan
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(fs.read_text(path))
             return TestingPlan.model_validate(data)
         except (OSError, json.JSONDecodeError, ValidationError):
             return fallback_plan
 
     def _write_attempts(self, attempts: list[dict[str, object]]) -> Path:
         path = self.stage_dir / "test_patch_attempts.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps({"attempts": attempts}, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
     def _write_changed_files(self, changed_files: list[str]) -> Path:
         path = self.stage_dir / "changed_files.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(
                 {"stage": TESTING_STAGE, "changed_files": changed_files},
                 indent=2,
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
         return path
 
@@ -1135,7 +1136,8 @@ class TestingService:
         decision: str,
     ) -> Path:
         path = self.stage_dir / "test_command.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(
                 {
                     "command": command,
@@ -1145,15 +1147,14 @@ class TestingService:
                 indent=2,
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
         return path
 
     def _write_test_result(self, payload: dict[str, object]) -> Path:
         path = self.stage_dir / "test_result.json"
-        path.write_text(
+        fs.write_text(
+            path,
             json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
         return path
 
@@ -1190,7 +1191,7 @@ class TestingService:
         ]
         if test_result.get("error_summary"):
             lines.extend(["", "## Failure Summary", "", str(test_result["error_summary"])])
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
     def _failed_result(
@@ -1233,7 +1234,7 @@ class TestingService:
         changed_files: list[str] | None = None,
         test_result: dict[str, object] | None = None,
     ) -> StageResult:
-        if self.stage_dir.exists() and not (self.stage_dir / "test_report.md").exists():
+        if fs.exists(self.stage_dir) and not fs.exists(self.stage_dir / "test_report.md"):
             report_payload = test_result or {
                 "success": False,
                 "passed": 0,
@@ -1291,9 +1292,9 @@ class TestingService:
     def _register_existing_artifacts(self, fallback_plan: TestingPlan) -> list[str]:
         plan_path = self.stage_dir / "test_plan.md"
         plan_json_path = self.stage_dir / "test_plan.json"
-        if not plan_path.exists():
+        if not fs.exists(plan_path):
             plan_path = self._write_plan(fallback_plan)
-        if not plan_json_path.exists():
+        if not fs.exists(plan_json_path):
             plan_json_path = self._write_plan_json(fallback_plan)
         artifacts = [
             self._record_artifact(
@@ -1310,7 +1311,7 @@ class TestingService:
             ),
         ]
         patch_path = self.stage_dir / "test.patch.diff"
-        if patch_path.exists():
+        if fs.exists(patch_path):
             artifacts.append(
                 self._record_artifact(
                     "testing_test_patch",
@@ -1320,7 +1321,7 @@ class TestingService:
                 )
             )
         attempts_path = self.stage_dir / "test_patch_attempts.json"
-        if attempts_path.exists():
+        if fs.exists(attempts_path):
             artifacts.append(
                 self._record_artifact(
                     "testing_test_patch_attempts",
@@ -1330,7 +1331,7 @@ class TestingService:
                 )
             )
         changed_files_path = self.stage_dir / "changed_files.json"
-        if changed_files_path.exists():
+        if fs.exists(changed_files_path):
             artifacts.append(
                 self._record_artifact(
                     "testing_changed_files",
@@ -1452,10 +1453,10 @@ def _last_attempt_error(attempts: list[dict[str, object]]) -> str:
 
 
 def _read_attempts(path: Path) -> list[dict[str, object]]:
-    if not path.exists():
+    if not fs.exists(path):
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(fs.read_text(path))
     except (OSError, json.JSONDecodeError):
         return []
     attempts = data.get("attempts") if isinstance(data, dict) else None
@@ -1465,10 +1466,10 @@ def _read_attempts(path: Path) -> list[dict[str, object]]:
 
 
 def _read_changed_files(path: Path) -> list[str]:
-    if not path.exists():
+    if not fs.exists(path):
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(fs.read_text(path))
     except (OSError, json.JSONDecodeError):
         return []
     changed = data.get("changed_files") if isinstance(data, dict) else None

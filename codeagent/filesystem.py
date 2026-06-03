@@ -27,6 +27,11 @@ def write_text(path: PathInput, text: str, *, encoding: str = "utf-8") -> None:
     portable_path(path).write_text(text, encoding=encoding)
 
 
+def append_text(path: PathInput, text: str, *, encoding: str = "utf-8") -> None:
+    with portable_path(path).open("a", encoding=encoding) as handle:
+        handle.write(text)
+
+
 def read_bytes(path: PathInput) -> bytes:
     return portable_path(path).read_bytes()
 
@@ -41,6 +46,14 @@ def exists(path: PathInput) -> bool:
 
 def is_dir(path: PathInput) -> bool:
     return portable_path(path).is_dir()
+
+
+def is_file(path: PathInput) -> bool:
+    return portable_path(path).is_file()
+
+
+def touch(path: PathInput, *, exist_ok: bool = True) -> None:
+    portable_path(path).touch(exist_ok=exist_ok)
 
 
 def unlink(path: PathInput, *, missing_ok: bool = False) -> None:

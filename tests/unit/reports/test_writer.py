@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from codeagent.errors import ErrorRecord
+from codeagent import filesystem as fs
 from codeagent.reports import ArtifactKind, ArtifactRecord, ArtifactStore
 from codeagent.reports.schemas import HumanDecision, StageResult
 from codeagent.reports.writer import ReportReferenceError, ReportWriter
@@ -102,6 +103,34 @@ def test_write_stage_report_uses_configured_long_stage_dir(tmp_path) -> None:
     assert written.stage_report_path == stage_dir / "stage_report.md"
     assert payload["report_path"].startswith("custom_testing/")
     assert (readable_stage_dir / "stage_report.md").exists()
+
+
+def test_artifact_store_writes_index_under_long_windows_paths(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    while len(str(run_dir / "artifacts_index.json")) < 285:
+        run_dir = run_dir / "deep_segment_for_windows_path_limit"
+    fs.mkdir(run_dir)
+    store = ArtifactStore.create(run_dir, run_id="run-long-artifacts")
+    log_path = run_dir / "testing" / "logs" / "pytest.log"
+    fs.mkdir(log_path.parent)
+    fs.write_text(log_path, "pytest output")
+    store.record(
+        ArtifactRecord(
+            artifact_id="testing_log",
+            stage="testing",
+            kind=ArtifactKind.LOG,
+            path=log_path,
+            summary="pytest log",
+        )
+    )
+
+    store.write()
+
+    readable_run_dir = _long_readable_path(run_dir)
+    payload = json.loads(
+        (readable_run_dir / "artifacts_index.json").read_text(encoding="utf-8")
+    )
+    assert payload["artifacts"][0]["path"] == "testing/logs/pytest.log"
 
 
 def test_write_stage_report_rejects_unregistered_artifact_reference(tmp_path) -> None:
