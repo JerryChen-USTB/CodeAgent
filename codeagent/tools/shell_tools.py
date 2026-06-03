@@ -9,9 +9,10 @@ import re
 import shlex
 import subprocess
 import time
-from os import PathLike
+from collections.abc import Mapping
 from pathlib import Path
 
+from codeagent import filesystem as fs
 from codeagent.runtime.commands import (
     CommandApproval,
     CommandOperationRecord,
@@ -52,6 +53,7 @@ class ShellRunner:
         cwd: str | Path,
         timeout_seconds: float,
         approval: CommandApproval,
+        env: Mapping[str, str] | None = None,
     ) -> ShellResult:
         cwd_path = Path(cwd).resolve()
         if not cwd_path.is_dir():
@@ -71,6 +73,10 @@ class ShellRunner:
         timed_out = False
 
         try:
+            process_env = None
+            if env is not None:
+                process_env = os.environ.copy()
+                process_env.update({str(key): str(value) for key, value in env.items()})
             completed = subprocess.run(
                 policy.argv,
                 cwd=cwd_path,
@@ -78,6 +84,7 @@ class ShellRunner:
                 text=True,
                 timeout=timeout_seconds,
                 check=False,
+                env=process_env,
             )
             stdout = completed.stdout
             stderr = completed.stderr
@@ -198,23 +205,11 @@ def _paths_are_portable(paths: tuple[Path, Path, Path]) -> bool:
 
 
 def _mkdir(path: Path) -> None:
-    Path(_long_path(path)).mkdir(parents=True, exist_ok=True)
+    fs.mkdir(path)
 
 
 def _write_text(path: Path, text: str) -> None:
-    Path(_long_path(path)).write_text(text, encoding="utf-8")
-
-
-def _long_path(path: Path | str | PathLike[str]) -> str:
-    raw = str(path)
-    if os.name != "nt":
-        return raw
-    if raw.startswith("\\\\?\\"):
-        return raw
-    resolved = str(Path(raw).resolve())
-    if resolved.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + resolved.lstrip("\\")
-    return "\\\\?\\" + resolved
+    fs.write_text(path, text)
 
 
 def _split_command(command: str) -> list[str]:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from codeagent import filesystem as fs
 from codeagent.context.sensitive_filter import SensitiveFilter
 
 
@@ -269,10 +270,10 @@ class PatchService:
                 if change.action == "already":
                     continue
                 if change.action == "delete":
-                    change.path.unlink()
+                    fs.unlink(change.path)
                 elif change.action == "write":
-                    change.path.parent.mkdir(parents=True, exist_ok=True)
-                    change.path.write_bytes((change.content or "").encode("utf-8"))
+                    fs.mkdir(change.path.parent)
+                    fs.write_bytes(change.path, (change.content or "").encode("utf-8"))
         except OSError as exc:
             _rollback_file_changes(backups)
             raise PatchApplyError(f"failed to apply patch: {exc}") from exc
@@ -290,14 +291,14 @@ class PatchService:
             if change.action == "already":
                 continue
             _ensure_parent_can_exist(change.path, change.relative_path)
-            if change.path.exists() and change.path.is_dir():
+            if fs.exists(change.path) and fs.is_dir(change.path):
                 raise PatchApplyError(
                     f"target path is a directory: {change.relative_path}"
                 )
 
     def _parse_patch_file(self, patch_path: str | Path) -> list[FilePatch]:
         try:
-            patch_text = Path(patch_path).read_text(encoding="utf-8")
+            patch_text = fs.read_text(patch_path)
         except OSError as exc:
             raise PatchValidationError(f"patch file cannot be read: {exc}") from exc
         return _parse_patch_text(patch_text)
@@ -376,7 +377,7 @@ class PatchService:
         target_path = (root / Path(relative_path)).resolve()
         if file_patch.old_path is None:
             new_content = _content_from_lines(_new_hunk_lines(file_patch))
-            if target_path.exists():
+            if fs.exists(target_path):
                 current = _read_file_snapshot(target_path)
                 if _is_already_applied(current.lines, file_patch):
                     return PlannedFileChange("already", target_path, relative_path)
@@ -384,7 +385,7 @@ class PatchService:
             return PlannedFileChange("write", target_path, relative_path, new_content)
 
         if file_patch.new_path is None:
-            if not target_path.exists():
+            if not fs.exists(target_path):
                 return PlannedFileChange("already", target_path, relative_path)
             current = _read_file_snapshot(target_path)
             remaining_lines = _apply_hunks(current.lines, file_patch)
@@ -392,7 +393,7 @@ class PatchService:
                 raise PatchApplyError("delete patch does not remove entire file")
             return PlannedFileChange("delete", target_path, relative_path)
 
-        if not target_path.exists():
+        if not fs.exists(target_path):
             raise PatchApplyError(f"target file does not exist: {relative_path}")
         current = _read_file_snapshot(target_path)
         try:
@@ -556,7 +557,7 @@ def _split_content(content: str | None) -> list[str]:
 
 
 def _read_file_snapshot(path: Path) -> TextFileSnapshot:
-    raw = path.read_bytes()
+    raw = fs.read_bytes(path)
     utf8_bom = raw.startswith(b"\xef\xbb\xbf")
     text = raw.decode("utf-8-sig")
     newline = "\r\n" if text.count("\r\n") > text.count("\n") - text.count("\r\n") else "\n"
@@ -634,9 +635,9 @@ def _looks_like_assertion(text: str) -> bool:
 def _ensure_parent_can_exist(path: Path, relative_path: str) -> None:
     parent = path.parent
     probe = parent
-    while not probe.exists():
+    while not fs.exists(probe):
         probe = probe.parent
-    if not probe.is_dir():
+    if not fs.is_dir(probe):
         raise PatchApplyError(f"parent path is not a directory: {relative_path}")
 
 
@@ -649,12 +650,12 @@ def _snapshot_planned_changes(
         if change.action == "already" or change.path in seen_paths:
             continue
         seen_paths.add(change.path)
-        if change.path.exists():
+        if fs.exists(change.path):
             backups.append(
                 FileBackup(
                     path=change.path,
                     existed=True,
-                    content=change.path.read_bytes(),
+                    content=fs.read_bytes(change.path),
                 )
             )
         else:
@@ -666,10 +667,10 @@ def _rollback_file_changes(backups: list[FileBackup]) -> None:
     for backup in reversed(backups):
         try:
             if backup.existed:
-                backup.path.parent.mkdir(parents=True, exist_ok=True)
-                backup.path.write_bytes(backup.content or b"")
-            elif backup.path.exists() and not backup.path.is_dir():
-                backup.path.unlink()
+                fs.mkdir(backup.path.parent)
+                fs.write_bytes(backup.path, backup.content or b"")
+            elif fs.exists(backup.path) and not fs.is_dir(backup.path):
+                fs.unlink(backup.path)
         except OSError:
             continue
 

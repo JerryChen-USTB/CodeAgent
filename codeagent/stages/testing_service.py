@@ -124,6 +124,7 @@ class TestingService:
             artifact_store=run_context.artifact_store,
             transcript=run_context.transcript,
             decision_trace=run_context.decision_trace,
+            stage_dirs=run_context.stage_dirs,
         )
 
     def prepare_plan_review(self, request: TestingRequest) -> TestingApprovalPreview:

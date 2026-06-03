@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,12 @@ def _register_log(store: ArtifactStore, run_dir: Path) -> None:
     store.write()
 
 
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
+
+
 def test_write_stage_report_writes_json_markdown_and_registers_artifacts(tmp_path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -63,6 +70,38 @@ def test_write_stage_report_writes_json_markdown_and_registers_artifacts(tmp_pat
     assert "testing_log" in markdown
     assert reloaded.find("testing_stage_result") is not None
     assert reloaded.find("testing_stage_report") is not None
+
+
+def test_write_stage_report_uses_configured_long_stage_dir(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    store = _artifact_store(run_dir)
+    _register_log(store, run_dir)
+    stage_dir = run_dir / "custom_testing"
+    while len(str(stage_dir / "stage_result.json")) < 285:
+        stage_dir = stage_dir / "deep_segment_for_windows_path_limit"
+    writer = ReportWriter(
+        run_dir=run_dir,
+        artifact_store=store,
+        stage_dirs={"test": stage_dir},
+    )
+    result = StageResult(
+        stage="testing",
+        status="succeeded",
+        started_at="2026-06-03T05:00:00Z",
+        ended_at="2026-06-03T05:01:00Z",
+        summary="Regression tests passed under a configured stage directory.",
+        artifact_ids=["testing_log"],
+    )
+
+    written = writer.write_stage_report(result)
+
+    readable_stage_dir = _long_readable_path(stage_dir)
+    payload = json.loads((readable_stage_dir / "stage_result.json").read_text(encoding="utf-8"))
+    assert written.stage_result_path == stage_dir / "stage_result.json"
+    assert written.stage_report_path == stage_dir / "stage_report.md"
+    assert payload["report_path"].startswith("custom_testing/")
+    assert (readable_stage_dir / "stage_report.md").exists()
 
 
 def test_write_stage_report_rejects_unregistered_artifact_reference(tmp_path) -> None:

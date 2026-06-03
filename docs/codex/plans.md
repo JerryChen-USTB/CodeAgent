@@ -46,7 +46,7 @@ Note: `benchmark/**/evaluation`, `benchmark/selfbuilt/**/oracle_tests`, and `ben
 - Cover the continuous workflow `implement -> test -> debug -> repair`, while allowing legal single-stage or contiguous-stage subsets.
 - Use LangGraph for the main workflow, four stage subgraphs, conditional routing, streaming, interrupt/HITL, checkpoint, and resume.
 - Use LangChain for model calls, tools, structured outputs, and tool-level HITL guardrails.
-- Default model access is OpenRouter OpenAI-compatible, model `anthropic/claude-opus-4.8`, with key from `OPENROUTER_API_KEY` or a local secret file held only in memory.
+- Default model access is OpenRouter OpenAI-compatible, temporary cost-control model `anthropic/claude-sonnet-4.6`, with key from `OPENROUTER_API_KEY` or a local secret file held only in memory.
 - Enforce patch-first for project source/test modifications. Side-effect operations require approval except benchmark-mode auto-approval with decision trace.
 - Persist every run under `codeagent_runs/<run_id>/`, including metadata, normalized task config, transcript, decision trace, artifacts index, stage artifacts, `stage_result.json`, and `final_report.md`.
 - Provide benchmark execution, per-case isolation, success-rate aggregation, and reports.
@@ -421,7 +421,7 @@ Scope boundaries for this implementation pass:
 - Verification commands: `codeagent benchmark --config benchmark/selfbuilt/selfbuilt_benchmark.yaml`; `python -m pytest -q`; `codeagent --help`.
 - Unit/integration tests to add: regression tests based on self-built failures and README command smoke tests.
 - Risks and mitigations: large scope and external dependencies in Flask case; run easier CLI cases first, install generated dependencies only in isolated benchmark env.
-- Status: pending.
+- Status: done.
 
 ## 4. Risk Register
 
@@ -963,7 +963,7 @@ Use this section as an append-only engineering log. Every completed small module
 - Backup before doc update: `docs/_backups/20260603-115727/plans.md`.
 - Alignment review in progress: rechecking public benchmark failures against SRS FR-31 implementation plan generation, FR-55 repair suggestion generation, FR-58 repair patch generation, AI-01~AI-05 model access/error handling, and design docs for LLM-driven implementation/repair subgraphs.
 - Baseline failure observed: public benchmark runner completes all 6 enabled cases, but implementation cases fail because the CLI executor still reports “structured implementation plan required,” and QuixBugs repair loops fail because no structured repair plan is generated.
-- OpenRouter readiness: user-level `OPENROUTER_API_KEY` is present and usable through `SecretResolver`; both a small smoke prompt and the configured default model `anthropic/claude-opus-4.8` returned successfully via `ModelClientFactory`.
+- OpenRouter readiness: user-level `OPENROUTER_API_KEY` is present and usable through `SecretResolver`; both a small smoke prompt and the previously configured default model `anthropic/claude-opus-4.8` returned successfully via `ModelClientFactory`.
 - Engineering direction: build LLM plan generation as an auditable orchestration layer over the existing deterministic `ImplementationService` and `RepairService`, then iterate on context selection, schema validation, retry diagnostics, prompt quality, patch risk control, and benchmark evidence until the public cases converge.
 - Next step: add failing tests for LLM-generated implementation/repair requests and non-interactive CLI handlers that no longer fail only because a structured plan was missing.
 
@@ -1029,3 +1029,27 @@ Use this section as an append-only engineering log. Every completed small module
 - Commands run: copied `benchmark/cases/bugsinpy_black_001` to `benchmark/codeagent_runs/manual_m25/20260603-150516/case_workspaces/bugsinpy_black_001`, then ran `powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir> -AllowTestFailure` -> exit_code=1 with explicit `WSL bash command timed out after 60 seconds` blocker.
 - Developer report: `docs/dev_reports/M25_bugsinpy_environment_detection.md`.
 - Next step: continue M26 Self-Built Benchmark Pass and Final Developer Docs.
+
+### 2026-06-03 Temporary OpenRouter Model Cost Control
+
+- User directive: temporarily switch subsequent LLM calls to `anthropic/claude-sonnet-4.6` to reduce OpenRouter cost while continuing benchmark-driven implementation.
+- Implementation: updated `DEFAULT_MODEL_NAME` so new `TaskConfig` instances and benchmark case configs without explicit model overrides use `anthropic/claude-sonnet-4.6`.
+- Documentation: updated the current execution plan and implementation guide; historical Opus 4.8 smoke-test evidence remains recorded as historical evidence only.
+- Verification: `python -m pytest tests\unit\config tests\unit\models\test_model_factory.py -q` -> 38 passed; `python -m codeagent --help` -> succeeded; controlled OpenRouter smoke through default `ModelConfig()` returned the expected marker using `anthropic/claude-sonnet-4.6`.
+
+### 2026-06-03 M26 Self-Built Benchmark Pass and Final Docs Complete
+
+- Backup before final doc update: `docs/_backups/20260603_165726/m26_final_docs/`.
+- Alignment review: checked M26 against SRS/design expectations for benchmark isolation, hidden oracle separation, reproducible reports, OpenRouter model configuration, run artifacts, and developer documentation.
+- Self-built benchmark convergence: fixed Windows long-path artifact handling, internal syntax checking without `__pycache__`, runner-only oracle import path, duplicate `workspace/` LLM path normalization, and visible CSV export ordering clarification for `02_personal_ledger`.
+- Real Sonnet evidence: `python -m codeagent benchmark --config benchmark\selfbuilt\selfbuilt_benchmark.yaml` ran with normalized `model_name: anthropic/claude-sonnet-4.6`, completed 5/5 self-built cases, `success_rate=1.00`, `blocked=0`.
+- Latest aggregate: `benchmark/selfbuilt/codeagent_runs/benchmark/2026-06-03_085139_493426_codeagent_selfbuilt_python_benchmark_3bc92c/benchmark_result.json`; every case reports `oracle_success=True` and `source_unchanged=True`.
+- Final documentation: expanded `README.md`; added `docs/dev_reports/M26_selfbuilt_benchmark_final_docs.md`.
+- Commands run: `python -m pytest tests\unit\tools\test_patch_service.py tests\unit\reports\test_writer.py tests\unit\agents\test_plan_generation.py tests\integration\test_implementation_stage.py -q` -> 47 passed.
+- Commands run: `python -m pytest tests\integration\test_benchmark_runner.py::test_hidden_oracle_can_import_workspace_package_without_modifying_oracle_sys_path -q` -> passed.
+- Commands run: `python -m pytest tests\unit\config tests\unit\models\test_model_factory.py -q` -> 38 passed.
+- Commands run: `python -m pytest -q` -> 277 passed.
+- Commands run: `python -m compileall -q codeagent tests` -> passed.
+- Commands run: `codeagent --help` and `python -m codeagent --help` -> both succeeded.
+- Developer report: `docs/dev_reports/M26_selfbuilt_benchmark_final_docs.md`.
+- Next step: review git diff, ensure generated benchmark artifacts remain ignored, then commit M26 changes.

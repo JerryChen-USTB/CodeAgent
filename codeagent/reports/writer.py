@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from codeagent import filesystem as fs
 from codeagent.reports.artifact_store import ArtifactKind, ArtifactRecord, ArtifactStore
 from codeagent.reports.decision_trace import DecisionTraceWriter
 from codeagent.reports.schemas import HumanDecision, StageResult, ToolCallRecord
@@ -31,9 +34,11 @@ class ReportWriter:
         artifact_store: ArtifactStore,
         transcript: JsonlRecorder | None = None,
         decision_trace: JsonlRecorder | None = None,
+        stage_dirs: Mapping[str, Path] | None = None,
     ) -> None:
         self.run_dir = run_dir
         self.artifact_store = artifact_store
+        self.stage_dirs = dict(stage_dirs or {})
         self.transcript = transcript or JsonlRecorder(run_dir / "transcript.jsonl")
         self.decision_trace = DecisionTraceWriter(
             decision_trace or JsonlRecorder(run_dir / "decision_trace.jsonl")
@@ -42,26 +47,23 @@ class ReportWriter:
     def write_stage_report(self, result: StageResult) -> StageReportPaths:
         self._validate_stage_result(result)
         stage_dirname = _stage_dir_name(result.stage)
-        stage_dir = self.run_dir / stage_dirname
-        stage_dir.mkdir(parents=True, exist_ok=True)
+        stage_dir = self._stage_dir(result.stage)
+        fs.mkdir(stage_dir)
         stage_result_path = stage_dir / "stage_result.json"
         stage_report_path = stage_dir / "stage_report.md"
         result_with_report = result.model_copy(
             update={"report_path": _relative_to_run_dir(self.run_dir, stage_report_path)}
         )
 
-        stage_result_path.write_text(
+        fs.write_text(
+            stage_result_path,
             json.dumps(
                 result_with_report.model_dump(mode="json", exclude_none=True),
                 indent=2,
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
-        stage_report_path.write_text(
-            self._render_stage_report(result_with_report),
-            encoding="utf-8",
-        )
+        fs.write_text(stage_report_path, self._render_stage_report(result_with_report))
         self._record_artifact(
             ArtifactRecord(
                 artifact_id=f"{stage_dirname}_stage_result",
@@ -112,10 +114,7 @@ class ReportWriter:
             )
         )
         self.artifact_store.write()
-        final_report_path.write_text(
-            self._render_final_report(results),
-            encoding="utf-8",
-        )
+        fs.write_text(final_report_path, self._render_final_report(results))
         self.transcript.append(
             {
                 "type": "final_report",
@@ -176,6 +175,14 @@ class ReportWriter:
 
     def _record_artifact(self, record: ArtifactRecord) -> ArtifactRecord:
         return self.artifact_store.record(record)
+
+    def _stage_dir(self, stage: str) -> Path:
+        stage_dirname = _stage_dir_name(stage)
+        for key in _stage_lookup_keys(stage, stage_dirname):
+            configured = self.stage_dirs.get(key)
+            if configured is not None:
+                return configured
+        return self.run_dir / stage_dirname
 
     def _render_stage_report(self, result: StageResult) -> str:
         lines = [
@@ -311,14 +318,47 @@ def _stage_dir_name(stage: str) -> str:
     return aliases.get(stage, stage)
 
 
+def _stage_lookup_keys(stage: str, stage_dirname: str) -> list[str]:
+    aliases = {
+        "implementation": "implement",
+        "testing": "test",
+        "debugging": "debug",
+        "repair": "repair",
+    }
+    keys = [stage, stage_dirname]
+    canonical = aliases.get(stage_dirname)
+    if canonical is not None:
+        keys.append(canonical)
+    deduped: list[str] = []
+    for key in keys:
+        if key not in deduped:
+            deduped.append(key)
+    return deduped
+
+
 def _relative_to_run_dir(run_dir: Path, path: Path) -> str:
-    return path.resolve().relative_to(run_dir.resolve()).as_posix()
+    run_text = _normal_absolute_path(run_dir)
+    path_text = _normal_absolute_path(path)
+    if os.path.commonpath([run_text, path_text]) != run_text:
+        raise ValueError(f"path is outside run directory: {path}")
+    return Path(os.path.relpath(path_text, run_text)).as_posix()
 
 
 def _jsonl_line_count(path: Path) -> int:
-    if not path.exists():
+    if not fs.exists(path):
         return 0
-    return len([line for line in path.read_text(encoding="utf-8").splitlines() if line])
+    return len([line for line in fs.read_text(path).splitlines() if line])
+
+
+def _normal_absolute_path(path: Path) -> str:
+    resolved = str(fs.portable_path(path).resolve())
+    if os.name == "nt":
+        if resolved.startswith("\\\\?\\UNC\\"):
+            resolved = "\\\\" + resolved[len("\\\\?\\UNC\\") :]
+        elif resolved.startswith("\\\\?\\"):
+            resolved = resolved[len("\\\\?\\") :]
+        resolved = os.path.normcase(resolved)
+    return os.path.normpath(resolved)
 
 
 def _markdown_cell(value: object) -> str:

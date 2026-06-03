@@ -43,3 +43,9 @@
 - `--amount abc`
 - `--category "   "`
 - 损坏的 JSON 文件
+
+## AC-06 CSV Export Order
+
+- CSV export must keep records in stored/addition order.
+- The first exported data row should be the first record added to the ledger.
+- Export must not re-sort rows by date, category, amount, or type.

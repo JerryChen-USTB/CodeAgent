@@ -130,3 +130,8 @@ id,date,type,category,amount,note
 - 金额小于等于 0 或不能解析：包含 `invalid amount`。
 - 分类为空：包含 `category is required`。
 - JSON 文件损坏：包含 `invalid ledger file`。
+
+## 7. CSV Export Ordering Clarification
+
+- CSV export must preserve the ledger's stored record order, which is the order records were added and persisted in the JSON file.
+- Do not re-sort CSV rows by date or category during export.

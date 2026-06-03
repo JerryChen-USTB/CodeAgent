@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,59 @@ def test_plan_generation_keeps_visible_context_inside_generated_run_roots(
     assert "def solve()" in model.prompts[0]
 
 
+def test_plan_generation_strips_duplicate_workspace_prefix_for_empty_project_root(
+    tmp_path,
+) -> None:
+    case_dir = tmp_path / "case"
+    input_dir = case_dir / "input"
+    project = case_dir / "workspace"
+    input_dir.mkdir(parents=True)
+    project.mkdir()
+    requirements = input_dir / "requirements.md"
+    requirements.write_text("Create meeting_room_booking package.\n", encoding="utf-8")
+    config = TaskConfig(
+        stages=[Stage.IMPLEMENT],
+        project_path=project,
+        output_dir=tmp_path / "runs",
+        mode="benchmark",
+        input_materials=[
+            InputMaterial(
+                material_type="requirements",
+                path=requirements,
+                required=True,
+            )
+        ],
+        agent_visibility={
+            "visible_paths": [input_dir, project],
+            "hidden_paths": [],
+        },
+        auto_approve_in_benchmark=True,
+    )
+    context = create_run_context(config, output_root=tmp_path / "runs")
+    model = _FakeModel(
+        {
+            "requirements_summary": "Create package.",
+            "impact_summary": "Add Flask app package.",
+            "changes": [
+                {
+                    "path": "workspace/meeting_room_booking/app.py",
+                    "old_content": None,
+                    "new_content": "def create_app():\n    return None\n",
+                    "rationale": "Satisfy visible package requirement.",
+                }
+            ],
+            "syntax_check_targets": ["workspace/meeting_room_booking/app.py"],
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+        context
+    )
+
+    assert request.plan.changes[0].path.as_posix() == "meeting_room_booking/app.py"
+    assert request.plan.syntax_check_targets[0].as_posix() == "meeting_room_booking/app.py"
+
+
 def test_plan_generation_honors_configured_context_budget(tmp_path) -> None:
     case_dir = tmp_path / "case"
     input_dir = case_dir / "input"
@@ -361,6 +415,37 @@ def test_plan_generation_writes_redacted_attempt_audit_for_malformed_responses(
     assert "sk-or-should-not-leak" not in audit_text
     assert "<redacted>" in audit_text
     assert "prompt_sha256" in audit
+
+
+def test_plan_generation_writes_attempt_audit_under_long_windows_paths(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    long_dir = context.run_dir
+    while len(str(long_dir / "plan_generation_attempts.json")) < 285:
+        long_dir = long_dir / "deep_segment_for_windows_path_limit"
+    context.stage_dirs[Stage.IMPLEMENT] = long_dir
+    model = _SequenceModel(
+        [
+            "not json sk-or-should-not-leak",
+            '{"requirements_summary": "missing required fields"}',
+            '{"requirements_summary": "still missing required fields"}',
+        ]
+    )
+
+    with pytest.raises(PlanGenerationError, match="Failed to generate valid"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+            context
+        )
+
+    audit_path = long_dir / "plan_generation_attempts.json"
+    readable_audit_path = (
+        Path("\\\\?\\" + str(audit_path.resolve())) if os.name == "nt" else audit_path
+    )
+    assert readable_audit_path.exists()
+    audit_text = readable_audit_path.read_text(encoding="utf-8")
+    assert "sk-or-should-not-leak" not in audit_text
+    assert "<redacted>" in audit_text
 
 
 def test_plan_generation_rejects_hidden_plan_targets_before_patch_stage(

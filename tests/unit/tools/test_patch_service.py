@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,19 @@ def _write(path: Path, text: str) -> None:
 
 def _patch(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
+
+
+def _write_long_path_fixture(path: Path, text: str) -> Path:
+    target = _long_readable_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
     return path
 
 
@@ -56,6 +70,57 @@ def test_create_validate_summarize_and_apply_modify_patch_once(tmp_path) -> None
     assert second_apply.applied is False
     assert second_apply.already_applied is True
     assert source.read_text(encoding="utf-8") == "def value():\n    return 2\n"
+
+
+def test_validate_summarize_and_apply_patch_under_long_windows_paths(tmp_path) -> None:
+    project = tmp_path / "project"
+    patch_dir = tmp_path / "patches"
+    while len(str(patch_dir / "change.diff")) < 285:
+        patch_dir = patch_dir / "deep_segment_for_windows_path_limit"
+    source = project / "src" / "long_path_app.py"
+    _write(source, "def value():\n    return 1\n")
+    service = PatchService()
+    artifact = service.create_unified_diff(
+        [
+            FileChange(
+                path=Path("src/long_path_app.py"),
+                old_content="def value():\n    return 1\n",
+                new_content="def value():\n    return 2\n",
+            )
+        ]
+    )
+    patch_path = _write_long_path_fixture(patch_dir / "change.diff", artifact.text)
+
+    validation = service.validate_patch(patch_path, project)
+    summary = service.summarize_patch(patch_path)
+    result = service.apply_patch(patch_path, project, operation_id="op-long-patch")
+
+    assert validation.valid is True
+    assert summary.modified_files == ["src/long_path_app.py"]
+    assert result.applied is True
+    assert source.read_text(encoding="utf-8") == "def value():\n    return 2\n"
+
+
+def test_apply_writes_target_file_under_long_windows_project_paths(tmp_path) -> None:
+    project = tmp_path / "project"
+    while len(str(project / "src" / "generated.py")) < 285:
+        project = project / "deep_segment_for_windows_path_limit"
+    patch_path = _patch(
+        tmp_path / "create.diff",
+        """--- /dev/null
++++ b/src/generated.py
+@@ -0,0 +1,2 @@
++def generated():
++    return True
+""",
+    )
+    service = PatchService()
+
+    result = service.apply_patch(patch_path, project, operation_id="op-long-project")
+
+    generated = _long_readable_path(project / "src" / "generated.py")
+    assert result.applied is True
+    assert generated.read_text(encoding="utf-8") == "def generated():\n    return True\n"
 
 
 def test_apply_add_and_delete_patch(tmp_path) -> None:

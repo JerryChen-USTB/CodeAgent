@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -102,6 +103,7 @@ class CaseEvaluator:
                     operation_id=f"oracle_{context.case_id}",
                     reason="Runner-only benchmark oracle evaluation.",
                 ),
+                env=_oracle_env(context),
             )
         except (CommandDeniedError, ValueError, RuntimeError) as exc:
             return _OracleOutcome(
@@ -126,3 +128,13 @@ class CaseEvaluator:
 
 def _join_reasons(*reasons: str) -> str:
     return "; ".join(reason for reason in reasons if reason)
+
+
+def _oracle_env(context: CaseExecutionContext) -> dict[str, str]:
+    project_path = str(context.task_config.project_path)
+    existing = os.environ.get("PYTHONPATH")
+    return {
+        "PYTHONPATH": (
+            project_path if not existing else f"{project_path}{os.pathsep}{existing}"
+        )
+    }

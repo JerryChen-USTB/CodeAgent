@@ -287,6 +287,41 @@ def test_benchmark_runner_runs_hidden_oracle_without_exposing_it_to_agent(
     assert not (case_dir / "case_runs").exists()
 
 
+def test_hidden_oracle_can_import_workspace_package_without_modifying_oracle_sys_path(
+    tmp_path,
+) -> None:
+    case_dir = _write_unittest_case(
+        tmp_path / "cases",
+        "case_oracle_pythonpath",
+        command="python -m unittest discover -s oracle_tests",
+    )
+    oracle_test = case_dir / "oracle_tests" / "test_oracle.py"
+    oracle_test.write_text(
+        "\n".join(
+            [
+                "import unittest",
+                "from math_utils import add",
+                "",
+                "class OracleMathTest(unittest.TestCase):",
+                "    def test_addition(self):",
+                "        self.assertEqual(add(2, 5), 7)",
+                "",
+                "if __name__ == '__main__':",
+                "    unittest.main()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config_path = _benchmark_config(tmp_path, "case_oracle_pythonpath")
+
+    result = BenchmarkRunner().run_config(config_path)
+
+    assert result.total_cases == 1
+    case_result = result.cases[0]
+    assert case_result.success is True
+    assert case_result.oracle_success is True
+
+
 def test_prepare_case_workspace_preserves_nested_hidden_paths_in_copied_case(
     tmp_path,
 ) -> None:

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
-import shlex
+import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from codeagent import filesystem as fs
 from codeagent.config.schema import Stage
 from codeagent.context.sensitive_filter import SensitiveFilter
 from codeagent.errors import ErrorRecord
@@ -18,7 +19,6 @@ from codeagent.errors.exceptions import utc_timestamp
 from codeagent.reports import ArtifactKind, ArtifactRecord
 from codeagent.reports.schemas import HumanDecision, StageResult
 from codeagent.reports.writer import ReportWriter
-from codeagent.runtime.commands import CommandApproval, ShellResult
 from codeagent.runtime.run_context import RunContext
 from codeagent.services.patch_service import (
     FileChange,
@@ -30,7 +30,6 @@ from codeagent.services.patch_service import (
     PatchValidationResult,
 )
 from codeagent.tools.hitl import ApprovalDecision
-from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
 
 
 IMPLEMENTATION_STAGE = "implementation"
@@ -100,7 +99,6 @@ class _PreparedPatch:
 class _SyntaxCheckOutcome:
     status: Literal["succeeded", "failed", "skipped"]
     log_path: Path
-    result: ShellResult | None = None
     message: str = ""
 
 
@@ -120,20 +118,16 @@ class ImplementationService:
         *,
         run_context: RunContext,
         patch_service: PatchService | None = None,
-        shell_runner: ShellRunner | None = None,
     ) -> None:
         self.run_context = run_context
         self.patch_service = patch_service or PatchService()
         self.stage_dir = run_context.stage_dirs[Stage.IMPLEMENT]
-        self.shell_runner = shell_runner or ShellRunner(
-            logs_dir=self.stage_dir / "logs",
-            max_output_chars=run_context.task_config.runtime.log_truncation_chars,
-        )
         self.writer = ReportWriter(
             run_dir=run_context.run_dir,
             artifact_store=run_context.artifact_store,
             transcript=run_context.transcript,
             decision_trace=run_context.decision_trace,
+            stage_dirs=run_context.stage_dirs,
         )
 
     def apply_prepared_patch(
@@ -145,7 +139,7 @@ class ImplementationService:
     ) -> StageResult:
         """Apply the patch that was already generated for an approval interrupt."""
         started_at = utc_timestamp()
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        _mkdir(self.stage_dir)
         plan_path = self.stage_dir / "implementation_plan.md"
         patch_path = self.stage_dir / "implementation.patch.diff"
         attempts_path = self.stage_dir / "patch_attempts.json"
@@ -291,7 +285,7 @@ class ImplementationService:
     def prepare_approval(self, request: ImplementationRequest) -> ImplementationApprovalPreview:
         """Prepare implementation artifacts and return a LangGraph interrupt payload."""
         started_at = utc_timestamp()
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        _mkdir(self.stage_dir)
         candidates = [request.plan, *request.alternate_plans][
             : max(1, request.max_patch_attempts)
         ]
@@ -335,7 +329,7 @@ class ImplementationService:
         plan_path = self._write_plan(prepared.plan)
         plan_json_path = self._write_plan_json(prepared.plan)
         patch_path = self.stage_dir / "implementation.patch.diff"
-        patch_path.write_text(prepared.patch.text, encoding="utf-8")
+        _write_text(patch_path, prepared.patch.text)
         attempts_path = self._write_attempts(attempts)
         artifacts.extend(
             [
@@ -401,7 +395,7 @@ class ImplementationService:
         if edited is not None:
             return self.run(edited)
 
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
+        _mkdir(self.stage_dir)
         candidates = [request.plan, *request.alternate_plans][
             : max(1, request.max_patch_attempts)
         ]
@@ -444,7 +438,7 @@ class ImplementationService:
 
         plan_path = self._write_plan(prepared.plan)
         patch_path = self.stage_dir / "implementation.patch.diff"
-        patch_path.write_text(prepared.patch.text, encoding="utf-8")
+        _write_text(patch_path, prepared.patch.text)
         attempts_path = self._write_attempts(attempts)
         artifacts.extend(
             [
@@ -619,7 +613,7 @@ class ImplementationService:
                     self._file_changes_for_plan(plan)
                 )
                 candidate_patch_path = self.stage_dir / f"implementation_attempt_{index}.patch.diff"
-                candidate_patch_path.write_text(patch.text, encoding="utf-8")
+                _write_text(candidate_patch_path, patch.text)
                 validation = self.patch_service.validate_patch(
                     candidate_patch_path,
                     self.run_context.task_config.project_path,
@@ -766,49 +760,45 @@ class ImplementationService:
         log_path = self.stage_dir / "syntax_check.log"
         targets = self._syntax_targets(plan, changed_files)
         if not targets:
-            log_path.write_text(
+            _write_text(
+                log_path,
                 "command: <none>\nexit_code: skipped\nNo Python syntax targets.\n",
-                encoding="utf-8",
             )
             return _SyntaxCheckOutcome(status="skipped", log_path=log_path)
 
-        command = "python -m py_compile " + " ".join(shlex.quote(path) for path in targets)
-        timeout = (
-            request.command_timeout_seconds
-            or self.run_context.task_config.runtime.command_timeout_seconds
-        )
-        approval = CommandApproval.approve(
-            operation_id="implementation_syntax_check",
-            approved_by="workflow",
-            reason="Lightweight syntax check after approved implementation patch.",
-        )
-        try:
-            result = self.shell_runner.run(
-                command,
-                cwd=self.run_context.task_config.project_path,
-                timeout_seconds=timeout,
-                approval=approval,
-            )
-        except (CommandDeniedError, ValueError) as exc:
-            log_path.write_text(
-                f"command: {command}\nexit_code: denied\nerror: {exc}\n",
-                encoding="utf-8",
-            )
-            return _SyntaxCheckOutcome(
-                status="failed",
-                log_path=log_path,
-                message=str(exc),
-            )
+        _ = request
+        command = "internal compile() syntax check " + " ".join(targets)
+        started = time.perf_counter()
+        errors: list[str] = []
+        for target in targets:
+            target_path = self.run_context.task_config.project_path / Path(target)
+            try:
+                source = fs.read_text(target_path)
+                compile(source, target, "exec", dont_inherit=True)
+            except (OSError, SyntaxError, ValueError) as exc:
+                errors.append(f"{target}: {type(exc).__name__}: {exc}")
+        duration = time.perf_counter() - started
+        exit_code = 1 if errors else 0
+        stdout = f"Checked {len(targets)} Python file(s)." if not errors else ""
+        stderr = "\n".join(errors)
 
-        log_path.write_text(_render_syntax_log(result), encoding="utf-8")
-        if result.timed_out or result.exit_code != 0:
+        _write_text(
+            log_path,
+            _render_syntax_log(
+                command=command,
+                exit_code=exit_code,
+                duration_seconds=duration,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        if exit_code != 0:
             return _SyntaxCheckOutcome(
                 status="failed",
                 log_path=log_path,
-                result=result,
-                message=f"syntax check exit_code={result.exit_code}",
+                message=f"syntax check exit_code={exit_code}",
             )
-        return _SyntaxCheckOutcome(status="succeeded", log_path=log_path, result=result)
+        return _SyntaxCheckOutcome(status="succeeded", log_path=log_path)
 
     def _syntax_targets(
         self,
@@ -829,18 +819,18 @@ class ImplementationService:
 
     def _write_plan(self, plan: ImplementationPlan) -> Path:
         path = self.stage_dir / "implementation_plan.md"
-        path.write_text(_render_plan(plan), encoding="utf-8")
+        _write_text(path, _render_plan(plan))
         return path
 
     def _write_plan_json(self, plan: ImplementationPlan) -> Path:
         path = self.stage_dir / "implementation_plan.json"
-        path.write_text(
+        _write_text(
+            path,
             json.dumps(
                 plan.model_dump(mode="json"),
                 indent=2,
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
         return path
 
@@ -856,15 +846,13 @@ class ImplementationService:
 
     def _write_attempts(self, attempts: list[dict[str, object]]) -> Path:
         path = self.stage_dir / "patch_attempts.json"
-        path.write_text(
-            json.dumps({"attempts": attempts}, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_text(path, json.dumps({"attempts": attempts}, indent=2, ensure_ascii=False))
         return path
 
     def _write_changed_files(self, changed_files: list[str]) -> Path:
         path = self.stage_dir / "changed_files.json"
-        path.write_text(
+        _write_text(
+            path,
             json.dumps(
                 {
                     "stage": IMPLEMENTATION_STAGE,
@@ -873,7 +861,6 @@ class ImplementationService:
                 indent=2,
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
         return path
 
@@ -945,7 +932,7 @@ class ImplementationService:
             )
         if result.next_suggestion:
             lines.extend(["", "## Next Suggestion", "", result.next_suggestion])
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _write_text(path, "\n".join(lines) + "\n")
         return path
 
     def _build_failed_result(
@@ -1119,21 +1106,28 @@ def _render_plan(plan: ImplementationPlan) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _render_syntax_log(result: ShellResult) -> str:
+def _render_syntax_log(
+    *,
+    command: str,
+    exit_code: int,
+    duration_seconds: float,
+    stdout: str,
+    stderr: str,
+) -> str:
     return "\n".join(
         [
-            f"command: {result.command}",
-            f"exit_code: {result.exit_code}",
-            f"timed_out: {result.timed_out}",
-            f"duration_seconds: {result.duration_seconds:.3f}",
-            f"stdout_log: {result.stdout_log}",
-            f"stderr_log: {result.stderr_log}",
+            f"command: {command}",
+            f"exit_code: {exit_code}",
+            "timed_out: False",
+            f"duration_seconds: {duration_seconds:.3f}",
+            "stdout_log: <internal>",
+            "stderr_log: <internal>",
             "",
             "stdout:",
-            result.stdout.rstrip(),
+            stdout.rstrip(),
             "",
             "stderr:",
-            result.stderr.rstrip(),
+            stderr.rstrip(),
             "",
         ]
     )
@@ -1157,6 +1151,14 @@ def _read_attempts(path: Path) -> list[dict[str, object]]:
     if not isinstance(attempts, list):
         return []
     return [attempt for attempt in attempts if isinstance(attempt, dict)]
+
+
+def _mkdir(path: Path) -> None:
+    fs.mkdir(path)
+
+
+def _write_text(path: Path, text: str) -> None:
+    fs.write_text(path, text)
 
 
 def _sha256_text(text: str) -> str:

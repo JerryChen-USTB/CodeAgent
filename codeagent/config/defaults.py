@@ -1,7 +1,7 @@
 """Default configuration values."""
 
 DEFAULT_MODEL_PROVIDER = "openai_compatible"
-DEFAULT_MODEL_NAME = "anthropic/claude-opus-4.8"
+DEFAULT_MODEL_NAME = "anthropic/claude-sonnet-4.6"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
 DEFAULT_TEST_COMMAND = "pytest -q"

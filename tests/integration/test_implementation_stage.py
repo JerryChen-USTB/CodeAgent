@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from codeagent.config.schema import TaskConfig
+from codeagent.config.schema import Stage, TaskConfig
 from codeagent.reports.artifact_store import ArtifactStore
 from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.implementation_service import (
@@ -47,6 +48,12 @@ def _approve(*, interrupt_id: str = "implementation_patch") -> ApprovalDecision:
         comment="Approved for integration fixture.",
         auto=True,
     )
+
+
+def _long_readable_path(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    return Path("\\\\?\\" + str(path.resolve()))
 
 
 def _plan(path: str, content: str, *, summary: str = "Create implementation file.") -> ImplementationPlan:
@@ -113,6 +120,70 @@ def test_implementation_service_success_generates_patch_artifacts_and_stage_resu
     assert artifact_store.find("implementation_plan") is not None
     assert artifact_store.find("implementation_patch") is not None
     assert artifact_store.find("implementation_report") is not None
+
+
+def test_implementation_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_context = _run_context(tmp_path, project_root)
+    long_dir = run_context.run_dir
+    while len(str(long_dir / "implementation_report.md")) < 285:
+        long_dir = long_dir / "deep_segment_for_windows_path_limit"
+    run_context.stage_dirs[Stage.IMPLEMENT] = long_dir
+    service = ImplementationService(run_context=run_context)
+    request = ImplementationRequest(
+        plan=_plan(
+            "long_path_module.py",
+            "def value() -> int:\n    return 42\n",
+        ),
+        approval=_approve(),
+    )
+
+    result = service.run(request)
+
+    readable_stage_dir = (
+        Path("\\\\?\\" + str(long_dir.resolve())) if os.name == "nt" else long_dir
+    )
+    assert result.status == "succeeded"
+    assert (readable_stage_dir / "implementation_plan.md").exists()
+    assert (readable_stage_dir / "implementation_report.md").exists()
+    assert (readable_stage_dir / "stage_result.json").exists()
+
+
+def test_implementation_syntax_check_does_not_write_pycache_under_long_project_paths(
+    tmp_path,
+) -> None:
+    project_root = tmp_path / "project"
+    while len(
+        str(
+            project_root
+            / "workspace"
+            / "student_gradebook"
+            / "__pycache__"
+            / "__init__.cpython-313.pyc"
+        )
+    ) < 285:
+        project_root = project_root / "deep_segment_for_windows_path_limit"
+    service, run_context = _service(tmp_path, project_root)
+    request = ImplementationRequest(
+        plan=_plan(
+            "workspace/student_gradebook/__init__.py",
+            "VALUE = 42\n",
+        ),
+        approval=_approve(),
+    )
+
+    result = service.run(request)
+
+    readable_project_root = _long_readable_path(project_root)
+    syntax_log = (run_context.run_dir / "implementation" / "syntax_check.log").read_text(
+        encoding="utf-8"
+    )
+    assert result.status == "succeeded"
+    assert "exit_code: 0" in syntax_log
+    assert not (
+        readable_project_root / "workspace" / "student_gradebook" / "__pycache__"
+    ).exists()
 
 
 def test_implementation_service_retries_next_patch_candidate_after_validation_failure(tmp_path) -> None:

@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from codeagent import filesystem as fs
 from codeagent.config.schema import Stage
 from codeagent.context.sensitive_filter import (
     GENERATED_DIRS,
@@ -102,7 +103,9 @@ class PlanGenerationService:
                 (
                     "Return only JSON. Include exact old_content when modifying an "
                     "existing file and full new_content for every changed file. "
-                    "Use project-root-relative paths."
+                    "Use project-root-relative paths. If the configured project root is "
+                    "already a workspace directory, do not prefix paths with workspace/; "
+                    "for example use package/module.py, not workspace/package/module.py."
                 ),
             ]
         )
@@ -300,6 +303,8 @@ def _project_relative_path(raw_path: Path, project_root: Path) -> Path:
     if not parts:
         return path
     stripped = Path(*parts[1:]) if len(parts) > 1 else path
+    if len(parts) > 1 and parts[0] == project_root.name:
+        return stripped
     should_consider_prefix = parts[0] in {project_root.name, "workspace", "project"}
     if not should_consider_prefix:
         return path
@@ -494,10 +499,10 @@ def _write_attempt_audit(
 ) -> None:
     stage = Stage.REPAIR if issubclass(schema, RepairPlan) else Stage.IMPLEMENT
     stage_dir = context.stage_dirs[stage]
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    (stage_dir / "plan_generation_attempts.json").write_text(
+    _mkdir(stage_dir)
+    _write_text(
+        stage_dir / "plan_generation_attempts.json",
         json.dumps(audit, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 
@@ -585,6 +590,14 @@ def _truncate(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n[truncated]"
+
+
+def _mkdir(path: Path) -> None:
+    fs.mkdir(path)
+
+
+def _write_text(path: Path, text: str) -> None:
+    fs.write_text(path, text)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
