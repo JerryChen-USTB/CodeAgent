@@ -130,18 +130,20 @@ def write_wizard_cancellation_report(config: TaskConfig, *, reason: str) -> Path
 
 
 def _collect_answers() -> WizardPromptAnswers:
-    stages = typer.prompt(
+    typer.echo("CodeAgent wizard")
+    typer.echo("Fill in the task fields below. Press Enter to use a shown default.")
+    stages = _prompt_value(
         "Stages (comma-separated, contiguous)",
         default="implement,test,debug,repair",
     )
-    project_path = typer.prompt("Project path", default=".")
-    input_material = typer.prompt(
+    project_path = _prompt_value("Project path", default=".")
+    input_material = _prompt_value(
         "Input material path (blank to skip)",
         default="",
         show_default=False,
     )
-    output_dir = typer.prompt("Output directory", default="codeagent_runs")
-    test_command = typer.prompt("Test command", default="pytest -q")
+    output_dir = _prompt_value("Output directory", default="codeagent_runs")
+    test_command = _prompt_value("Test command", default="pytest -q")
     return WizardPromptAnswers(
         stages=stages,
         project_path=project_path,
@@ -149,6 +151,21 @@ def _collect_answers() -> WizardPromptAnswers:
         output_dir=output_dir,
         test_command=test_command,
     )
+
+
+def _prompt_value(
+    label: str,
+    *,
+    default: str,
+    show_default: bool = True,
+) -> str:
+    suffix = f" [{default}]" if show_default and default else ""
+    typer.echo(f"{label}{suffix}")
+    typer.echo("> ", nl=False)
+    value = input()
+    if value == "":
+        return default
+    return value
 
 
 def _parse_stages(raw_stages: str) -> list[str]:

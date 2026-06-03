@@ -6,24 +6,8 @@ import typer
 from rich.console import Console
 
 from codeagent import __version__
-from codeagent.benchmark.runner import BenchmarkRunner
-from codeagent.cli.executor import execute_task_config
-from codeagent.cli.progress import ProgressReporter
-from codeagent.cli.resume import (
-    inspect_run_for_resume,
-    parse_resume_value,
-    render_resume_summary,
-    resume_run_from_checkpoint,
-)
-from codeagent.cli.wizard import wizard_command
-from codeagent.config.cli_mapping import (
-    task_config_for_stage_command,
-    task_config_from_run_options,
-)
-from codeagent.config.loader import ConfigLoadError
 
 console = Console()
-reporter = ProgressReporter(console)
 
 ROOT_HELP = """CLI-based LangGraph and LangChain software-engineering agent.
 
@@ -61,6 +45,8 @@ def root(
 @app.command()
 def wizard() -> None:
     """Launch the guided task setup flow."""
+    from codeagent.cli.wizard import wizard_command
+
     wizard_command()
 
 
@@ -98,6 +84,8 @@ def run(
 
     Example: codeagent run --config task.yaml
     """
+    from codeagent.config.cli_mapping import task_config_from_run_options
+
     task_config = _build_or_exit(
         lambda: task_config_from_run_options(
             config_path=config,
@@ -134,6 +122,8 @@ def implement(
 
     Example: codeagent implement --project ./repo --requirements requirements.md
     """
+    from codeagent.config.cli_mapping import task_config_for_stage_command
+
     task_config = _build_or_exit(
         lambda: task_config_for_stage_command(
             stage="implement",
@@ -168,6 +158,8 @@ def test_command(
 
     Example: codeagent test --project ./repo --test-cmd "pytest -q"
     """
+    from codeagent.config.cli_mapping import task_config_for_stage_command
+
     task_config = _build_or_exit(
         lambda: task_config_for_stage_command(
             stage="test",
@@ -207,6 +199,8 @@ def debug(
 
     Example: codeagent debug --project ./repo --test-cmd "pytest -q" --log failing.log
     """
+    from codeagent.config.cli_mapping import task_config_for_stage_command
+
     task_config = _build_or_exit(
         lambda: task_config_for_stage_command(
             stage="debug",
@@ -242,6 +236,8 @@ def repair(
 
     Example: codeagent repair --project ./repo --test-cmd "pytest -q"
     """
+    from codeagent.config.cli_mapping import task_config_for_stage_command
+
     task_config = _build_or_exit(
         lambda: task_config_for_stage_command(
             stage="repair",
@@ -266,8 +262,12 @@ def benchmark(
 
     Example: codeagent benchmark --config benchmark/benchmark.yaml
     """
+    from codeagent.benchmark.runner import BenchmarkRunner
+    from codeagent.cli.progress import ProgressReporter
+    from codeagent.config.loader import ConfigLoadError
+
     try:
-        result = BenchmarkRunner(reporter=reporter).run_config(config)
+        result = BenchmarkRunner(reporter=ProgressReporter(console)).run_config(config)
     except (ConfigLoadError, ValueError, OSError) as exc:
         console.print(f"Invalid benchmark configuration: {exc}")
         raise typer.Exit(1) from exc
@@ -302,6 +302,13 @@ def resume(
 
     Example: codeagent resume --run-id <run_id>
     """
+    from codeagent.cli.resume import (
+        inspect_run_for_resume,
+        parse_resume_value,
+        render_resume_summary,
+        resume_run_from_checkpoint,
+    )
+
     summary = inspect_run_for_resume(output_root, run_id)
     if summary.status == "not_found":
         console.print(render_resume_summary(summary))
@@ -327,13 +334,23 @@ def resume(
 def _build_or_exit(builder):
     try:
         return builder()
-    except (ConfigLoadError, ValueError) as exc:
+    except ValueError as exc:
+        console.print(f"Invalid task configuration: {exc}")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        from codeagent.config.loader import ConfigLoadError
+
+        if not isinstance(exc, ConfigLoadError):
+            raise
         console.print(f"Invalid task configuration: {exc}")
         raise typer.Exit(1) from exc
 
 
 def _execute_or_exit(task_config) -> None:
-    result = execute_task_config(task_config, reporter=reporter)
+    from codeagent.cli.executor import execute_task_config
+    from codeagent.cli.progress import ProgressReporter
+
+    result = execute_task_config(task_config, reporter=ProgressReporter(console))
     console.print(f"Final status: {result.final_status}")
     if result.final_status != "succeeded":
         raise typer.Exit(1)

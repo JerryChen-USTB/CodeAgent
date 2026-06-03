@@ -104,6 +104,12 @@ def test_wizard_command_accepts_scripted_input_and_initializes_run(tmp_path) -> 
     result = runner.invoke(app, ["wizard"], input=scripted_input)
 
     assert result.exit_code == 0
+    assert "CodeAgent wizard" in result.output
+    assert "Stages (comma-separated, contiguous)" in result.output
+    assert "Project path" in result.output
+    assert "Input material path (blank to skip)" in result.output
+    assert "Output directory" in result.output
+    assert "Test command" in result.output
     assert "Task Summary" in result.output
     assert "Run initialized" in result.output
     run_dirs = [path for path in output_dir.iterdir() if path.is_dir()]
