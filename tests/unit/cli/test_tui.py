@@ -10,6 +10,7 @@ from codeagent.cli.tui import (
     TuiChoice,
     TuiProgressReporter,
     WizardFormState,
+    _form_cursor_position,
     _render_form_panel,
     _tui_style,
 )
@@ -98,6 +99,26 @@ def test_form_rendering_expands_choices_inline_under_the_active_field() -> None:
     assert "模型与审批\n>   模型: anthropic/claude-sonnet-4.6\n" in text
     assert "      > 2. openai/gpt-5.5\n" in text
     assert "    审批模式:" in text
+
+
+def test_text_editing_uses_real_cursor_position() -> None:
+    from prompt_toolkit.utils import get_cwidth
+
+    state = WizardFormState.create()
+    rows = state.visible_rows()
+    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "test_command")
+
+    point = _form_cursor_position(
+        state,
+        mode="text",
+        edit_field="test_command",
+        text_value="pytest -q",
+        text_cursor=len("pytest -q"),
+    )
+
+    assert point is not None
+    assert point.x == get_cwidth(">   测试命令: pytest -q")
+    assert point.y > 0
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:

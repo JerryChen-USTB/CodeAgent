@@ -477,6 +477,7 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
 def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import get_app
+    from prompt_toolkit.data_structures import Point
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
@@ -746,8 +747,25 @@ def _run_wizard_application(state: WizardFormState) -> str:
             text_cursor=text_cursor,
         )
 
+    def cursor_position() -> Point | None:
+        return _form_cursor_position(
+            state,
+            mode=mode,
+            edit_field=edit_field,
+            text_value=text_value,
+            text_cursor=text_cursor,
+        )
+
     app = Application(
-        layout=Layout(Window(FormattedTextControl(render, focusable=True))),
+        layout=Layout(
+            Window(
+                FormattedTextControl(
+                    render,
+                    focusable=True,
+                    get_cursor_position=cursor_position,
+                )
+            )
+        ),
         key_bindings=kb,
         style=_tui_style(),
         full_screen=False,
@@ -801,7 +819,7 @@ def _render_form_panel(
             rendered.append(
                 (
                     "class:input",
-                    f"{_text_with_cursor(text_value, text_cursor)}\n",
+                    f"{text_value}\n",
                 )
             )
         else:
@@ -831,9 +849,42 @@ def _render_form_panel(
     return FormattedText(rendered)
 
 
-def _text_with_cursor(value: str, cursor: int) -> str:
-    cursor = max(0, min(cursor, len(value)))
-    return value[:cursor] + "|" + value[cursor:]
+def _form_cursor_position(
+    state: WizardFormState,
+    *,
+    mode: str,
+    edit_field: str,
+    text_value: str,
+    text_cursor: int,
+):
+    if mode != "text" or not edit_field:
+        return None
+
+    from prompt_toolkit.data_structures import Point
+    from prompt_toolkit.utils import get_cwidth
+
+    rows = state.visible_rows()
+    state.cursor = max(0, min(state.cursor, len(rows) - 1))
+    y = 3
+    current_group: str | None = None
+    for index, row in enumerate(rows):
+        group_id = FIELD_GROUPS[row.row_id]
+        if group_id != current_group:
+            if current_group is not None:
+                y += 1
+            current_group = group_id
+            y += 1
+
+        if row.row_id == edit_field:
+            selected = index == state.cursor
+            prefix = "> " if selected else "  "
+            line_prefix = f"{prefix}  {row.label}: "
+            cursor = max(0, min(text_cursor, len(text_value)))
+            x = get_cwidth(line_prefix) + get_cwidth(text_value[:cursor])
+            return Point(x=x, y=y)
+
+        y += 1
+    return None
 
 
 def _render_inline_choices(
