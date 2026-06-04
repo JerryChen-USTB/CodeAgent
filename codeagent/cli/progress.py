@@ -83,7 +83,17 @@ class ProgressEventFormatter:
             status = _status_label(event.get("status", "<unknown>"))
             summary = str(event.get("summary") or "").strip()
             suffix = f": {summary}" if summary else ""
-            return f"[结果] {stage} {status}{suffix}"
+            line = f"[结果] {stage} {status}{suffix}"
+            error_message = str(event.get("error_message") or "").strip()
+            if error_message:
+                line += f"\n[错误原因] {_compact_error_message(error_message)}"
+            retryable = event.get("retryable")
+            next_suggestion = str(event.get("next_suggestion") or "").strip()
+            if retryable is False:
+                line += "\n[处理建议] 当前错误通常无法通过重试解决，请更换模型或修正配置后重新运行。"
+            elif next_suggestion:
+                line += f"\n[处理建议] {next_suggestion}"
+            return line
         if event_type == "tool_call":
             tool_name = event.get("tool_name") or event.get("name") or "<unknown>"
             status = _status_label(event.get("status") or event.get("result") or "started")
@@ -198,6 +208,21 @@ def _node_label(value: Any) -> str:
 def _status_label(value: Any) -> str:
     text = str(value or "<unknown>")
     return _STATUS_LABELS.get(text, text)
+
+
+def _compact_error_message(message: str) -> str:
+    text = " ".join(message.split())
+    replacements = {
+        "PlanGenerationError: Failed to generate valid ImplementationPlan: ": "",
+        "PlanGenerationError: Failed to generate valid TestingPlan: ": "",
+        "PlanGenerationError: Failed to generate valid RepairPlan: ": "",
+        "Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403}}": (
+            "模型在当前区域不可用（OpenRouter 403）。"
+        ),
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return text[:800]
 
 
 def _action_label(value: Any) -> str:

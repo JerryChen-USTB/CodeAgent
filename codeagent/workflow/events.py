@@ -60,6 +60,9 @@ def stream_workflow_events(raw_events: Iterable[Any]) -> Iterator[dict[str, Any]
                         "stage": stage,
                         "status": result.get("status"),
                         "summary": result.get("summary", ""),
+                        "error_message": _error_message(result),
+                        "retryable": _error_retryable(result),
+                        "next_suggestion": result.get("next_suggestion", ""),
                     }
 
             current_final_status = update.get("final_status")
@@ -90,3 +93,17 @@ def _split_stream_tuple(raw_event: tuple[Any, ...]) -> tuple[str, Any]:
     if len(raw_event) == 3 and isinstance(raw_event[1], str):
         return raw_event[1], raw_event[2]
     return "unknown", raw_event
+
+
+def _error_message(result: dict[str, Any]) -> str:
+    error = result.get("error")
+    if isinstance(error, dict):
+        return str(error.get("message") or "")
+    return ""
+
+
+def _error_retryable(result: dict[str, Any]) -> bool | None:
+    error = result.get("error")
+    if isinstance(error, dict) and isinstance(error.get("retryable"), bool):
+        return bool(error["retryable"])
+    return None

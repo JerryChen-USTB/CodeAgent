@@ -175,6 +175,33 @@ def test_stream_workflow_events_normalizes_multi_mode_stream_chunks() -> None:
     )
 
 
+def test_stream_workflow_events_preserves_stage_error_details() -> None:
+    raw_events = [
+        {
+            "implementation": {
+                "current_node": "implementation",
+                "stage_results": {
+                    "implementation": {
+                        **_stage_result("implementation", "failed"),
+                        "error": {
+                            "message": "model unavailable",
+                            "retryable": False,
+                        },
+                        "next_suggestion": "choose another model",
+                    }
+                },
+            }
+        }
+    ]
+
+    events = list(stream_workflow_events(raw_events))
+    stage_event = next(event for event in events if event["type"] == "stage_result")
+
+    assert stage_event["error_message"] == "model unavailable"
+    assert stage_event["retryable"] is False
+    assert stage_event["next_suggestion"] == "choose another model"
+
+
 def test_stream_workflow_events_preserves_retry_stage_results() -> None:
     initial = _state(["debug", "repair"])
     initial["max_repair_attempts"] = 2

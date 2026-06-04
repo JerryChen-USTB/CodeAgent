@@ -433,6 +433,12 @@ def test_progress_formatter_and_reporter_render_stream_events() -> None:
             "stage": "testing",
             "status": "failed",
             "summary": "2 tests failed",
+            "error_message": (
+                "PlanGenerationError: Failed to generate valid ImplementationPlan: "
+                "Error code: 403 - {'error': {'message': "
+                "'This model is not available in your region.', 'code': 403}}"
+            ),
+            "retryable": False,
         },
         {"type": "tool_call", "tool_name": "run_shell", "status": "succeeded"},
         {"type": "final_status", "status": "failed"},
@@ -444,7 +450,9 @@ def test_progress_formatter_and_reporter_render_stream_events() -> None:
 
     assert lines[0] == "[节点] 测试阶段 已完成"
     assert "[路由] 测试阶段 -> 调试阶段: tests failed" in lines
-    assert "[结果] 测试阶段 失败: 2 tests failed" in lines
+    assert "[结果] 测试阶段 失败: 2 tests failed" in lines[2]
+    assert "模型在当前区域不可用" in lines[2]
+    assert "请更换模型或修正配置后重新运行" in lines[2]
     assert "[工具] run_shell 成功" in lines
     assert "[最终结果] 失败" in lines
-    assert "[结果] 测试阶段 失败: 2 tests failed" in output
+    assert "[错误原因] 模型在当前区域不可用" in output

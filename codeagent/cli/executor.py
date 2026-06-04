@@ -1598,6 +1598,7 @@ def _failed_stage_result(
     category: str,
     message: str,
     next_suggestion: str,
+    retryable: bool = True,
 ) -> StageResult:
     return StageResult(
         stage=stage,
@@ -1611,7 +1612,7 @@ def _failed_stage_result(
             node=stage,
             category=category,  # type: ignore[arg-type]
             message=message,
-            retryable=True,
+            retryable=retryable,
         ),
         next_suggestion=next_suggestion,
     )
@@ -1625,6 +1626,12 @@ def _llm_generation_failed_result(
     summary: str,
     next_suggestion: str,
 ) -> StageResult:
+    retryable = getattr(exc, "retryable", True)
+    if retryable is False:
+        next_suggestion = (
+            "当前选择的 LLM 模型在此环境或账号下不可用。请在 wizard 中选择其他模型，"
+            "或修改运行配置里的 model_name 后重新运行任务。"
+        )
     return _failed_stage_result(
         stage=stage,
         started_at=started_at,
@@ -1632,6 +1639,7 @@ def _llm_generation_failed_result(
         category="model" if isinstance(exc, PlanGenerationError) else "model",
         message=_redact_exception(exc),
         next_suggestion=next_suggestion,
+        retryable=retryable,
     )
 
 

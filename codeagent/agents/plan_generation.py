@@ -56,6 +56,10 @@ TEXT_EXTENSIONS = {".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml"}
 class PlanGenerationError(RuntimeError):
     """Raised when the LLM cannot produce a valid structured plan."""
 
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 class PlanGenerationService:
     def __init__(
@@ -467,13 +471,20 @@ class PlanGenerationService:
                 response = model.invoke(retry_prompt)
             except Exception as exc:
                 last_error = exc
+                retryable = _is_retryable_model_error(exc)
                 _record_attempt(
                     audit,
                     attempt=attempt,
                     status="model_error",
                     error=exc,
+                    retryable=retryable,
                 )
                 _write_attempt_audit(context, schema, audit)
+                if not retryable:
+                    raise PlanGenerationError(
+                        f"Failed to generate valid {schema.__name__}: {_redact(str(exc))}",
+                        retryable=False,
+                    ) from exc
                 continue
             response_text = _response_text(response)
             context.workflow_trace.record(
@@ -521,7 +532,8 @@ class PlanGenerationService:
                 )
                 _write_attempt_audit(context, schema, audit)
         raise PlanGenerationError(
-            f"Failed to generate valid {schema.__name__}: {_redact(str(last_error))}"
+            f"Failed to generate valid {schema.__name__}: {_redact(str(last_error))}",
+            retryable=True,
         )
 
 
@@ -551,6 +563,30 @@ def _feedback_block(feedback: str | None) -> str | None:
         "high-priority requirement, but still obey all safety, visibility, and "
         f"schema rules above:\n{_redact(feedback.strip())}"
     )
+
+
+def _is_retryable_model_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    non_retryable_markers = (
+        "permissiondenied",
+        "permission denied",
+        "authentication",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+        "model is not available",
+        "not available in your region",
+        "unsupported model",
+        "model not found",
+        "does not exist",
+        "error code: 401",
+        "error code: 403",
+        "'code': 401",
+        "'code': 403",
+        '"code": 401',
+        '"code": 403',
+    )
+    return not any(marker in text for marker in non_retryable_markers)
 
 
 def _normalize_generated_plan(plan: SchemaT, project_root: Path) -> SchemaT:
@@ -999,6 +1035,7 @@ def _record_attempt(
     status: str,
     error: Exception | None = None,
     response_text: str | None = None,
+    retryable: bool | None = None,
 ) -> None:
     record: dict[str, Any] = {
         "attempt": attempt,
@@ -1010,6 +1047,8 @@ def _record_attempt(
     if error is not None:
         record["error_type"] = type(error).__name__
         record["error_message"] = _truncate(_redact(str(error)), limit=2_000)
+    if retryable is not None:
+        record["retryable"] = retryable
     audit["attempts"].append(record)
 
 
