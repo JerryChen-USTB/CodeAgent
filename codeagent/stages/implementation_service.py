@@ -748,7 +748,22 @@ class ImplementationService:
                 comment=approval.comment,
                 timestamp=approval.decided_at,
                 auto=approval.auto,
+                decision_source=approval.decision_source,
+                presented_to_user=approval.presented_to_user,
+                decided_by=approval.decided_by,
             )
+        )
+        self.run_context.workflow_trace.record(
+            "approval_decision",
+            stage=IMPLEMENTATION_STAGE,
+            action="approve_implementation_patch",
+            interrupt_id=approval.interrupt_id,
+            decision_type=approval.decision_type,
+            auto=approval.auto,
+            decision_source=approval.decision_source,
+            presented_to_user=approval.presented_to_user,
+            decided_by=approval.decided_by,
+            comment=approval.comment,
         )
 
     def _run_syntax_check(
@@ -999,6 +1014,17 @@ class ImplementationService:
                 "error": error,
                 "ended_at": result.ended_at or utc_timestamp(),
             }
+        )
+        self.run_context.workflow_trace.record(
+            "stage_finalized",
+            stage=IMPLEMENTATION_STAGE,
+            status=finalized.status,
+            summary=finalized.summary,
+            artifact_ids=artifact_ids,
+            attempts=attempts,
+            changed_files=changed_files or [],
+            syntax_status=syntax.status if syntax is not None else None,
+            patch_summary=patch_summary.__dict__ if patch_summary is not None else None,
         )
         self.writer.write_stage_report(finalized)
         return finalized

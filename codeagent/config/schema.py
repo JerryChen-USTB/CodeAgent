@@ -41,6 +41,7 @@ class RuntimeConfig(BaseModel):
 
 
 class PermissionsConfig(BaseModel):
+    approval_mode: Literal["manual", "auto"] = "manual"
     require_approval_for: list[str] = Field(
         default_factory=lambda: ["test_plan", "patch_apply", "shell_command"]
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -196,6 +197,40 @@ class TestingService:
                     plan_decision,
                     plan=reviewed.plan,
                     artifact_ids=self._register_existing_artifacts(reviewed.plan),
+                    attempts=[],
+                )
+            )
+        quality_error = _test_plan_quality_error(reviewed.plan)
+        if quality_error:
+            plan_path = self._write_plan(reviewed.plan)
+            plan_json_path = self._write_plan_json(reviewed.plan)
+            artifacts = [
+                self._record_artifact(
+                    "testing_test_plan",
+                    ArtifactKind.REPORT,
+                    plan_path,
+                    "Testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_plan_json",
+                    ArtifactKind.JSON,
+                    plan_json_path,
+                    "Structured testing plan",
+                ),
+            ]
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing plan did not generate meaningful self-tests.",
+                category="validation",
+                message=quality_error,
+                artifact_ids=artifacts,
+                next_suggestion="Regenerate a complete visible testing-stage patch with real test cases.",
+            )
+            return TestingApprovalPreview(
+                result=self._finalize_result(
+                    result,
+                    plan=reviewed.plan,
+                    artifact_ids=artifacts,
                     attempts=[],
                 )
             )
@@ -561,6 +596,40 @@ class TestingService:
                 plan_decision,
                 plan=request.plan,
                 artifact_ids=[],
+                attempts=[],
+            )
+
+        quality_error = _test_plan_quality_error(request.plan)
+        if quality_error:
+            fs.mkdir(self.stage_dir)
+            plan_path = self._write_plan(request.plan)
+            plan_json_path = self._write_plan_json(request.plan)
+            artifacts = [
+                self._record_artifact(
+                    "testing_test_plan",
+                    ArtifactKind.REPORT,
+                    plan_path,
+                    "Testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_plan_json",
+                    ArtifactKind.JSON,
+                    plan_json_path,
+                    "Structured testing plan",
+                ),
+            ]
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing plan did not generate meaningful self-tests.",
+                category="validation",
+                message=quality_error,
+                artifact_ids=artifacts,
+                next_suggestion="Regenerate a complete visible testing-stage patch with real test cases.",
+            )
+            return self._finalize_result(
+                result,
+                plan=request.plan,
+                artifact_ids=artifacts,
                 attempts=[],
             )
 
@@ -1129,15 +1198,44 @@ class TestingService:
             approved_by="workflow",
             reason="Run approved testing command.",
         )
+        self.run_context.workflow_trace.record(
+            "tool_started",
+            stage=TESTING_STAGE,
+            tool_name="run_shell",
+            command=command,
+            cwd=str(self.run_context.task_config.project_path),
+            timeout_seconds=timeout,
+        )
         try:
-            return self.shell_runner.run(
+            result = self.shell_runner.run(
                 command,
                 cwd=self.run_context.task_config.project_path,
                 timeout_seconds=timeout,
                 approval=approval,
             )
         except (CommandDeniedError, ValueError) as exc:
+            self.run_context.workflow_trace.record(
+                "tool_finished",
+                stage=TESTING_STAGE,
+                tool_name="run_shell",
+                status="failed",
+                command=command,
+                error=str(exc),
+            )
             raise RuntimeError(f"testing command failed before execution: {exc}") from exc
+        self.run_context.workflow_trace.record(
+            "tool_finished",
+            stage=TESTING_STAGE,
+            tool_name="run_shell",
+            status="succeeded" if result.exit_code == 0 else "failed",
+            command=command,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+            stdout_log=str(result.stdout_log),
+            stderr_log=str(result.stderr_log),
+            record_path=str(result.record_path),
+        )
+        return result
 
     def _record_decision(self, approval: ApprovalDecision, *, action: str) -> None:
         self.writer.record_human_decision(
@@ -1149,7 +1247,22 @@ class TestingService:
                 comment=approval.comment,
                 timestamp=approval.decided_at,
                 auto=approval.auto,
+                decision_source=approval.decision_source,
+                presented_to_user=approval.presented_to_user,
+                decided_by=approval.decided_by,
             )
+        )
+        self.run_context.workflow_trace.record(
+            "approval_decision",
+            stage=TESTING_STAGE,
+            action=action,
+            interrupt_id=approval.interrupt_id,
+            decision_type=approval.decision_type,
+            auto=approval.auto,
+            decision_source=approval.decision_source,
+            presented_to_user=approval.presented_to_user,
+            decided_by=approval.decided_by,
+            comment=approval.comment,
         )
 
     def _write_plan(self, plan: TestingPlan) -> Path:
@@ -1355,6 +1468,16 @@ class TestingService:
                 "ended_at": result.ended_at or utc_timestamp(),
             }
         )
+        self.run_context.workflow_trace.record(
+            "stage_finalized",
+            stage=TESTING_STAGE,
+            status=finalized.status,
+            summary=finalized.summary,
+            artifact_ids=artifact_ids,
+            attempts=attempts,
+            changed_files=changed_files or [],
+            test_result=test_result or {},
+        )
         self.writer.write_stage_report(finalized)
         return finalized
 
@@ -1429,6 +1552,33 @@ class TestingService:
                 )
             )
         return artifacts
+
+
+def _test_plan_quality_error(plan: TestingPlan) -> str | None:
+    if any(not _is_allowed_test_path(str(change.path)) for change in plan.changes):
+        return None
+    generated_test_changes = [
+        change
+        for change in plan.changes
+        if _contains_test_case(change.new_content or "")
+    ]
+    if not generated_test_changes:
+        return (
+            "testing plans must include new_content with pytest/unittest test cases; "
+            "helper files, empty packages, or references to existing tests are not enough"
+        )
+    return None
+
+
+def _contains_test_case(content: str) -> bool:
+    if not content.strip():
+        return False
+    return bool(
+        re.search(r"(?m)^\s*def\s+test_[A-Za-z0-9_]*\s*\(", content)
+        or re.search(r"(?m)^\s*async\s+def\s+test_[A-Za-z0-9_]*\s*\(", content)
+        or re.search(r"(?m)^\s*class\s+[A-Za-z0-9_]*Test[A-Za-z0-9_]*\s*\(", content)
+        or "unittest.TestCase" in content
+    )
 
 
 def _plan_from_payload(payload: dict[str, object] | None) -> TestingPlan | StageResult:

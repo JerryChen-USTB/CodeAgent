@@ -233,6 +233,7 @@ def test_decision_trace_appends_human_and_route_decisions(tmp_path) -> None:
     ]
 
     assert events[0]["type"] == "human_decision"
+    assert events[0]["event_type"] == "approval_decision"
     assert events[0]["edited_payload"]["command"].endswith("tests/unit/reports -q")
     assert events[1]["type"] == "route_decision"
     assert events[1]["to_stage"] == "debugging"

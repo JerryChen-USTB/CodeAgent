@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +23,9 @@ from codeagent.stages.debugging_service import (
     DebuggingRequest,
     DebuggingService,
 )
-from codeagent.stages.implementation_service import ImplementationService
-from codeagent.stages.repair_service import RepairService
-from codeagent.stages.testing_service import TestingService
+from codeagent.stages.implementation_service import ImplementationRequest, ImplementationService
+from codeagent.stages.repair_service import RepairRequest, RepairService
+from codeagent.stages.testing_service import TestingRequest, TestingService
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
@@ -37,6 +37,8 @@ from codeagent.workflow.progress_events import emit_progress
 from codeagent.workflow.state import AgentState, create_initial_state
 
 from codeagent.cli.progress import ProgressReporter
+from codeagent.cli.approval_console import ApprovalConsole
+from codeagent.tools.hitl import ApprovalRequest
 
 
 @dataclass(frozen=True)
@@ -75,12 +77,15 @@ def execute_task_config(
                 stream_mode=["updates", "custom", "messages"],
             )
         ):
+            context.workflow_trace.record("workflow_event", **event)
             progress.render_event(event)
         final_state = dict(graph.get_state(config=thread_config).values)
+        context.workflow_trace.record("workflow_final_state", final_state=final_state)
 
     stage_results = _stage_results_from_state(final_state)
     _write_final_report(context, list(stage_results.values()))
     final_status = str(final_state.get("final_status") or "failed")
+    context.workflow_trace.record("run_completed", final_status=final_status)
     progress.render_event({"type": "run_directory", "path": context.run_dir.as_posix()})
     return CliRunResult(
         run_id=context.run_id,
@@ -97,6 +102,121 @@ def _stage_handlers_for_cli(context: RunContext) -> dict[str, StageHandler]:
         "debugging": _debugging_handler(context),
         "repair": _repair_handler(context),
     }
+
+
+def _should_prompt_for_approval(context: RunContext, approval: ApprovalDecision) -> bool:
+    if approval.auto:
+        return False
+    if context.task_config.mode == "benchmark":
+        return False
+    return context.task_config.permissions.approval_mode == "manual"
+
+
+def _approval_auto_source(context: RunContext) -> str | None:
+    if (
+        context.task_config.mode == "benchmark"
+        or context.task_config.auto_approve_in_benchmark
+        or context.task_config.runtime.auto_approve_in_benchmark
+    ):
+        return "benchmark_auto"
+    if context.task_config.permissions.approval_mode == "auto":
+        return "user_configured_auto"
+    return None
+
+
+def _effective_approval(context: RunContext, approval: ApprovalDecision) -> ApprovalDecision:
+    source = _approval_auto_source(context)
+    if source is None or approval.auto:
+        return approval
+    return ApprovalDecision(
+        interrupt_id=approval.interrupt_id,
+        decision_type=approval.decision_type,
+        edited_payload=approval.edited_payload,
+        comment=approval.comment,
+        decided_at=approval.decided_at,
+        decided_by="benchmark" if source == "benchmark_auto" else "config",
+        auto=True,
+        decision_source=source,
+        presented_to_user=False,
+    )
+
+
+def _prompt_approval(context: RunContext, payload: dict[str, object]) -> ApprovalDecision:
+    request = _approval_request_from_payload(payload)
+    emit_progress(
+        "approval_required",
+        stage=_stage_from_approval_action(request.action),
+        action=request.action,
+    )
+    context.workflow_trace.record(
+        "approval_requested",
+        stage=_stage_from_approval_action(request.action),
+        interrupt_id=request.interrupt_id,
+        action=request.action,
+        title=request.title,
+        risk_level=request.risk_level,
+        payload=request.payload,
+    )
+    decision = ApprovalConsole().prompt(request)
+    return ApprovalDecision(
+        interrupt_id=decision.interrupt_id,
+        decision_type=decision.decision_type,
+        edited_payload=decision.edited_payload,
+        comment=decision.comment,
+        decided_at=decision.decided_at,
+        decided_by="user",
+        auto=False,
+        decision_source="user",
+        presented_to_user=True,
+    )
+
+
+def _approval_request_from_payload(payload: dict[str, object]) -> ApprovalRequest:
+    risk = str(payload.get("risk_level") or "medium")
+    if risk not in {"low", "medium", "high"}:
+        risk = "medium"
+    allowed_raw = payload.get("allowed_decisions")
+    allowed = (
+        tuple(str(item) for item in allowed_raw)
+        if isinstance(allowed_raw, list)
+        else ("approve", "edit", "reject", "cancel")
+    )
+    safe_allowed = tuple(
+        item
+        for item in allowed
+        if item in {"approve", "edit", "reject", "respond", "cancel"}
+    )
+    return ApprovalRequest(
+        interrupt_id=str(payload.get("interrupt_id") or payload.get("action") or "approval"),
+        action=str(payload.get("action") or "approval"),
+        title=str(payload.get("title") or payload.get("action") or "Approval required"),
+        payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+        risk_level=risk,  # type: ignore[arg-type]
+        allowed_decisions=safe_allowed or ("approve", "reject", "cancel"),
+        default_decision="reject",
+    )
+
+
+def _stage_from_approval_action(action: str) -> str:
+    if "implementation" in action:
+        return "implementation"
+    if "test" in action:
+        return "testing"
+    if "repair" in action or "regression" in action:
+        return "repair"
+    if "reproduction" in action:
+        return "debugging"
+    return "workflow"
+
+
+def _payload_patch_sha256(payload: dict[str, object] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    nested = payload.get("payload")
+    if not isinstance(nested, dict):
+        return None
+    value = nested.get("patch_sha256")
+    return str(value) if value else None
 
 
 def _implementation_handler(context: RunContext) -> StageHandler:
@@ -130,7 +250,7 @@ def _implementation_handler(context: RunContext) -> StageHandler:
                 stage="implementation",
                 message="已获得实现计划，正在生成、校验并应用实现补丁",
             )
-            result = service.run(request)
+            result = _run_implementation_with_approval(context, service, request)
         except Exception as exc:
             result = _stage_execution_failed_result(
                 stage="implementation",
@@ -146,6 +266,30 @@ def _implementation_handler(context: RunContext) -> StageHandler:
         return _state_update_from_result(state, result)
 
     return run
+
+
+def _run_implementation_with_approval(
+    context: RunContext,
+    service: ImplementationService,
+    request: ImplementationRequest,
+) -> StageResult:
+    if not _should_prompt_for_approval(context, request.approval):
+        return service.run(
+            replace(request, approval=_effective_approval(context, request.approval))
+        )
+    preview = service.prepare_approval(request)
+    if preview.result is not None:
+        return preview.result
+    if preview.payload is None:
+        raise RuntimeError("implementation approval payload missing")
+    approval = _prompt_approval(context, preview.payload)
+    if approval.decision_type == "edit":
+        return service.run(replace(request, approval=approval))
+    return service.apply_prepared_patch(
+        request,
+        approval=approval,
+        approved_patch_sha256=_payload_patch_sha256(preview.payload),
+    )
 
 
 def _testing_handler(context: RunContext) -> StageHandler:
@@ -179,7 +323,7 @@ def _testing_handler(context: RunContext) -> StageHandler:
                 stage="testing",
                 message="测试方案已生成，正在写入测试补丁并执行 Agent 自测",
             )
-            result = service.run(request)
+            result = _run_testing_with_approval(context, service, request)
         except Exception as exc:
             result = _stage_execution_failed_result(
                 stage="testing",
@@ -196,6 +340,67 @@ def _testing_handler(context: RunContext) -> StageHandler:
         return _state_update_from_result(state, result)
 
     return run
+
+
+def _run_testing_with_approval(
+    context: RunContext,
+    service: TestingService,
+    request: TestingRequest,
+) -> StageResult:
+    if (
+        not _should_prompt_for_approval(context, request.plan_review)
+        and not _should_prompt_for_approval(context, request.patch_approval)
+        and not _should_prompt_for_approval(context, request.command_approval)
+    ):
+        return service.run(
+            replace(
+                request,
+                plan_review=_effective_approval(context, request.plan_review),
+                patch_approval=_effective_approval(context, request.patch_approval),
+                command_approval=_effective_approval(context, request.command_approval),
+            )
+        )
+
+    plan_preview = service.prepare_plan_review(request)
+    if plan_preview.result is not None:
+        return plan_preview.result
+    if plan_preview.payload is None:
+        raise RuntimeError("testing plan approval payload missing")
+    plan_review = (
+        _prompt_approval(context, plan_preview.payload)
+        if _should_prompt_for_approval(context, request.plan_review)
+        else _effective_approval(context, request.plan_review)
+    )
+    request = replace(request, plan_review=plan_review)
+
+    patch_preview = service.prepare_patch_approval(request, plan_review=plan_review)
+    if patch_preview.result is not None:
+        return patch_preview.result
+    if patch_preview.payload is None:
+        raise RuntimeError("testing patch approval payload missing")
+    patch_approval = (
+        _prompt_approval(context, patch_preview.payload)
+        if _should_prompt_for_approval(context, request.patch_approval)
+        else _effective_approval(context, request.patch_approval)
+    )
+    request = replace(request, patch_approval=patch_approval)
+
+    command_preview = service.apply_patch_and_prepare_command(
+        request,
+        patch_approval=patch_approval,
+        approved_patch_sha256=_payload_patch_sha256(patch_preview.payload),
+    )
+    if command_preview.result is not None:
+        return command_preview.result
+    if command_preview.payload is None:
+        raise RuntimeError("testing command approval payload missing")
+    command_approval = (
+        _prompt_approval(context, command_preview.payload)
+        if _should_prompt_for_approval(context, request.command_approval)
+        else _effective_approval(context, request.command_approval)
+    )
+    request = replace(request, command_approval=command_approval)
+    return service.run_prepared_command(request, command_approval=command_approval)
 
 
 def _testing_command_handler(context: RunContext) -> StageHandler:
@@ -272,10 +477,31 @@ def _debugging_handler(context: RunContext) -> StageHandler:
             stage="debugging",
             message="正在分析失败现象并生成根因定位报告",
         )
-        result = service.run(request)
+        result = _run_debugging_with_approval(context, service, request)
         return _state_update_from_result(state, result)
 
     return run
+
+
+def _run_debugging_with_approval(
+    context: RunContext,
+    service: DebuggingService,
+    request: DebuggingRequest,
+) -> StageResult:
+    if not _should_prompt_for_approval(context, request.command_approval):
+        return service.run(
+            replace(
+                request,
+                command_approval=_effective_approval(context, request.command_approval),
+            )
+        )
+    preview = service.prepare_reproduction_approval(request)
+    if preview.result is not None:
+        return preview.result
+    if preview.payload is None:
+        raise RuntimeError("debugging reproduction approval payload missing")
+    command_approval = _prompt_approval(context, preview.payload)
+    return service.run_after_approval(request, command_approval=command_approval)
 
 
 def _repair_handler(context: RunContext) -> StageHandler:
@@ -309,7 +535,7 @@ def _repair_handler(context: RunContext) -> StageHandler:
                 stage="repair",
                 message="已获得修复计划，正在生成、校验并验证修复补丁",
             )
-            result = service.run(request)
+            result = _run_repair_with_approval(context, service, request)
         except Exception as exc:
             result = _stage_execution_failed_result(
                 stage="repair",
@@ -327,6 +553,53 @@ def _repair_handler(context: RunContext) -> StageHandler:
     return run
 
 
+def _run_repair_with_approval(
+    context: RunContext,
+    service: RepairService,
+    request: RepairRequest,
+) -> StageResult:
+    if (
+        not _should_prompt_for_approval(context, request.patch_approval)
+        and not _should_prompt_for_approval(context, request.command_approval)
+    ):
+        return service.run(
+            replace(
+                request,
+                patch_approval=_effective_approval(context, request.patch_approval),
+                command_approval=_effective_approval(context, request.command_approval),
+            )
+        )
+
+    patch_preview = service.prepare_patch_approval(request)
+    if patch_preview.result is not None:
+        return patch_preview.result
+    if patch_preview.payload is None:
+        raise RuntimeError("repair patch approval payload missing")
+    patch_approval = (
+        _prompt_approval(context, patch_preview.payload)
+        if _should_prompt_for_approval(context, request.patch_approval)
+        else _effective_approval(context, request.patch_approval)
+    )
+    request = replace(request, patch_approval=patch_approval)
+
+    command_preview = service.apply_patch_and_prepare_command(
+        request,
+        patch_approval=patch_approval,
+        approved_patch_sha256=_payload_patch_sha256(patch_preview.payload),
+    )
+    if command_preview.result is not None:
+        return command_preview.result
+    if command_preview.payload is None:
+        raise RuntimeError("repair command approval payload missing")
+    command_approval = (
+        _prompt_approval(context, command_preview.payload)
+        if _should_prompt_for_approval(context, request.command_approval)
+        else _effective_approval(context, request.command_approval)
+    )
+    request = replace(request, command_approval=command_approval)
+    return service.run_prepared_command(request, command_approval=command_approval)
+
+
 def _debugging_request_from_config(
     context: RunContext,
     state: AgentState,
@@ -334,17 +607,36 @@ def _debugging_request_from_config(
     failure_logs = _failure_logs_from_config(context, state)
     test_report_path = _testing_report_path(context, state)
     has_static_evidence = bool(failure_logs or test_report_path)
+    benchmark_auto = (
+        context.task_config.mode == "benchmark"
+        or context.task_config.auto_approve_in_benchmark
+        or context.task_config.runtime.auto_approve_in_benchmark
+    )
+    user_auto = context.task_config.permissions.approval_mode == "auto"
+    command_auto = has_static_evidence or benchmark_auto or user_auto
+    decision_source = (
+        "system_static_evidence"
+        if has_static_evidence
+        else "benchmark_auto"
+        if benchmark_auto
+        else "user_configured_auto"
+        if user_auto
+        else "system_default"
+    )
     return DebuggingRequest(
         test_command=None if has_static_evidence else context.task_config.test_command.command,
         command_approval=ApprovalDecision(
             interrupt_id=REPRODUCTION_COMMAND_INTERRUPT_ID,
             decision_type="reject" if has_static_evidence else "approve",
-            auto=True,
+            auto=command_auto,
             comment=(
                 "Static failure evidence supplied by CLI."
                 if has_static_evidence
                 else "Non-interactive CLI reproduction command."
             ),
+            decided_by="workflow" if has_static_evidence else "benchmark" if benchmark_auto else "config" if user_auto else "workflow",
+            decision_source=decision_source,
+            presented_to_user=False,
         ),
         failure_logs=failure_logs,
         test_report_path=test_report_path,

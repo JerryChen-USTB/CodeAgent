@@ -362,6 +362,23 @@ class _FailingImplementationService:
         raise RuntimeError("synthetic implementation service failure")
 
 
+class _ManualApprovalPlanGenerationService:
+    implementation_plan: ImplementationPlan | None = None
+
+    def create_implementation_request(self, _context) -> ImplementationRequest:
+        assert self.implementation_plan is not None
+        return ImplementationRequest(
+            plan=self.implementation_plan,
+            approval=ApprovalDecision(
+                interrupt_id=PATCH_INTERRUPT_ID,
+                decision_type="approve",
+                comment="Planner supplied a non-auto approval placeholder.",
+                auto=False,
+                decided_by="workflow",
+            ),
+        )
+
+
 def test_implement_subcommand_generates_plan_and_applies_patch(
     tmp_path,
     monkeypatch,
@@ -412,6 +429,59 @@ def test_implement_subcommand_generates_plan_and_applies_patch(
     assert stage_result["status"] == "succeeded"
     assert (project / "feature.py").read_text(encoding="utf-8") == 'VERSION = "1.0"\n'
     assert "implementation | succeeded" in report
+
+
+def test_run_config_auto_approval_records_user_configured_source(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [implement]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+permissions:
+  approval_mode: auto
+""".strip(),
+        encoding="utf-8",
+    )
+    _ManualApprovalPlanGenerationService.implementation_plan = ImplementationPlan(
+        requirements_summary="Add a version constant.",
+        impact_summary="Create feature.py with a public constant.",
+        changes=[
+            ImplementationFileChange(
+                path="feature.py",
+                old_content=None,
+                new_content='VERSION = "1.0"\n',
+                rationale="Required by the visible requirements.",
+            )
+        ],
+        syntax_check_targets=["feature.py"],
+    )
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        _ManualApprovalPlanGenerationService,
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    decisions = [
+        json.loads(line)
+        for line in (run_dir / "decision_trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    approval = next(event for event in decisions if event["type"] == "human_decision")
+    assert approval["event_type"] == "approval_decision"
+    assert approval["auto"] is True
+    assert approval["decision_source"] == "user_configured_auto"
+    assert approval["presented_to_user"] is False
+    assert (run_dir / "workflow.log").exists()
+    assert (run_dir / "workflow_events.jsonl").exists()
 
 
 def test_implement_subcommand_classifies_stage_runtime_errors_separately_from_model(

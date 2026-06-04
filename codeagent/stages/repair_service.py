@@ -706,7 +706,22 @@ class RepairService:
                 comment=approval.comment,
                 timestamp=approval.decided_at,
                 auto=approval.auto,
+                decision_source=approval.decision_source,
+                presented_to_user=approval.presented_to_user,
+                decided_by=approval.decided_by,
             )
+        )
+        self.run_context.workflow_trace.record(
+            "approval_decision",
+            stage=REPAIR_STAGE,
+            action=action,
+            interrupt_id=approval.interrupt_id,
+            decision_type=approval.decision_type,
+            auto=approval.auto,
+            decision_source=approval.decision_source,
+            presented_to_user=approval.presented_to_user,
+            decided_by=approval.decided_by,
+            comment=approval.comment,
         )
 
     def _write_plan_artifacts(self, plan: RepairPlan) -> list[str]:

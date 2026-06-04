@@ -72,9 +72,29 @@ def test_wizard_answers_build_normalized_task_config_and_summary(tmp_path) -> No
     assert config.input_materials[0].material_type == "requirements"
     assert config.input_materials[0].path == requirements.resolve()
     assert config.test_command.command == "python -m pytest tests -q"
+    assert config.permissions.approval_mode == "manual"
     assert "执行阶段：implement, test" in summary
     assert str(project.resolve()) in summary
     assert "python -m pytest tests -q" in summary
+    assert "Approval mode: manual" in summary
+
+
+def test_wizard_answers_can_disable_manual_approval(tmp_path) -> None:
+    project, requirements = _project(tmp_path)
+    output_dir = tmp_path / "runs"
+
+    config = build_task_config_from_answers(
+        WizardPromptAnswers(
+            stages="implement,test",
+            project_path=str(project),
+            input_material_paths=[str(requirements)],
+            output_dir=str(output_dir),
+            test_command="pytest -q",
+            approval_mode="auto",
+        )
+    )
+
+    assert config.permissions.approval_mode == "auto"
 
 
 def test_wizard_rejects_file_as_project_path(tmp_path) -> None:
@@ -238,6 +258,9 @@ def test_approval_console_parses_basic_decisions(raw: str, decision_type: str) -
 
     assert decision.interrupt_id == "approve-command-1"
     assert decision.decision_type == decision_type
+    assert decision.decision_source == "user"
+    assert decision.presented_to_user is True
+    assert decision.auto is False
 
 
 def test_approval_console_parses_edit_payload_and_rejects_disallowed_choice() -> None:

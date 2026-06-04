@@ -52,6 +52,12 @@ multi-select controls. After the user confirms the form, CodeAgent starts the
 agent run immediately while still saving the normalized `task_config.yaml` for
 audit and reproduction.
 
+The wizard also lets the user choose the approval mode. The default is manual
+approval, which prompts before applying implementation patches, testing plans,
+testing patches, and test commands. If the user chooses automatic approval, the
+run continues without prompts and records `decision_source=user_configured_auto`.
+Benchmark auto-approval records `decision_source=benchmark_auto`.
+
 ## Run Outputs
 
 Each normal run writes a directory under `codeagent_runs/<run_id>/` unless an
@@ -61,10 +67,19 @@ output directory is configured. Important files include:
 - `task_config.yaml`
 - `transcript.jsonl`
 - `decision_trace.jsonl`
+- `workflow.log`
+- `workflow_events.jsonl`
 - `artifacts_index.json`
 - `checkpoints.sqlite`
 - per-stage reports, patches, logs, and `stage_result.json`
 - `final_report.md`
+
+`decision_trace.jsonl` is the compact approval and routing audit trail. New runs
+also write `workflow.log`, a chronological human-readable trace containing stage
+and node transitions, LLM prompts/responses after redaction, structured plans,
+approval requests/results, patch application, command execution, and final stage
+summaries. `workflow_events.jsonl` stores the same trace as machine-readable
+events.
 
 Benchmark runs write aggregate `benchmark_result.json` and `benchmark_report.md`
 plus clean per-case workspaces and oracle logs under the benchmark output root.
@@ -115,4 +130,5 @@ missing, the benchmark records an explicit blocker instead of silently skipping 
   outputs, patch artifacts, reports, and benchmark logs.
 
 Developer milestone reports are in `docs/dev_reports/`. The implementation plan
-and running log are in `docs/codex/plans.md`.
+and running log are in `docs/codex/plans.md`. Post-milestone optimization work is
+tracked in `docs/optimization/优化任务看板.md`.

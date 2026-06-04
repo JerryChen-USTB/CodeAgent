@@ -162,12 +162,26 @@ def _join_reasons(*reasons: str) -> str:
 
 def _read_agent_self_test(run_dir: Path) -> _AgentSelfTestOutcome:
     candidates = [
-        run_dir / "testing" / "test_result.json",
-        run_dir / "testing" / "test_report.json",
+        (
+            run_dir / "repair" / "repair_test_result.json",
+            run_dir / "repair" / "repair_report.md",
+        ),
+        (
+            run_dir / "testing" / "test_result.json",
+            run_dir / "testing" / "test_report.md",
+        ),
+        (
+            run_dir / "testing" / "test_report.json",
+            run_dir / "testing" / "test_report.md",
+        ),
     ]
-    result_path = next((path for path in candidates if path.exists()), None)
-    markdown_path = run_dir / "testing" / "test_report.md"
-    report_path = markdown_path if markdown_path.exists() else result_path
+    result_path: Path | None = None
+    report_path: Path | None = None
+    for candidate_result, candidate_report in candidates:
+        if candidate_result.exists():
+            result_path = candidate_result
+            report_path = candidate_report if candidate_report.exists() else candidate_result
+            break
     if result_path is None:
         return _AgentSelfTestOutcome(
             success=False,

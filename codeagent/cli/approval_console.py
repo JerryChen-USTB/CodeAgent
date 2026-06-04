@@ -62,6 +62,10 @@ def parse_approval_decision(
         decision_type=decision_type,
         edited_payload=edited_payload,
         comment=comment.strip() if comment and comment.strip() else None,
+        decided_by="user",
+        auto=False,
+        decision_source="user",
+        presented_to_user=True,
     )
 
 

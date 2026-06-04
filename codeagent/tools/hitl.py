@@ -47,6 +47,8 @@ class ApprovalDecision:
     )
     decided_by: str = "user"
     auto: bool = False
+    decision_source: str | None = None
+    presented_to_user: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,7 @@ class ToolHITLInterceptor:
         recorder.append(
             {
                 "type": "human_decision",
+                "event_type": "approval_decision",
                 "interrupt_id": tool_call.operation_id,
                 "action": "review_tool_call",
                 "tool_name": tool_call.name,
@@ -149,6 +152,10 @@ class ToolHITLInterceptor:
                 "auto": auto,
                 "reason": reason or comment or "",
                 "decided_by": decided_by,
+                "decision_source": (
+                    "benchmark_auto" if auto and decided_by == "benchmark" else None
+                ),
+                "presented_to_user": False if auto else None,
                 "decided_at": decided_at
                 or datetime.now(timezone.utc).isoformat(),
             }

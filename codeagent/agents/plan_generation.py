@@ -136,6 +136,10 @@ class PlanGenerationService:
                 (
                     "Return only JSON. Include exact old_content when modifying an "
                     "existing file and full new_content for every changed file. "
+                    "Implementation changes must modify product/source files only: "
+                    "do not create, modify, delete, or list tests, tests/, test_*.py, "
+                    "*_test.py, or any other test artifact. The dedicated testing "
+                    "stage will generate a separate complete visible test suite. "
                     "Use project-root-relative paths. If the configured project root is "
                     "already a workspace directory, do not prefix paths with workspace/; "
                     "for example use package/module.py, not workspace/package/module.py."
@@ -193,6 +197,10 @@ class PlanGenerationService:
                     "oracle_tests, evaluation, or expected_result.json. Do not use "
                     "py_compile as the testing command; py_compile is only a syntax "
                     "smoke check and does not count as product testing. The command "
+                    "must execute the tests generated or fully rewritten by this testing "
+                    "stage. If existing tests are visible, treat them only as reference "
+                    "material; do not return a plan that merely reuses them without a "
+                    "complete testing-stage patch. "
                     "will already run from the configured project root, so do not use "
                     "`cd project &&`, `cd workspace &&`, or prefix paths with "
                     "`project/` or `workspace/`. Prefer the "
@@ -224,6 +232,14 @@ class PlanGenerationService:
                     stage=_stage_name_for_schema(schema),
                     message=f"正在调用 LLM 生成 {schema.__name__}（第 {attempt}/{attempts} 次）",
                 )
+                context.workflow_trace.record(
+                    "llm_prompt",
+                    stage=_stage_name_for_schema(schema),
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    model=context.task_config.model.model_name,
+                    prompt=retry_prompt,
+                )
                 response = model.invoke(retry_prompt)
             except Exception as exc:
                 last_error = exc
@@ -236,11 +252,25 @@ class PlanGenerationService:
                 _write_attempt_audit(context, schema, audit)
                 continue
             response_text = _response_text(response)
+            context.workflow_trace.record(
+                "llm_response",
+                stage=_stage_name_for_schema(schema),
+                attempt=attempt,
+                schema=schema.__name__,
+                response=response_text,
+            )
             try:
                 payload = json.loads(_extract_json(response_text))
                 value = schema.model_validate(payload)
                 value = _normalize_generated_plan(value, context.task_config.project_path)
                 _validate_generated_plan_targets(value, context)
+                context.workflow_trace.record(
+                    "llm_structured_output",
+                    stage=_stage_name_for_schema(schema),
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    output=value.model_dump(mode="json"),
+                )
                 _record_attempt(
                     audit,
                     attempt=attempt,
@@ -362,6 +392,11 @@ def _validate_generated_plan_targets(plan: BaseModel, context: RunContext) -> No
                 f"generated plan targets sensitive or generated path: {normalized}"
             )
             continue
+        if isinstance(plan, ImplementationPlan) and _is_test_artifact_target(normalized):
+            errors.append(
+                f"implementation plan must not target test artifact: {normalized}"
+            )
+            continue
         if isinstance(plan, TestingPlan) and not _is_allowed_test_target(normalized):
             errors.append(f"testing plan target is not a test path: {normalized}")
     if errors:
@@ -403,6 +438,18 @@ def _is_hidden_benchmark_target(path: str) -> bool:
 def _is_allowed_test_target(path: str) -> bool:
     posix_path = PurePosixPath(path.replace("\\", "/"))
     return "tests" in posix_path.parts or posix_path.name.startswith("test_")
+
+
+def _is_test_artifact_target(path: str) -> bool:
+    posix_path = PurePosixPath(path.replace("\\", "/"))
+    name = posix_path.name.lower()
+    parts = {part.lower() for part in posix_path.parts}
+    return (
+        "tests" in parts
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name in {"conftest.py", "pytest.ini"}
+    )
 
 
 def _normalize_testing_command(command: str, project_root: Path) -> str:
@@ -733,12 +780,23 @@ def _approval(context: RunContext, *, interrupt_id: str, comment: str) -> Approv
         or context.task_config.auto_approve_in_benchmark
         or context.task_config.runtime.auto_approve_in_benchmark
     )
+    user_auto = context.task_config.permissions.approval_mode == "auto"
+    auto = benchmark_auto or user_auto
+    decision_source = (
+        "benchmark_auto"
+        if benchmark_auto
+        else "user_configured_auto"
+        if user_auto
+        else "system_default"
+    )
     return ApprovalDecision(
         interrupt_id=interrupt_id,
         decision_type="approve",
         comment=comment,
-        decided_by="benchmark" if benchmark_auto else "cli",
-        auto=benchmark_auto,
+        decided_by="benchmark" if benchmark_auto else "config" if user_auto else "workflow",
+        auto=auto,
+        decision_source=decision_source,
+        presented_to_user=False,
     )
 
 

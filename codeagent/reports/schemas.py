@@ -56,6 +56,10 @@ class HumanDecision(ReportModel):
     comment: str | None = Field(default=None, max_length=4000)
     timestamp: str
     auto: bool = False
+    event_type: str = "approval_decision"
+    decision_source: str | None = None
+    presented_to_user: bool | None = None
+    decided_by: str | None = None
 
 
 class CodeChange(ReportModel):

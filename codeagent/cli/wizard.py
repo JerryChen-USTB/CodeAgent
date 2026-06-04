@@ -10,7 +10,7 @@ from typing import Protocol
 
 import typer
 
-from codeagent.config.schema import CommandConfig, TaskConfig
+from codeagent.config.schema import CommandConfig, PermissionsConfig, TaskConfig
 from codeagent.reports.schemas import StageResult
 from codeagent.reports.writer import ReportWriter
 from codeagent.runtime.run_context import create_run_context
@@ -28,6 +28,7 @@ class WizardPromptAnswers:
     input_material_paths: list[str] = field(default_factory=list)
     output_dir: str = "codeagent_runs"
     test_command: str = "pytest -q"
+    approval_mode: str = "manual"
 
 
 class WizardFormBackend(Protocol):
@@ -111,6 +112,9 @@ def build_task_config_from_answers(answers: WizardPromptAnswers) -> TaskConfig:
         output_dir=output_dir,
         input_materials=input_materials,
         test_command=CommandConfig(command=test_command),
+        permissions=PermissionsConfig(
+            approval_mode=_parse_approval_mode(answers.approval_mode)
+        ),
         mode="wizard",
     )
 
@@ -132,6 +136,7 @@ def render_task_summary(config: TaskConfig) -> str:
             f"输出目录：{config.output_dir}",
             f"测试命令：{config.test_command.command}",
             "输入材料：",
+            f"Approval mode: {config.permissions.approval_mode}",
             *material_lines,
         ]
     )
@@ -191,6 +196,11 @@ def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
         raise ValueError("已选择手动添加输入材料路径，但没有填写路径")
     output_dir = backend.text("输出目录", default="codeagent_runs")
     test_command = backend.text("测试命令", default="pytest -q")
+    approval_mode = backend.select(
+        "Approval mode",
+        _approval_mode_choices(),
+        default="manual",
+    )
     return WizardPromptAnswers(
         stages=stages,
         project_path=project_path,
@@ -200,6 +210,7 @@ def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
         ],
         output_dir=output_dir,
         test_command=test_command,
+        approval_mode=approval_mode,
     )
 
 
@@ -213,6 +224,24 @@ def _parse_stages(raw_stages: str) -> list[str]:
     if not stages:
         raise ValueError("至少需要选择一个阶段")
     return stages
+
+
+def _parse_approval_mode(raw_mode: str) -> str:
+    mode = (raw_mode or "manual").strip().lower()
+    aliases = {
+        "1": "manual",
+        "manual": "manual",
+        "m": "manual",
+        "y": "manual",
+        "yes": "manual",
+        "2": "auto",
+        "auto": "auto",
+        "a": "auto",
+    }
+    parsed = aliases.get(mode, mode)
+    if parsed not in {"manual", "auto"}:
+        raise ValueError(f"invalid approval mode: {raw_mode}")
+    return parsed
 
 
 def _resolve_existing_path(
@@ -302,7 +331,10 @@ class LineWizardBackend:
         suffix = "Y/n" if default else "y/N"
         typer.echo(f"{message} [{suffix}]")
         typer.echo("> ", nl=False)
-        raw = input().strip().lower()
+        try:
+            raw = input().strip().lower()
+        except EOFError:
+            return default
         if not raw:
             return default
         return raw in {"y", "yes", "是", "确认", "1", "true"}
@@ -401,6 +433,13 @@ def _stage_choices() -> list[tuple[str, str]]:
         ("只执行测试", "test"),
         ("只执行调试", "debug"),
         ("只执行修复", "repair"),
+    ]
+
+
+def _approval_mode_choices() -> list[tuple[str, str]]:
+    return [
+        ("开启人工审批：逐项确认方案、补丁和命令", "manual"),
+        ("关闭人工审批：自动批准方案、补丁和命令", "auto"),
     ]
 
 

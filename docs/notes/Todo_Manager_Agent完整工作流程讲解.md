@@ -11,6 +11,8 @@
 codeagent_runs\interactive_demo\todo_manager\runs\2026-06-03_164411_134073_implement-test-debug-repair_5a9843
 ```
 
+> 版本说明：本文分析的是 2026-06-03 的一次历史 run。后续 OPT01 优化已经修正了审批记录语义、implementation/testing 解耦和完整 workflow 追踪日志。新 run 会额外生成 `workflow.log`、`workflow_events.jsonl`，并在 `decision_trace.jsonl` 中记录 `decision_source`、`presented_to_user`、`event_type=approval_decision`。因此，旧 run 中的 `"auto": false, "type": "human_decision"` 只能理解为旧 schema 的审批决策记录，不能证明用户当时真的收到了人工审批提示。
+
 ## 1. 先看整体结论
 
 这次任务的输入是 `requirements.md`，要求 Agent 从空 `workspace/` 生成一个命令行待办事项管理软件。最终结果是成功：
@@ -240,6 +242,8 @@ runs\<run_id>\implementation\implementation_plan.md
 - `todo_manager/cli.py`
 - `todo_manager/__main__.py`
 - `tests/test_todo.py`
+
+注意：这是历史 run 暴露出的阶段职责问题。OPT01 之后，implementation 阶段已经禁止生成 `tests/`、`test_*.py` 等测试产物；测试文件应由 testing 阶段单独生成和运行。
 
 ### 7.3 生成 patch，而不是直接写文件
 
@@ -850,4 +854,3 @@ runs\<run_id>\decision_trace.jsonl
 - 对关键动作留下审批记录。
 - 用真实命令运行 Agent 自测。
 - 把每一步产物沉淀到 run directory，方便复盘、答辩和问题定位。
-

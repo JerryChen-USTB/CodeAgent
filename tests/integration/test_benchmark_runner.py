@@ -484,6 +484,73 @@ def test_case_evaluator_reports_agent_self_test_timeout_with_collected_count(
     assert "agent self-test timed out" in evaluation.failure_reason
 
 
+def test_case_evaluator_uses_repair_verification_as_final_self_test(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    testing_dir = run_dir / "testing"
+    repair_dir = run_dir / "repair"
+    testing_dir.mkdir(parents=True)
+    repair_dir.mkdir(parents=True)
+    (run_dir / "final_report.md").write_text("# Final\n", encoding="utf-8")
+    (run_dir / "artifacts_index.json").write_text("[]\n", encoding="utf-8")
+    (testing_dir / "test_result.json").write_text(
+        json.dumps(
+            {
+                "framework": "pytest",
+                "success": False,
+                "passed": 2,
+                "failed": 1,
+                "errors": 0,
+                "skipped": 0,
+                "total": 3,
+                "command": "python -m pytest tests -q",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repair_dir / "repair_test_result.json").write_text(
+        json.dumps(
+            {
+                "framework": "pytest",
+                "success": True,
+                "passed": 3,
+                "failed": 0,
+                "errors": 0,
+                "skipped": 0,
+                "total": 3,
+                "command": "python -m pytest tests -q",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repair_dir / "repair_report.md").write_text("# Repair\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    context = CaseExecutionContext(
+        case_id="case_repaired",
+        source_case_dir=tmp_path / "case",
+        run_case_dir=tmp_path / "case",
+        copied_config_path=tmp_path / "case" / "task_config.yaml",
+        task_config=TaskConfig(
+            stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR],
+            project_path=project,
+            test_command={"command": "python -m pytest tests -q"},
+        ),
+        visible_paths=[project],
+        hidden_paths=[],
+    )
+
+    evaluation = CaseEvaluator().evaluate(
+        context=context,
+        run_dir=run_dir,
+        final_status="succeeded",
+    )
+
+    assert evaluation.success is True
+    assert evaluation.agent_test_success is True
+    assert evaluation.agent_test_total == 3
+    assert evaluation.agent_test_report == repair_dir / "repair_report.md"
+
+
 def test_prepare_case_workspace_preserves_nested_hidden_paths_in_copied_case(
     tmp_path,
 ) -> None:

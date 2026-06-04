@@ -39,6 +39,8 @@ def test_create_run_context_writes_required_tree(tmp_path) -> None:
         "checkpoints.sqlite",
         "transcript.jsonl",
         "decision_trace.jsonl",
+        "workflow.log",
+        "workflow_events.jsonl",
         "artifacts_index.json",
         "final_report.md",
     ]:
@@ -49,6 +51,31 @@ def test_create_run_context_writes_required_tree(tmp_path) -> None:
         (context.run_dir / "artifacts_index.json").read_text(encoding="utf-8")
     )
     assert artifact_index == {"run_id": context.run_id, "artifacts": []}
+    workflow_log = (context.run_dir / "workflow.log").read_text(encoding="utf-8")
+    workflow_events = (context.run_dir / "workflow_events.jsonl").read_text(encoding="utf-8")
+    assert "CodeAgent Workflow Trace" in workflow_log
+    assert "run_initialized" in workflow_events
+
+
+def test_workflow_trace_redacts_secrets_and_hidden_benchmark_paths(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    context = create_run_context(_task_config(project), output_root=tmp_path / "runs")
+
+    context.workflow_trace.record(
+        "llm_prompt",
+        prompt=(
+            "Bearer sk-or-secret should be removed; "
+            "benchmark/case/oracle_tests/test_hidden.py and expected_result.json hidden"
+        ),
+    )
+
+    workflow_log = (context.run_dir / "workflow.log").read_text(encoding="utf-8")
+    events_text = (context.run_dir / "workflow_events.jsonl").read_text(encoding="utf-8")
+    assert "sk-or-secret" not in workflow_log
+    assert "sk-or-secret" not in events_text
+    assert "test_hidden.py" not in workflow_log
+    assert "expected_result.json hidden" not in workflow_log
 
 
 def test_create_run_context_supports_long_windows_output_root(tmp_path) -> None:

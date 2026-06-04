@@ -145,6 +145,30 @@ def test_plan_generation_builds_implementation_request_without_hidden_context(tm
     assert request.approval.decision_type == "approve"
 
 
+def test_plan_generation_rejects_implementation_test_artifacts(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    model = _FakeModel(
+        {
+            "requirements_summary": "Implement a feature.",
+            "impact_summary": "Incorrectly tries to add tests during implementation.",
+            "changes": [
+                {
+                    "path": "tests/test_feature.py",
+                    "old_content": None,
+                    "new_content": "def test_feature():\n    assert True\n",
+                    "rationale": "This belongs in the testing stage.",
+                }
+            ],
+            "syntax_check_targets": [],
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="test artifact"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+            context
+        )
+
+
 def test_plan_generation_builds_testing_request_without_hidden_context(tmp_path) -> None:
     case_dir = tmp_path / "case"
     input_dir = case_dir / "input"

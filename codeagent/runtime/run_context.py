@@ -18,6 +18,7 @@ from codeagent.config import defaults
 from codeagent.config.schema import Stage, TaskConfig
 from codeagent.reports.artifact_store import ArtifactStore
 from codeagent.reports.transcript import JsonlRecorder
+from codeagent.reports.workflow_trace import WorkflowTraceRecorder
 
 
 STAGE_DIR_NAMES = {
@@ -37,6 +38,7 @@ class RunContext:
     artifact_store: ArtifactStore
     transcript: JsonlRecorder
     decision_trace: JsonlRecorder
+    workflow_trace: WorkflowTraceRecorder
 
 
 def create_run_context(
@@ -54,6 +56,17 @@ def create_run_context(
     _write_task_config(run_dir / "task_config.yaml", task_config)
     fs.touch(run_dir / "transcript.jsonl")
     fs.touch(run_dir / "decision_trace.jsonl")
+    workflow_trace = WorkflowTraceRecorder(run_dir)
+    workflow_trace.record(
+        "run_initialized",
+        run_id=run_id,
+        mode=task_config.mode,
+        stages=[stage.value for stage in task_config.stages],
+        project_path=str(task_config.project_path),
+        output_dir=str(output_base),
+        approval_mode=task_config.permissions.approval_mode,
+        checkpoint="checkpoints.sqlite",
+    )
     fs.write_text(
         run_dir / "final_report.md",
         "# Final Report\n\nRun has been initialized. No stages have completed yet.\n",
@@ -69,6 +82,7 @@ def create_run_context(
         artifact_store=artifact_store,
         transcript=JsonlRecorder(run_dir / "transcript.jsonl"),
         decision_trace=JsonlRecorder(run_dir / "decision_trace.jsonl"),
+        workflow_trace=workflow_trace,
     )
 
 
