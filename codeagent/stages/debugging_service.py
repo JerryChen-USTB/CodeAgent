@@ -98,6 +98,15 @@ class _EvidenceBundle:
     command_executed: bool
 
 
+@dataclass(frozen=True)
+class _TestHarnessFailureDiagnosis:
+    summary: str
+    message: str
+    root_cause: str
+    repair_plan: str
+    next_suggestion: str
+
+
 class DebuggingService:
     """Run reproduction, failure summarization, localization, and reports."""
 
@@ -225,21 +234,31 @@ class DebuggingService:
 
         failing_tests = _extract_failing_tests(evidence)
         candidates = self._localize_faults(evidence.combined_text, failing_tests)
-        confidence = _overall_confidence(
-            reproduction_status=evidence.reproduction_status,
-            candidates=candidates,
+        test_harness_failure = _detect_generated_test_harness_failure(
+            evidence=evidence,
             failing_tests=failing_tests,
         )
-        root_cause = _build_root_cause(
-            evidence=evidence,
-            candidates=candidates,
-            confidence=confidence,
-        )
-        repair_plan = _build_repair_plan(
-            candidates=candidates,
-            confidence=confidence,
-            expected_behavior=request.expected_behavior,
-        )
+        if test_harness_failure is not None:
+            candidates = []
+            confidence: Literal["high", "medium", "low"] = "low"
+            root_cause = test_harness_failure.root_cause
+            repair_plan = test_harness_failure.repair_plan
+        else:
+            confidence = _overall_confidence(
+                reproduction_status=evidence.reproduction_status,
+                candidates=candidates,
+                failing_tests=failing_tests,
+            )
+            root_cause = _build_root_cause(
+                evidence=evidence,
+                candidates=candidates,
+                confidence=confidence,
+            )
+            repair_plan = _build_repair_plan(
+                candidates=candidates,
+                confidence=confidence,
+                expected_behavior=request.expected_behavior,
+            )
         localization = FaultLocalization(
             failing_tests=failing_tests,
             candidates=candidates,
@@ -276,17 +295,41 @@ class DebuggingService:
                 run_dir=self.run_context.run_dir,
             ),
             failing_tests=failing_tests,
+            test_harness_failure=test_harness_failure is not None,
         )
-        emit_progress(
-            "agent_status",
-            stage=DEBUGGING_STAGE,
-            message=_debugging_finished_message(
-                localization,
-                debug_report_path=debug_report_path,
-                run_dir=self.run_context.run_dir,
-                attempt_index=attempt_index,
-            ),
-        )
+        if test_harness_failure is not None:
+            self.run_context.workflow_trace.record(
+                "debugging_test_harness_failure",
+                stage=DEBUGGING_STAGE,
+                attempt=attempt_index,
+                failing_tests=failing_tests,
+                message=test_harness_failure.message,
+                debug_report_path=_run_relative_path(
+                    debug_report_path,
+                    run_dir=self.run_context.run_dir,
+                ),
+            )
+            emit_progress(
+                "agent_status",
+                stage=DEBUGGING_STAGE,
+                message=_debugging_harness_failure_message(
+                    test_harness_failure,
+                    debug_report_path=debug_report_path,
+                    run_dir=self.run_context.run_dir,
+                    attempt_index=attempt_index,
+                ),
+            )
+        else:
+            emit_progress(
+                "agent_status",
+                stage=DEBUGGING_STAGE,
+                message=_debugging_finished_message(
+                    localization,
+                    debug_report_path=debug_report_path,
+                    run_dir=self.run_context.run_dir,
+                    attempt_index=attempt_index,
+                ),
+            )
         artifacts.extend(
             [
                 self._record_artifact(
@@ -321,6 +364,16 @@ class DebuggingService:
                 ),
             ]
         )
+        if test_harness_failure is not None:
+            result = self._failed_result(
+                started_at=started_at,
+                summary=test_harness_failure.summary,
+                category="validation",
+                message=test_harness_failure.message,
+                artifact_ids=artifacts,
+                next_suggestion=test_harness_failure.next_suggestion,
+            )
+            return self._finalize_result(result, artifact_ids=artifacts)
         summary = _result_summary(confidence=confidence, candidates=candidates)
         result = StageResult(
             stage=DEBUGGING_STAGE,
@@ -963,6 +1016,103 @@ def _debugging_finished_message(
         f"第 {attempt_index} 次调试完成：复现状态 {localization.reproduction_status}；"
         f"置信度 {localization.confidence}；首要嫌疑 {top_suspect}；报告 {report}。"
     )
+
+
+def _debugging_harness_failure_message(
+    diagnosis: _TestHarnessFailureDiagnosis,
+    *,
+    debug_report_path: Path,
+    run_dir: Path,
+    attempt_index: int,
+) -> str:
+    report = _run_relative_path(debug_report_path, run_dir=run_dir)
+    return (
+        f"第 {attempt_index} 次调试发现自测脚手架问题：失败来自生成测试的运行目录，"
+        f"不进入修复阶段；报告 {report}。{diagnosis.next_suggestion}"
+    )
+
+
+def _detect_generated_test_harness_failure(
+    *,
+    evidence: _EvidenceBundle,
+    failing_tests: list[str],
+) -> _TestHarnessFailureDiagnosis | None:
+    text = evidence.combined_text
+    lowered = text.lower()
+    if not (
+        "notadirectoryerror" in lowered
+        or "winerror 267" in lowered
+        or "no such file or directory" in lowered
+    ):
+        return None
+    if "subprocess" not in lowered or "cwd" not in lowered:
+        return None
+    test_frame_runs_subprocess = _test_frame_runs_subprocess_with_cwd(text)
+    if not test_frame_runs_subprocess:
+        return None
+    if failing_tests:
+        test_failures = [
+            nodeid for nodeid in failing_tests if _is_test_nodeid(nodeid)
+        ]
+        if len(test_failures) / len(failing_tests) < 0.6:
+            return None
+
+    cwd_hint = _extract_cwd_hint(text)
+    cwd_detail = f" Detected cwd: `{cwd_hint}`." if cwd_hint else ""
+    message = (
+        "Generated self-test harness appears invalid: pytest reaches a generated "
+        "test helper that calls subprocess with a non-existent cwd before product "
+        f"code can run.{cwd_detail}"
+    )
+    root_cause = (
+        "The failure evidence points to the generated testing harness, not to the "
+        "implementation. The subprocess call fails while preparing the child "
+        "process working directory, so the product CLI is never executed."
+        f"{cwd_detail}"
+    )
+    repair_plan = (
+        "Do not repair product code from this evidence. Regenerate the testing "
+        "stage patch so subprocess tests run from the real configured project root "
+        "and avoid hard-coded project/workspace cwd suffixes."
+    )
+    return _TestHarnessFailureDiagnosis(
+        summary="Debugging stopped because the generated self-test harness is invalid.",
+        message=message,
+        root_cause=root_cause,
+        repair_plan=repair_plan,
+        next_suggestion=(
+            "请重新生成测试补丁，让 CLI/subprocess 测试从真实项目根目录运行。"
+        ),
+    )
+
+
+def _test_frame_runs_subprocess_with_cwd(text: str) -> bool:
+    frame_pattern = re.compile(
+        r'File "([^"]*(?:tests[/\\]test_[^/\\"]+\.py|test_[^/\\"]+\.py))", '
+        r"line \d+, in [^\n]+"
+    )
+    for match in frame_pattern.finditer(text):
+        frame_body = text[match.end() : match.end() + 600].lower()
+        if "subprocess" in frame_body and "cwd" in frame_body:
+            return True
+    return False
+
+
+def _is_test_nodeid(nodeid: str) -> bool:
+    file_part = nodeid.split("::", 1)[0]
+    return _is_test_path(file_part)
+
+
+def _extract_cwd_hint(text: str) -> str | None:
+    patterns = [
+        r"cwd\s*=\s*['\"]([^'\"]+)['\"]",
+        r"cwd\s*=\s*str\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _parsed_counts(evidence: _EvidenceBundle) -> dict[str, int]:

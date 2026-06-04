@@ -416,7 +416,14 @@ class PlanGenerationService:
                         "or fully rewritten by this testing stage. Do not reference hidden "
                         "benchmark directories, oracle_tests, evaluation, or "
                         "expected_result.json. Do not use py_compile as the testing "
-                        "command. Prefer the configured public command when safe: "
+                        "command. If you write subprocess CLI tests, cwd must be an "
+                        "existing directory inside the configured project root. Do not "
+                        "derive cwd by appending hard-coded project/workspace directory "
+                        "names to __file__ parents, such as parent.parent / 'project' "
+                        "or parents[1] / 'workspace'. Prefer running tests from the "
+                        "configured project root and invoking the CLI with "
+                        "sys.executable -m <module>. Prefer the configured public "
+                        "command when safe: "
                         f"{configured_command!r}."
                     ),
                 ]

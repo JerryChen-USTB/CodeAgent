@@ -232,6 +232,40 @@ def test_debugging_service_static_fallback_reports_low_confidence(tmp_path) -> N
     assert "low confidence" in result.summary.lower()
 
 
+def test_debugging_service_stops_on_generated_test_harness_cwd_failure(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    harness_log = project_root / "harness_failure.log"
+    test_file = project_root / "tests" / "test_cli.py"
+    harness_log.write_text(
+        "FAILED tests/test_cli.py::test_add_via_cli - NotADirectoryError\n"
+        "Traceback (most recent call last):\n"
+        f'  File "{test_file}", line 18, in run\n'
+        "    return subprocess.run(cmd, cwd=str(PROJECT_ROOT))\n"
+        '  File "D:\\Python\\Python313\\Lib\\subprocess.py", line 1550, in _execute_child\n'
+        "NotADirectoryError: [WinError 267] 目录名称无效: "
+        f"'{project_root / 'project'}'\n",
+        encoding="utf-8",
+    )
+    service, run_context = _service(tmp_path, project_root)
+
+    result = service.run(_request(command=None, logs=[harness_log]))
+
+    stage_dir = run_context.run_dir / "debugging"
+    fault = json.loads((stage_dir / "fault_localization.json").read_text(encoding="utf-8"))
+    workflow_log = (run_context.run_dir / "workflow.log").read_text(encoding="utf-8")
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.category == "validation"
+    assert "self-test harness" in result.error.message
+    assert "Regenerate the testing" in (stage_dir / "repair_plan.md").read_text(
+        encoding="utf-8"
+    )
+    assert fault["candidates"] == []
+    assert "debugging_test_harness_failure" in workflow_log
+
+
 def test_debugging_service_rejects_hidden_benchmark_command_path(tmp_path) -> None:
     project_root = tmp_path / "project"
     _write_buggy_project(project_root)

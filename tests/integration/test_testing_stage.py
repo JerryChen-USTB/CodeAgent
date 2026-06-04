@@ -188,18 +188,13 @@ def test_testing_service_rejects_zero_collected_tests(tmp_path) -> None:
     service, run_context = _service(tmp_path, project_root)
     plan = TestingPlan(
         target_summary="Ensure the test stage rejects empty discovery.",
-        strategy="Create a helper file that unittest will not collect.",
+        strategy="Create pytest-style function tests and run them with unittest discovery.",
         acceptance_criteria=["A zero-test run is reported as failed."],
         changes=[
             TestFileChange(
-                path="tests/__init__.py",
-                test_focus="Package marker; intentionally not a test case.",
-                rationale="Make the unittest discovery directory importable.",
-            ),
-            TestFileChange(
-                path="tests/helper.py",
-                test_focus="Helper file; intentionally not a collected test module.",
-                rationale="This file is intentionally not a unittest test module.",
+                path="tests/test_zero_collection.py",
+                test_focus="Pytest-style function intentionally not collected by unittest.",
+                rationale="Verify zero collected tests are rejected after command execution.",
             )
         ],
         command="python -m unittest discover -s tests",
@@ -210,19 +205,13 @@ def test_testing_service_rejects_zero_collected_tests(tmp_path) -> None:
         TestingRequest(
             plan=plan,
             patch_draft=TestingPatchDraft(
-                plan_summary="Concrete non-test patch used to verify zero-test rejection.",
+                plan_summary="Concrete pytest-style patch used to verify zero-test rejection.",
                 changes=[
                     TestPatchFileChange(
-                        path="tests/__init__.py",
+                        path="tests/test_zero_collection.py",
                         old_content=None,
-                        new_content="",
-                        rationale="Make the unittest discovery directory importable.",
-                    ),
-                    TestPatchFileChange(
-                        path="tests/helper.py",
-                        old_content=None,
-                        new_content="VALUE = 1\n",
-                        rationale="This file is intentionally not a unittest test module.",
+                        new_content="def test_visible_pytest_function():\n    assert True\n",
+                        rationale="unittest discovery will not collect this pytest function.",
                     ),
                 ],
                 command="python -m unittest discover -s tests",
@@ -244,6 +233,35 @@ def test_testing_service_rejects_zero_collected_tests(tmp_path) -> None:
         )
     )
     assert test_result["total"] == 0
+
+
+def test_testing_service_rejects_bad_subprocess_project_root_harness(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_project(project_root)
+    service, _run_context = _service(tmp_path, project_root)
+    plan = _plan(
+        "import pathlib\n"
+        "import subprocess\n"
+        "import sys\n\n"
+        "PROJECT_ROOT = pathlib.Path(__file__).parent.parent / \"project\"\n\n"
+        "def test_cli_harness_uses_real_project_root():\n"
+        "    result = subprocess.run(\n"
+        "        [sys.executable, \"-c\", \"print('ok')\"],\n"
+        "        capture_output=True,\n"
+        "        text=True,\n"
+        "        cwd=str(PROJECT_ROOT),\n"
+        "    )\n"
+        "    assert result.returncode == 0\n",
+        path="tests/test_cli.py",
+    )
+
+    result = service.run(_request(plan))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.category == "validation"
+    assert "hard-coded project/workspace" in result.error.message
+    assert not (project_root / "tests" / "test_cli.py").exists()
 
 
 def test_testing_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:

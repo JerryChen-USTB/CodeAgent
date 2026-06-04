@@ -18,6 +18,8 @@ from codeagent.stages.testing_service import (
     TEST_COMMAND_INTERRUPT_ID,
     TEST_PATCH_INTERRUPT_ID,
     TEST_PLAN_INTERRUPT_ID,
+    TestFileChange,
+    TestingPlan,
 )
 
 
@@ -311,6 +313,52 @@ def test_plan_generation_normalizes_testing_command_wrapper_prefix(tmp_path) -> 
 
     assert request.plan.changes[0].path.as_posix() == "tests/test_generated.py"
     assert request.plan.command == "python -m pytest tests/test_generated.py -v"
+
+
+def test_plan_generation_testing_patch_prompt_forbids_nested_project_cwd(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    plan = TestingPlan(
+        target_summary="Verify CLI behavior.",
+        strategy="Generate subprocess CLI tests.",
+        acceptance_criteria=["CLI subprocess tests use the real project root."],
+        changes=[
+            TestFileChange(
+                path="tests/test_cli.py",
+                test_focus="Run CLI through subprocess.",
+                rationale="Exercise the public command line entry point.",
+            )
+        ],
+        command="python -m pytest tests/test_cli.py -q",
+        framework="pytest",
+    )
+    model = _FakeModel(
+        {
+            "plan_summary": "Concrete CLI subprocess tests.",
+            "changes": [
+                {
+                    "path": "tests/test_cli.py",
+                    "old_content": None,
+                    "new_content": "def test_cli_subprocess():\n    assert True\n",
+                    "rationale": "Exercise CLI behavior.",
+                }
+            ],
+            "command": "python -m pytest tests/test_cli.py -q",
+            "framework": "pytest",
+        }
+    )
+
+    draft = PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_patch_draft(
+        context,
+        plan,
+    )
+
+    prompt = model.prompts[0]
+    assert "cwd must be an existing directory" in prompt
+    assert "parent.parent / 'project'" in prompt
+    assert "parents[1] / 'workspace'" in prompt
+    assert draft.changes[0].path.as_posix() == "tests/test_cli.py"
 
 
 def test_plan_generation_keeps_visible_context_inside_generated_run_roots(

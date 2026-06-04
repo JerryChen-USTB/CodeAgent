@@ -2101,7 +2101,41 @@ def _test_patch_quality_error(draft: TestingPatchDraft) -> str | None:
             "testing patch drafts must include new_content with pytest/unittest test cases; "
             "helper files, empty packages, or references to existing tests are not enough"
         )
+    harness_error = _generated_test_harness_quality_error(generated_test_changes)
+    if harness_error:
+        return harness_error
     return None
+
+
+def _generated_test_harness_quality_error(
+    changes: list[TestPatchFileChange],
+) -> str | None:
+    for change in changes:
+        content = change.new_content or ""
+        if _uses_suspicious_generated_project_root(content):
+            return (
+                "testing patch draft builds a subprocess/sys.path project root by "
+                f"appending a hard-coded project/workspace directory in {change.path}. "
+                "Generated tests must run from the real configured project root; do not "
+                "use patterns like Path(__file__).parent.parent / 'project', "
+                "parents[1] / 'project', or equivalent workspace/project suffixes."
+            )
+    return None
+
+
+def _uses_suspicious_generated_project_root(content: str) -> bool:
+    patterns = [
+        r"(?is)(?:pathlib\.)?Path\s*\(\s*__file__\s*\)"
+        r".{0,200}(?:\.\s*parent\s*){2,}.{0,120}"
+        r"/\s*['\"](?:project|workspace)['\"]",
+        r"(?is)(?:pathlib\.)?Path\s*\(\s*__file__\s*\)"
+        r".{0,200}\.\s*parents\s*\[\s*\d+\s*\].{0,120}"
+        r"/\s*['\"](?:project|workspace)['\"]",
+        r"(?im)^\s*(?:PROJECT_ROOT|ROOT|REPO_ROOT|PACKAGE_ROOT)\s*="
+        r".{0,220}(?:parent\s*\.\s*parent|parents\s*\[\s*\d+\s*\])"
+        r".{0,120}/\s*['\"](?:project|workspace)['\"]",
+    ]
+    return any(re.search(pattern, content) for pattern in patterns)
 
 
 def _contains_test_case(content: str) -> bool:
@@ -2329,7 +2363,7 @@ def _normalize_plan_path(path: Path) -> str | None:
 
 
 def _is_allowed_test_path(path: str) -> bool:
-    posix = PurePosixPath(path)
+    posix = PurePosixPath(path.replace("\\", "/"))
     return "tests" in posix.parts or posix.name.startswith("test_")
 
 
