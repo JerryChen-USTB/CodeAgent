@@ -10,8 +10,8 @@ from codeagent.cli.tui import (
     TuiChoice,
     TuiProgressReporter,
     WizardFormState,
+    _build_wizard_text_container,
     _render_form_panel,
-    _text_with_cursor_fragments,
     _tui_style,
 )
 from codeagent.config import defaults
@@ -106,21 +106,34 @@ def test_form_rendering_shows_input_materials_as_vertical_list() -> None:
     assert "requirements.md;api.md" not in text
 
 
-def test_text_editing_uses_prompt_toolkit_cursor_marker() -> None:
-    from prompt_toolkit.layout.controls import FormattedTextControl
+def test_text_editing_container_uses_real_buffer_control() -> None:
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.layout.controls import BufferControl
+    from prompt_toolkit.layout.containers import HSplit, VSplit, Window
 
-    fragments = _text_with_cursor_fragments("pytest -q", len("pytest"))
+    state = WizardFormState.create()
+    rows = state.visible_rows()
+    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "output_dir")
+    buffer = Buffer(multiline=False)
+    buffer.text = "codeagent_runs"
+    buffer.cursor_position = len(buffer.text)
+    control = BufferControl(buffer=buffer)
 
-    assert fragments == [
-        ("class:input", "pytest"),
-        ("[SetCursorPosition]", ""),
-        ("class:input", " -q"),
-    ]
+    container = _build_wizard_text_container(
+        state,
+        mode="text",
+        edit_field="output_dir",
+        edit_control=control,
+    )
 
-    content = FormattedTextControl(fragments).create_content(width=80, height=None)
-    assert content.cursor_position is not None
-    assert content.cursor_position.x == len("pytest")
-    assert content.cursor_position.y == 0
+    def contains_buffer_control(node: object) -> bool:
+        if isinstance(node, Window):
+            return node.content is control
+        if isinstance(node, (HSplit, VSplit)):
+            return any(contains_buffer_control(child) for child in node.children)
+        return False
+
+    assert contains_buffer_control(container)
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:

@@ -556,12 +556,12 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
 def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import get_app
+    from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.keys import Keys
     from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+    from prompt_toolkit.layout.containers import DynamicContainer, Window
     from codeagent.cli.wizard import (
         _MATERIAL_ACTION_ADD,
         _MATERIAL_ACTION_DONE,
@@ -582,9 +582,9 @@ def _run_wizard_application(state: WizardFormState) -> str:
     edit_field = ""
     choices: list[TuiChoice] = []
     choice_index = 0
-    text_value = ""
-    text_cursor = 0
     text_original = ""
+    edit_buffer = Buffer(multiline=False)
+    edit_control = BufferControl(buffer=edit_buffer, focusable=True, focus_on_click=True)
     kb = KeyBindings()
 
     def finish(result: str) -> None:
@@ -660,22 +660,24 @@ def _run_wizard_application(state: WizardFormState) -> str:
         state.status = "选择要移除的输入材料"
 
     def enter_material_text() -> None:
-        nonlocal mode, edit_field, text_value, text_cursor, text_original
+        nonlocal mode, edit_field, text_original
         mode = "material_text"
         edit_field = "input_materials"
-        text_value = ""
-        text_cursor = 0
         text_original = ""
+        edit_buffer.text = ""
+        edit_buffer.cursor_position = 0
         state.status = "手动输入一项材料路径"
+        get_app().layout.focus(edit_control)
 
     def enter_text(field_id: str) -> None:
-        nonlocal mode, edit_field, text_value, text_cursor, text_original
+        nonlocal mode, edit_field, text_original
         mode = "text"
         edit_field = field_id
         text_original = str(state.values.get(field_id) or "")
-        text_value = text_original
-        text_cursor = len(text_value)
+        edit_buffer.text = text_original
+        edit_buffer.cursor_position = len(edit_buffer.text)
         state.status = f"正在填写：{FIELD_LABELS[field_id]}"
+        get_app().layout.focus(edit_control)
 
     def begin_edit(field_id: str) -> None:
         if field_id == "stages":
@@ -707,13 +709,15 @@ def _run_wizard_application(state: WizardFormState) -> str:
 
     def commit_text() -> None:
         nonlocal mode
-        state.set_value(edit_field, text_value.strip())
+        state.set_value(edit_field, edit_buffer.text.strip())
         mode = "form"
+        get_app().layout.focus(form_control)
 
     def cancel_edit() -> None:
         nonlocal mode
         mode = "form"
         state.status = "已返回任务表单。"
+        get_app().layout.focus(form_control)
 
     def commit_choice() -> None:
         nonlocal mode
@@ -756,12 +760,13 @@ def _run_wizard_application(state: WizardFormState) -> str:
             enter_material_remove()
 
     def commit_material_text() -> None:
-        raw_path = text_value.strip()
+        raw_path = edit_buffer.text.strip()
         if raw_path:
             _add_material_to_state(state, raw_path)
         else:
             state.status = "未填写材料路径，未添加。"
         enter_material_menu()
+        get_app().layout.focus(form_control)
 
     @kb.add("up")
     def _(event) -> None:
@@ -781,20 +786,6 @@ def _run_wizard_application(state: WizardFormState) -> str:
             choice_index = (choice_index + 1) % len(choices)
         event.app.invalidate()
 
-    @kb.add("left")
-    def _(event) -> None:
-        nonlocal text_cursor
-        if mode in {"text", "material_text"}:
-            text_cursor = max(0, text_cursor - 1)
-        event.app.invalidate()
-
-    @kb.add("right")
-    def _(event) -> None:
-        nonlocal text_cursor
-        if mode in {"text", "material_text"}:
-            text_cursor = min(len(text_value), text_cursor + 1)
-        event.app.invalidate()
-
     @kb.add(" ")
     def _(event) -> None:
         if mode == "form":
@@ -804,9 +795,9 @@ def _run_wizard_application(state: WizardFormState) -> str:
         elif mode in _CHOICE_MODES:
             commit_material_choice() if mode != "select" else commit_choice()
         elif mode == "text":
-            insert_text(" ")
+            edit_buffer.insert_text(" ")
         elif mode == "material_text":
-            insert_text(" ")
+            edit_buffer.insert_text(" ")
         event.app.invalidate()
 
     @kb.add("enter")
@@ -845,52 +836,10 @@ def _run_wizard_application(state: WizardFormState) -> str:
             state.status = "仍在任务表单中。"
         elif mode in {"material_source", "material_candidate", "material_remove", "material_text"}:
             enter_material_menu()
+            event.app.layout.focus(form_control)
         else:
             cancel_edit()
         event.app.invalidate()
-
-    @kb.add("backspace")
-    def _(event) -> None:
-        nonlocal text_value, text_cursor
-        if mode in {"text", "material_text"} and text_cursor > 0:
-            text_value = text_value[: text_cursor - 1] + text_value[text_cursor:]
-            text_cursor -= 1
-        event.app.invalidate()
-
-    @kb.add("delete")
-    def _(event) -> None:
-        nonlocal text_value
-        if mode in {"text", "material_text"} and text_cursor < len(text_value):
-            text_value = text_value[:text_cursor] + text_value[text_cursor + 1 :]
-        event.app.invalidate()
-
-    @kb.add("home")
-    def _(event) -> None:
-        nonlocal text_cursor
-        if mode in {"text", "material_text"}:
-            text_cursor = 0
-        event.app.invalidate()
-
-    @kb.add("end")
-    def _(event) -> None:
-        nonlocal text_cursor
-        if mode in {"text", "material_text"}:
-            text_cursor = len(text_value)
-        event.app.invalidate()
-
-    def insert_text(value: str) -> None:
-        nonlocal text_value, text_cursor
-        text_value = text_value[:text_cursor] + value + text_value[text_cursor:]
-        text_cursor += len(value)
-
-    @kb.add(Keys.Any)
-    def _(event) -> None:
-        if mode not in {"text", "material_text"}:
-            return
-        data = event.data
-        if data and data.isprintable():
-            insert_text(data)
-            event.app.invalidate()
 
     def render() -> FormattedText:
         return _render_form_panel(
@@ -900,19 +849,23 @@ def _run_wizard_application(state: WizardFormState) -> str:
             choices=choices,
             focused_choice_index=choice_index,
             selected_values=set(),
-            text_value=text_value,
-            text_cursor=text_cursor,
+            text_value=edit_buffer.text,
+            text_cursor=edit_buffer.cursor_position,
         )
 
-    app = Application(
-        layout=Layout(
-            Window(
-                FormattedTextControl(
-                    render,
-                    focusable=True,
-                )
+    def active_container():
+        if mode in {"text", "material_text"}:
+            return _build_wizard_text_container(
+                state,
+                mode=mode,
+                edit_field=edit_field,
+                edit_control=edit_control,
             )
-        ),
+        return Window(form_control)
+
+    form_control = FormattedTextControl(render, focusable=True)
+    app = Application(
+        layout=Layout(DynamicContainer(active_container), focused_element=form_control),
         key_bindings=kb,
         style=_tui_style(),
         full_screen=False,
@@ -979,14 +932,14 @@ def _render_form_panel(
                 )
             elif mode == "material_text" and row.row_id == edit_field:
                 rendered.append(("class:help", "      手动输入路径: "))
-                rendered.extend(_text_with_cursor_fragments(text_value, text_cursor))
+                rendered.append(("class:input", text_value))
                 rendered.append(("", "\n"))
                 rendered.append(("class:help", "      Enter 添加，Esc 返回。\n"))
             continue
 
         rendered.append((label_style, f"{prefix}  {row.label}: "))
         if mode == "text" and row.row_id == edit_field:
-            rendered.extend(_text_with_cursor_fragments(text_value, text_cursor))
+            rendered.append(("class:input", text_value))
             rendered.append(("", "\n"))
         else:
             rendered.append((value_style, f"{row.value}\n"))
@@ -1015,13 +968,120 @@ def _render_form_panel(
     return FormattedText(rendered)
 
 
-def _text_with_cursor_fragments(value: str, cursor: int) -> list[tuple[str, str]]:
-    cursor = max(0, min(cursor, len(value)))
-    return [
-        ("class:input", value[:cursor]),
-        ("[SetCursorPosition]", ""),
-        ("class:input", value[cursor:]),
+def _build_wizard_text_container(
+    state: WizardFormState,
+    *,
+    mode: str,
+    edit_field: str,
+    edit_control,
+):
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+    from prompt_toolkit.utils import get_cwidth
+
+    def line(fragments: list[tuple[str, str]] | None = None) -> Window:
+        fragments = fragments or [("", "")]
+        return Window(
+            FormattedTextControl(FormattedText(fragments), focusable=False),
+            height=1,
+            dont_extend_height=True,
+            wrap_lines=False,
+        )
+
+    def input_line(prefix_fragments: list[tuple[str, str]]) -> VSplit:
+        label_text = "".join(fragment for _style, fragment in prefix_fragments)
+        return VSplit(
+            [
+                Window(
+                    FormattedTextControl(
+                        FormattedText(prefix_fragments),
+                        focusable=False,
+                    ),
+                    width=get_cwidth(label_text),
+                    height=1,
+                    dont_extend_height=True,
+                    wrap_lines=False,
+                ),
+                Window(
+                    edit_control,
+                    height=1,
+                    dont_extend_height=True,
+                    wrap_lines=False,
+                    style="class:input",
+                ),
+            ]
+        )
+
+    containers = [
+        line([("class:title", "CodeAgent")]),
+        line([("class:subtitle", "任务表单")]),
+        line(),
     ]
+    rows = state.visible_rows()
+    state.cursor = max(0, min(state.cursor, len(rows) - 1))
+    current_group: str | None = None
+    for index, row in enumerate(rows):
+        selected = index == state.cursor
+        group_id = FIELD_GROUPS[row.row_id]
+        if group_id != current_group:
+            if current_group is not None:
+                containers.append(line())
+            current_group = group_id
+            containers.append(line([("class:section", FORM_GROUPS[group_id])]))
+
+        prefix = "> " if selected else "  "
+        label_style = "class:active" if selected else "class:label"
+        value_style = "class:active" if selected else "class:value"
+
+        if row.kind == "action":
+            style = "class:active" if selected else "class:action"
+            containers.append(line([(style, f"{prefix}  {row.label}")]))
+            continue
+
+        if row.row_id == "input_materials":
+            containers.append(line([(label_style, f"{prefix}  {row.label}:")]))
+            materials = _material_values(state.values.get("input_materials"))
+            if materials:
+                for material_index, material in enumerate(materials, start=1):
+                    containers.append(
+                        line(
+                            [
+                                (
+                                    "class:value",
+                                    f"      {material_index}. {_material_display(material)}",
+                                )
+                            ]
+                        )
+                    )
+            else:
+                containers.append(line([("class:help", "      <未添加材料>")]))
+            if mode == "material_text" and row.row_id == edit_field:
+                containers.append(
+                    input_line([("class:help", "      手动输入路径: ")])
+                )
+                containers.append(line([("class:help", "      Enter 添加，Esc 返回。")]))
+            continue
+
+        if mode == "text" and row.row_id == edit_field:
+            containers.append(input_line([(label_style, f"{prefix}  {row.label}: ")]))
+            containers.append(line([("class:help", "      Enter 保存，Esc 放弃修改。")]))
+        else:
+            containers.append(
+                line(
+                    [
+                        (label_style, f"{prefix}  {row.label}: "),
+                        (value_style, row.value),
+                    ]
+                )
+            )
+
+    selected = state.selected_row()
+    containers.append(line())
+    containers.append(line([("class:status", state.status)]))
+    if selected.row_id in FIELD_HELP:
+        containers.append(line([("class:help", FIELD_HELP[selected.row_id])]))
+    return HSplit(containers)
 
 
 def _render_material_list(materials: list[str]) -> list[tuple[str, str]]:
@@ -1054,29 +1114,6 @@ def _render_inline_choices(
         else:
             rendered.append((style, f"      {marker}{index}. {choice.title}\n"))
     return rendered
-
-
-def _render_text_panel(
-    *,
-    title: str,
-    value: str,
-    cursor: int,
-    original: str,
-) -> FormattedText:
-    from prompt_toolkit.formatted_text import FormattedText
-
-    cursor = max(0, min(cursor, len(value)))
-    rendered: list[tuple[str, str]] = [
-        ("class:title", "CodeAgent\n"),
-        ("class:subtitle", f"{title}\n"),
-        ("class:help", "输入文字，Enter 保存，Esc 放弃修改。\n\n"),
-    ]
-    rendered.extend(_text_with_cursor_fragments(value, cursor))
-    rendered.append(("", "\n"))
-    if original:
-        rendered.append(("", "\n"))
-        rendered.append(("class:help", f"原值：{original}\n"))
-    return FormattedText(rendered)
 
 
 def _tui_style() -> Style:
