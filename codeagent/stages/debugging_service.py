@@ -26,6 +26,7 @@ from codeagent.runtime.run_context import RunContext
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result, parse_test_result
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
+from codeagent.workflow.progress_events import emit_progress
 
 
 DEBUGGING_STAGE = "debugging"
@@ -77,6 +78,7 @@ class DebuggingRequest:
     expected_behavior: str | None = None
     framework: Literal["pytest", "unittest"] = "pytest"
     command_timeout_seconds: float | None = None
+    attempt_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -132,11 +134,11 @@ class DebuggingService:
             payload={
                 "interrupt_id": REPRODUCTION_COMMAND_INTERRUPT_ID,
                 "action": "approve_reproduction_command",
-                "title": "审批复现命令",
+                "title": "运行此调试复现命令？",
                 "summary": request.test_command,
                 "risk_level": "medium",
-                "allowed_decisions": ["approve", "edit", "reject", "cancel"],
-                "default_decision": "reject",
+                "allowed_decisions": ["approve", "reject"],
+                "default_decision": "approve",
                 "payload": {
                     "command": request.test_command,
                     "framework": request.framework,
@@ -157,10 +159,38 @@ class DebuggingService:
         started_at = utc_timestamp()
         fs.mkdir(self.stage_dir)
         artifacts: list[str] = []
+        attempt_index = request.attempt_index or 1
+        self.run_context.workflow_trace.record(
+            "debugging_attempt_started",
+            stage=DEBUGGING_STAGE,
+            attempt=attempt_index,
+            failure_logs=[path.as_posix() for path in request.failure_logs],
+            test_report_path=(
+                request.test_report_path.as_posix()
+                if request.test_report_path is not None
+                else None
+            ),
+            reproduction_command=bool(request.test_command),
+            reproduction_decision=request.command_approval.decision_type,
+        )
+        emit_progress(
+            "agent_status",
+            stage=DEBUGGING_STAGE,
+            message=_debugging_entry_message(request, attempt_index=attempt_index),
+        )
 
         evidence = self._collect_evidence(request, started_at=started_at)
         if isinstance(evidence, StageResult):
             return self._finalize_result(evidence, artifact_ids=artifacts)
+        emit_progress(
+            "agent_status",
+            stage=DEBUGGING_STAGE,
+            message=_debugging_evidence_message(
+                request,
+                evidence,
+                attempt_index=attempt_index,
+            ),
+        )
 
         reproduction_path = self._write_reproduction_report(evidence)
         artifacts.append(
@@ -231,6 +261,31 @@ class DebuggingService:
             evidence=evidence,
             failure_summary=failure_summary,
             localization=localization,
+        )
+        self.run_context.workflow_trace.record(
+            "debugging_attempt_finished",
+            stage=DEBUGGING_STAGE,
+            attempt=attempt_index,
+            reproduction_status=evidence.reproduction_status,
+            confidence=confidence,
+            top_suspect=(
+                candidates[0].file_path.as_posix() if candidates else None
+            ),
+            debug_report_path=_run_relative_path(
+                debug_report_path,
+                run_dir=self.run_context.run_dir,
+            ),
+            failing_tests=failing_tests,
+        )
+        emit_progress(
+            "agent_status",
+            stage=DEBUGGING_STAGE,
+            message=_debugging_finished_message(
+                localization,
+                debug_report_path=debug_report_path,
+                run_dir=self.run_context.run_dir,
+                attempt_index=attempt_index,
+            ),
         )
         artifacts.extend(
             [
@@ -567,8 +622,14 @@ class DebuggingService:
             approved_by="workflow",
             reason="Run approved debugging reproduction command.",
         )
+        emit_progress(
+            "tool_started",
+            stage=DEBUGGING_STAGE,
+            tool_name="run_shell",
+            message=f"正在执行调试复现命令：{command}",
+        )
         try:
-            return self.shell_runner.run(
+            result = self.shell_runner.run(
                 command,
                 cwd=self.run_context.task_config.project_path,
                 timeout_seconds=timeout,
@@ -576,6 +637,14 @@ class DebuggingService:
             )
         except (CommandDeniedError, ValueError) as exc:
             raise RuntimeError(f"debugging command failed before execution: {exc}") from exc
+        emit_progress(
+            "tool_finished",
+            stage=DEBUGGING_STAGE,
+            tool_name="run_shell",
+            status="succeeded" if result.exit_code in (0, None) else "failed",
+            message=f"复现命令退出码：{result.exit_code}",
+        )
+        return result
 
     def _record_decision(self, approval: ApprovalDecision) -> None:
         self.writer.record_human_decision(
@@ -834,6 +903,115 @@ def _build_failure_summary(evidence: _EvidenceBundle) -> str:
     else:
         lines.append("No failure output was available.")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _debugging_entry_message(
+    request: DebuggingRequest,
+    *,
+    attempt_index: int,
+) -> str:
+    evidence_parts: list[str] = []
+    if request.failure_logs:
+        evidence_parts.append(f"失败日志 {len(request.failure_logs)} 个")
+    if request.test_report_path is not None:
+        evidence_parts.append(
+            f"测试报告 {_safe_path_name(request.test_report_path)}"
+        )
+    if not evidence_parts:
+        evidence_parts.append("无现成失败日志")
+    reproduction = (
+        "将按审批结果运行复现命令"
+        if request.test_command
+        else "不重跑命令，使用已有证据静态分析"
+    )
+    return f"第 {attempt_index} 次调试：读取{'、'.join(evidence_parts)}；{reproduction}。"
+
+
+def _debugging_evidence_message(
+    request: DebuggingRequest,
+    evidence: _EvidenceBundle,
+    *,
+    attempt_index: int,
+) -> str:
+    counts = _parsed_counts(evidence)
+    failing_tests = _extract_failing_tests(evidence)
+    names = "、".join(failing_tests[:3]) if failing_tests else "未解析到具体用例名"
+    if len(failing_tests) > 3:
+        names += f" 等 {len(failing_tests)} 个"
+    source = _evidence_source_summary(request, evidence)
+    action = "已运行复现命令" if evidence.command_executed else "未重跑命令，使用已有失败证据"
+    return (
+        f"第 {attempt_index} 次调试证据：{counts['failed']} failed, "
+        f"{counts['errors']} errors；失败用例：{names}；来源：{source}；{action}。"
+    )
+
+
+def _debugging_finished_message(
+    localization: FaultLocalization,
+    *,
+    debug_report_path: Path,
+    run_dir: Path,
+    attempt_index: int,
+) -> str:
+    top_suspect = (
+        localization.candidates[0].file_path.as_posix()
+        if localization.candidates
+        else "未定位到具体文件"
+    )
+    report = _run_relative_path(debug_report_path, run_dir=run_dir)
+    return (
+        f"第 {attempt_index} 次调试完成：复现状态 {localization.reproduction_status}；"
+        f"置信度 {localization.confidence}；首要嫌疑 {top_suspect}；报告 {report}。"
+    )
+
+
+def _parsed_counts(evidence: _EvidenceBundle) -> dict[str, int]:
+    parsed = evidence.parsed_result
+    if parsed is not None and hasattr(parsed, "to_json_dict"):
+        data = parsed.to_json_dict()
+        return {
+            "passed": _int_value(data.get("passed")),
+            "failed": _int_value(data.get("failed")),
+            "errors": _int_value(data.get("errors")),
+            "skipped": _int_value(data.get("skipped")),
+            "total": _int_value(data.get("total")),
+        }
+    return {"passed": 0, "failed": 0, "errors": 0, "skipped": 0, "total": 0}
+
+
+def _int_value(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _evidence_source_summary(
+    request: DebuggingRequest,
+    evidence: _EvidenceBundle,
+) -> str:
+    parts: list[str] = []
+    if request.test_report_path is not None:
+        parts.append(_safe_path_name(request.test_report_path))
+    parts.extend(_safe_path_name(path) for path in evidence.static_log_paths[:2])
+    if evidence.command_executed:
+        parts.append("复现命令输出")
+    if not parts:
+        return "运行上下文"
+    return "、".join(parts)
+
+
+def _safe_path_name(path: Path) -> str:
+    return path.name or path.as_posix()
+
+
+def _run_relative_path(path: Path, *, run_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(run_dir.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _extract_failing_tests(evidence: _EvidenceBundle) -> list[str]:

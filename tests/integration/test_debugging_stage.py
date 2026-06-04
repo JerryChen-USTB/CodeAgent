@@ -103,10 +103,20 @@ def test_fault_candidate_schema_requires_evidence() -> None:
     assert candidate.confidence == "high"
 
 
-def test_debugging_service_reproduces_failure_and_writes_evidence(tmp_path) -> None:
+def test_debugging_service_reproduces_failure_and_writes_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
     project_root = tmp_path / "project"
     _write_buggy_project(project_root)
     service, run_context = _service(tmp_path, project_root)
+    progress_events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "codeagent.stages.debugging_service.emit_progress",
+        lambda event_type, **payload: progress_events.append(
+            {"type": event_type, **payload}
+        ),
+    )
 
     result = service.run(_request())
 
@@ -135,6 +145,21 @@ def test_debugging_service_reproduces_failure_and_writes_evidence(tmp_path) -> N
     assert artifact_store.find("debugging_fault_localization") is not None
     assert "math_utils.py" in (stage_dir / "root_cause.md").read_text(encoding="utf-8")
     assert "math_utils.py" in (stage_dir / "repair_plan.md").read_text(encoding="utf-8")
+    assert any(
+        event["type"] == "agent_status" and "第 1 次调试" in str(event["message"])
+        for event in progress_events
+    )
+    assert any(
+        event["type"] == "tool_started" and event["tool_name"] == "run_shell"
+        for event in progress_events
+    )
+    assert any(
+        event["type"] == "agent_status" and "调试完成" in str(event["message"])
+        for event in progress_events
+    )
+    workflow_log = (run_context.run_dir / "workflow.log").read_text(encoding="utf-8")
+    assert "debugging_attempt_started" in workflow_log
+    assert "debugging_attempt_finished" in workflow_log
 
 
 def test_debugging_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:

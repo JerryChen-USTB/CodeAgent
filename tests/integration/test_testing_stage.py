@@ -544,6 +544,7 @@ def test_interrupting_testing_subgraph_reviews_plan_patch_and_command(tmp_path) 
         first = subgraph.invoke(state, config=manager.get_thread_config())
         first_payload = first["__interrupt__"][0].value
         assert first_payload["action"] == "review_test_plan"
+        assert first_payload["title"] == "实施此测试计划？"
         assert first_payload["allowed_decisions"] == ["approve", "respond"]
         assert first_payload["default_decision"] == "approve"
         assert not (project_root / "tests" / "test_math_utils.py").exists()
@@ -554,6 +555,9 @@ def test_interrupting_testing_subgraph_reviews_plan_patch_and_command(tmp_path) 
         )
         second_payload = second["__interrupt__"][0].value
         assert second_payload["action"] == "approve_test_patch"
+        assert second_payload["title"] == "应用此测试补丁？"
+        assert second_payload["allowed_decisions"] == ["approve", "respond"]
+        assert second_payload["default_decision"] == "approve"
         assert (run_context.run_dir / "testing" / "test.patch.diff").exists()
         assert not (project_root / "tests" / "test_math_utils.py").exists()
 
@@ -563,6 +567,7 @@ def test_interrupting_testing_subgraph_reviews_plan_patch_and_command(tmp_path) 
         )
         third_payload = third["__interrupt__"][0].value
         assert third_payload["action"] == "approve_test_command"
+        assert third_payload["title"] == "运行此测试命令？"
         assert (project_root / "tests" / "test_math_utils.py").exists()
         assert not (run_context.run_dir / "testing" / "logs").exists()
 
@@ -636,6 +641,7 @@ def test_interrupting_testing_subgraph_plan_review_is_plan_only(tmp_path) -> Non
 
     plan_payload = first["__interrupt__"][0].value
     assert plan_payload["action"] == "review_test_plan"
+    assert plan_payload["title"] == "实施此测试计划？"
     assert plan_payload["allowed_decisions"] == ["approve", "respond"]
     assert not (run_context.run_dir / "testing" / "test.patch.diff").exists()
 

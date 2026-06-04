@@ -346,7 +346,7 @@ class ImplementationService:
             payload={
                 "interrupt_id": PLAN_INTERRUPT_ID,
                 "action": "review_implementation_plan",
-                "title": "审查实现计划",
+                "title": "实施此实现计划？",
                 "summary": request.plan.impact_summary,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "respond"],
@@ -553,11 +553,11 @@ class ImplementationService:
         payload: dict[str, object] = {
             "interrupt_id": PATCH_INTERRUPT_ID,
             "action": "approve_implementation_patch",
-            "title": "审批实现补丁",
+            "title": "应用此实现补丁？",
             "summary": "在修改项目文件前审查生成的实现补丁。",
             "risk_level": prepared.validation.risk_report.level,
-            "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
-            "default_decision": "reject",
+            "allowed_decisions": ["approve", "respond"],
+            "default_decision": "approve",
             "payload": {
                 "plan_path": "implementation/implementation_plan.md",
                 "plan_json_path": "implementation/implementation_plan.json",

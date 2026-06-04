@@ -260,10 +260,20 @@ def test_repair_risk_checker_rejects_test_infrastructure_patch(tmp_path) -> None
     assert risk["level"] == "high"
 
 
-def test_repair_service_applies_patch_runs_regression_and_writes_report(tmp_path) -> None:
+def test_repair_service_applies_patch_runs_regression_and_writes_report(
+    tmp_path,
+    monkeypatch,
+) -> None:
     project_root = tmp_path / "project"
     _write_buggy_project(project_root)
     service, run_context = _service(tmp_path, project_root)
+    progress_events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "codeagent.stages.repair_service.emit_progress",
+        lambda event_type, **payload: progress_events.append(
+            {"type": event_type, **payload}
+        ),
+    )
 
     result = service.run(_request(_good_plan()))
 
@@ -294,6 +304,15 @@ def test_repair_service_applies_patch_runs_regression_and_writes_report(tmp_path
         assert (stage_dir / filename).exists()
     assert artifact_store.find("repair_patch") is not None
     assert artifact_store.find("repair_report") is not None
+    assert any(event["type"] == "tool_started" for event in progress_events)
+    assert any(
+        event["type"] == "test_result" and event["total"] == 1
+        for event in progress_events
+    )
+    assert any(
+        event["type"] == "agent_status" and "修复验证通过" in str(event["message"])
+        for event in progress_events
+    )
 
 
 def test_repair_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
@@ -466,11 +485,16 @@ def test_interrupting_repair_subgraph_approves_patch_and_command(tmp_path) -> No
         )
 
     assert plan_payload["action"] == "review_repair_plan"
+    assert plan_payload["title"] == "实施此修复计划？"
     assert plan_payload["allowed_decisions"] == ["approve", "respond"]
     assert patch_payload["action"] == "approve_repair_patch"
+    assert patch_payload["title"] == "应用此修复补丁？"
+    assert patch_payload["allowed_decisions"] == ["approve", "respond"]
+    assert patch_payload["default_decision"] == "approve"
     assert patch_payload["payload"]["changed_files"] == ["math_utils.py"]
     assert "patch_sha256" in patch_payload["payload"]
     assert command_payload["action"] == "approve_regression_command"
+    assert command_payload["title"] == "运行此回归验证命令？"
     assert final["stage_results"]["repair"]["status"] == "succeeded"
 
 

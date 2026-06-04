@@ -63,6 +63,18 @@ _DECISION_DESCRIPTIONS: dict[DecisionType, str] = {
     "cancel": "立即取消本次运行，不再继续后续阶段。",
 }
 
+_PLAN_ACTIONS = {
+    "review_implementation_plan",
+    "review_test_plan",
+    "review_repair_plan",
+}
+
+_PATCH_ACTIONS = {
+    "approve_implementation_patch",
+    "approve_test_patch",
+    "approve_repair_patch",
+}
+
 
 def parse_approval_decision(
     raw: str,
@@ -119,7 +131,7 @@ class ApprovalConsole:
 
         choices = [
             questionary.Choice(
-                title=f"{_DECISION_TITLES[decision]}：{_DECISION_DESCRIPTIONS[decision]}",
+                title=_choice_label(request, decision),
                 value=decision,
             )
             for decision in _ordered_allowed_decisions(request)
@@ -135,13 +147,17 @@ class ApprovalConsole:
             instruction="（上下键移动，回车选中）",
         ).ask()
         if answer is None:
-            answer = "cancel"
+            answer = (
+                request.default_decision
+                if request.default_decision in request.allowed_decisions
+                else choices[0].value
+            )
         decision_type = str(answer)
         comment = self._prompt_comment_if_needed(questionary, decision_type, request)
         edited_payload_text = None
         if decision_type == "edit":
             edited_payload_text = questionary.text(
-                "请粘贴修改后的 JSON 对象（通常包含 plan 或 command 字段）",
+                "请粘贴修改后的 JSON 对象",
             ).ask()
             if edited_payload_text is None:
                 decision_type = "cancel"
@@ -160,14 +176,14 @@ class ApprovalConsole:
     ) -> str | None:
         if decision_type == "respond":
             answer = questionary.text(
-                "请输入希望 Agent 改进的具体意见",
-                instruction="（例如：补充边界测试、不要修改某个文件、命令范围太大等）",
+                "请告诉 CodeAgent 如何调整",
+                instruction="（输入中文意见，回车提交）",
             ).ask()
             if answer is None or not str(answer).strip():
                 raise ApprovalInputError("提出修改意见时必须填写具体意见")
             return str(answer)
         if decision_type in {"reject", "cancel"}:
-            answer = questionary.text("可选：请输入原因，便于写入报告").ask()
+            answer = questionary.text("可选：请输入原因").ask()
             return str(answer) if answer is not None else None
         return None
 
@@ -215,10 +231,31 @@ def _render_line_prompt(
 ) -> str:
     lines = [request.title]
     for index, decision in enumerate(allowed, start=1):
-        lines.append(
-            f"  {index}. {_DECISION_TITLES[decision]} - {_DECISION_DESCRIPTIONS[decision]}"
-        )
+        lines.append(f"  {index}. {_choice_label(request, decision)}")
     return "\n".join(line for line in lines if line)
+
+
+def _choice_label(request: ApprovalRequest, decision: DecisionType) -> str:
+    if request.action in _PLAN_ACTIONS:
+        if decision == "approve":
+            return "是，实施此计划"
+        if decision == "respond":
+            return "否，告知 CodeAgent 如何调整"
+    if request.action in _PATCH_ACTIONS:
+        if decision == "approve":
+            return "是，应用此补丁"
+        if decision == "respond":
+            return "否，告知 CodeAgent 如何调整"
+    if "command" in request.action:
+        if decision == "approve":
+            return "是，运行命令"
+        if decision == "edit":
+            return "否，修改命令"
+        if decision == "reject":
+            return "否，不运行命令"
+        if decision == "cancel":
+            return "取消本次运行"
+    return f"{_DECISION_TITLES[decision]}：{_DECISION_DESCRIPTIONS[decision]}"
 
 
 def _normalize_decision(raw: str) -> DecisionType:

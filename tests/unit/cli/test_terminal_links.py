@@ -14,6 +14,10 @@ from codeagent.tools.hitl import ApprovalRequest
 def test_terminal_link_uses_absolute_file_uri_for_vscode(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
     monkeypatch.delenv("CODEAGENT_DISABLE_TERMINAL_LINKS", raising=False)
+    monkeypatch.setattr(
+        "codeagent.cli.executor.sys.stdout",
+        SimpleNamespace(isatty=lambda: True),
+    )
     ref = _display_path_ref("implementation/implementation_plan.md", base=tmp_path)
 
     rendered = _terminal_link(ref)
@@ -25,9 +29,31 @@ def test_terminal_link_uses_absolute_file_uri_for_vscode(monkeypatch, tmp_path: 
     assert ref.display in rendered
 
 
+def test_terminal_link_is_plain_text_when_stdout_is_not_tty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+    monkeypatch.delenv("CODEAGENT_DISABLE_TERMINAL_LINKS", raising=False)
+    monkeypatch.setattr(
+        "codeagent.cli.executor.sys.stdout",
+        SimpleNamespace(isatty=lambda: False),
+    )
+    ref = _display_path_ref("implementation/implementation_plan.md", base=tmp_path)
+
+    rendered = _terminal_link(ref)
+
+    assert rendered == "implementation_plan.md (implementation/implementation_plan.md)"
+    assert "\033]8;;" not in rendered
+
+
 def test_terminal_link_can_be_disabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
     monkeypatch.setenv("CODEAGENT_DISABLE_TERMINAL_LINKS", "1")
+    monkeypatch.setattr(
+        "codeagent.cli.executor.sys.stdout",
+        SimpleNamespace(isatty=lambda: True),
+    )
     ref = _display_path_ref("todo_manager/models.py", base=tmp_path)
 
     rendered = _terminal_link(ref)

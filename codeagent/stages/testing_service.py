@@ -178,7 +178,7 @@ class TestingService:
             payload={
                 "interrupt_id": TEST_PLAN_INTERRUPT_ID,
                 "action": "review_test_plan",
-                "title": "审查测试方案",
+                "title": "实施此测试计划？",
                 "summary": request.plan.target_summary,
                 "risk_level": "low",
                 "allowed_decisions": ["approve", "respond"],
@@ -201,6 +201,7 @@ class TestingService:
         request: TestingRequest,
         *,
         plan_review: ApprovalDecision,
+        record_plan_review: bool = True,
     ) -> TestingApprovalPreview:
         started_at = utc_timestamp()
         reviewed = replace(request, plan_review=plan_review)
@@ -218,8 +219,13 @@ class TestingService:
             return self.prepare_patch_approval(
                 edited_plan,
                 plan_review=edited_plan.plan_review,
+                record_plan_review=record_plan_review,
             )
-        plan_decision = self._handle_plan_review(plan_review, started_at)
+        plan_decision = self._handle_plan_review(
+            plan_review,
+            started_at,
+            record_decision=record_plan_review,
+        )
         if plan_decision is not None:
             return TestingApprovalPreview(
                 result=self._finalize_result(
@@ -358,11 +364,11 @@ class TestingService:
             payload={
                 "interrupt_id": TEST_PATCH_INTERRUPT_ID,
                 "action": "approve_test_patch",
-                "title": "审批测试补丁",
+                "title": "应用此测试补丁？",
                 "summary": "在修改测试文件前审查生成的测试补丁。",
                 "risk_level": prepared.validation.risk_report.level,
-                "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
-                "default_decision": "reject",
+                "allowed_decisions": ["approve", "respond"],
+                "default_decision": "approve",
                 "payload": {
                     "patch_path": "testing/test.patch.diff",
                     "patch_draft_json_path": "testing/test_patch_draft.json",
@@ -499,11 +505,11 @@ class TestingService:
             payload={
                 "interrupt_id": TEST_COMMAND_INTERRUPT_ID,
                 "action": "approve_test_command",
-                "title": "审批测试命令",
+                "title": "运行此测试命令？",
                 "summary": command,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],
-                "default_decision": "reject",
+                "default_decision": "approve",
                 "payload": {
                     "command": command,
                     "framework": framework,
@@ -1454,6 +1460,8 @@ class TestingService:
         self,
         approval: ApprovalDecision,
         started_at: str,
+        *,
+        record_decision: bool = True,
     ) -> StageResult | None:
         if approval.interrupt_id != TEST_PLAN_INTERRUPT_ID:
             return self._failed_result(
@@ -1464,7 +1472,8 @@ class TestingService:
                 artifact_ids=[],
                 next_suggestion="Resume with a decision for the testing_plan interrupt.",
             )
-        self._record_decision(approval, action="review_test_plan")
+        if record_decision:
+            self._record_decision(approval, action="review_test_plan")
         return _result_from_non_approve_decision(
             approval,
             stage=TESTING_STAGE,

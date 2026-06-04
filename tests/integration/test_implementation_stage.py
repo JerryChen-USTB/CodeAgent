@@ -308,6 +308,7 @@ def test_implementation_plan_review_only_allows_approve_or_feedback(tmp_path) ->
     assert preview.payload is not None
     assert preview.payload["interrupt_id"] == PLAN_INTERRUPT_ID
     assert preview.payload["action"] == "review_implementation_plan"
+    assert preview.payload["title"] == "实施此实现计划？"
     assert preview.payload["allowed_decisions"] == ["approve", "respond"]
     assert preview.payload["default_decision"] == "approve"
 
@@ -426,6 +427,9 @@ def test_interrupting_implementation_subgraph_pauses_before_apply_and_resumes(tm
 
         assert interrupt_payload["interrupt_id"] == "implementation_patch"
         assert interrupt_payload["action"] == "approve_implementation_patch"
+        assert interrupt_payload["title"] == "应用此实现补丁？"
+        assert interrupt_payload["allowed_decisions"] == ["approve", "respond"]
+        assert interrupt_payload["default_decision"] == "approve"
         assert "interrupt_file.py" in interrupt_payload["payload"]["changed_files"]
         assert (run_context.run_dir / "implementation" / "implementation.patch.diff").exists()
         assert not (project_root / "interrupt_file.py").exists()

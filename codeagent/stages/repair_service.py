@@ -34,6 +34,7 @@ from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
 from codeagent.tools.risk_checker import RepairRiskChecker, RepairRiskReport
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
+from codeagent.workflow.progress_events import emit_progress
 
 
 REPAIR_STAGE = "repair"
@@ -164,7 +165,7 @@ class RepairService:
             payload={
                 "interrupt_id": REPAIR_PLAN_INTERRUPT_ID,
                 "action": "review_repair_plan",
-                "title": "审查修复方案",
+                "title": "实施此修复计划？",
                 "summary": request.plan.strategy,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "respond"],
@@ -223,6 +224,7 @@ class RepairService:
         request: RepairRequest,
         *,
         plan_review: ApprovalDecision | None = None,
+        record_plan_review: bool = True,
     ) -> RepairApprovalPreview:
         started_at = utc_timestamp()
         fs.mkdir(self.stage_dir)
@@ -240,7 +242,11 @@ class RepairService:
             return RepairApprovalPreview(
                 result=self._finalize_result(result, artifact_ids=artifacts)
             )
-        plan_decision = self._handle_plan_review(review, started_at)
+        plan_decision = self._handle_plan_review(
+            review,
+            started_at,
+            record_decision=record_plan_review,
+        )
         if plan_decision is not None:
             return RepairApprovalPreview(
                 result=self._finalize_result(plan_decision, artifact_ids=[])
@@ -251,7 +257,11 @@ class RepairService:
                 result=self._finalize_result(edited, artifact_ids=[])
             )
         if edited is not None:
-            return self.prepare_patch_approval(edited, plan_review=review)
+            return self.prepare_patch_approval(
+                edited,
+                plan_review=review,
+                record_plan_review=record_plan_review,
+            )
 
         if request.patch_draft is None:
             artifacts = self._write_plan_artifacts(request.plan)
@@ -340,11 +350,11 @@ class RepairService:
             payload={
                 "interrupt_id": REPAIR_PATCH_INTERRUPT_ID,
                 "action": "approve_repair_patch",
-                "title": "审批修复补丁",
-                "summary": "Review the generated repair patch before source files are modified.",
+                "title": "应用此修复补丁？",
+                "summary": "在修改项目文件前审查生成的修复补丁。",
                 "risk_level": prepared.risk.level,
-                "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
-                "default_decision": "reject",
+                "allowed_decisions": ["approve", "respond"],
+                "default_decision": "approve",
                 "payload": {
                     "patch_path": "repair/repair.patch.diff",
                     "patch_draft_json_path": "repair/repair_patch_draft.json",
@@ -454,13 +464,13 @@ class RepairService:
             payload={
                 "interrupt_id": REPAIR_COMMAND_INTERRUPT_ID,
                 "action": "approve_regression_command",
-                "title": "审批回归验证命令",
+                "title": "运行此回归验证命令？",
                 "summary": (
                     draft.verification_command if draft is not None else plan.verification_command
                 ),
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],
-                "default_decision": "reject",
+                "default_decision": "approve",
                 "payload": {
                     "command": (
                         draft.verification_command
@@ -494,6 +504,12 @@ class RepairService:
             command = command.model_copy(update={"artifact_ids": artifacts})
             return self._finalize_result(command, artifact_ids=artifacts)
         try:
+            emit_progress(
+                "tool_started",
+                stage=REPAIR_STAGE,
+                tool_name="run_shell",
+                message=f"正在执行修复回归验证命令：{command}",
+            )
             shell = self._run_command(command, request)
         except RuntimeError as exc:
             result = self._failed_result(
@@ -506,6 +522,22 @@ class RepairService:
             )
             return self._finalize_result(result, artifact_ids=artifacts)
         parsed = parse_shell_result(framework=framework, shell_result=shell)
+        emit_progress(
+            "tool_finished",
+            stage=REPAIR_STAGE,
+            tool_name="run_shell",
+            status="succeeded" if shell.exit_code in (0, None) else "failed",
+            message=f"回归验证命令退出码：{shell.exit_code}",
+        )
+        emit_progress(
+            "test_result",
+            stage=REPAIR_STAGE,
+            passed=parsed.passed,
+            failed=parsed.failed,
+            errors=parsed.errors,
+            skipped=parsed.skipped,
+            total=parsed.total,
+        )
         after_log_path = self._write_after_test_log(shell)
         result_path = self._write_test_result(parsed.to_json_dict())
         artifacts.extend(
@@ -541,6 +573,14 @@ class RepairService:
             )
         )
         if parsed.success:
+            emit_progress(
+                "agent_status",
+                stage=REPAIR_STAGE,
+                message=(
+                    f"修复验证通过：{parsed.passed} 个测试通过；报告 "
+                    f"{_run_relative_path(report_path, run_dir=self.run_context.run_dir)}。"
+                ),
+            )
             result = StageResult(
                 stage=REPAIR_STAGE,
                 status="succeeded",
@@ -551,6 +591,16 @@ class RepairService:
                 next_suggestion="Continue to final reporting.",
             )
         else:
+            emit_progress(
+                "agent_status",
+                stage=REPAIR_STAGE,
+                message=(
+                    "修复验证仍失败："
+                    f"{parsed.failed} failed, {parsed.errors} errors；"
+                    f"结果 {_run_relative_path(result_path, run_dir=self.run_context.run_dir)}；"
+                    f"报告 {_run_relative_path(report_path, run_dir=self.run_context.run_dir)}。"
+                ),
+            )
             result = self._failed_result(
                 started_at=started_at,
                 summary="Repair verification failed.",
@@ -735,6 +785,8 @@ class RepairService:
         self,
         approval: ApprovalDecision,
         started_at: str,
+        *,
+        record_decision: bool = True,
     ) -> StageResult | None:
         if approval.interrupt_id != REPAIR_PLAN_INTERRUPT_ID:
             return self._failed_result(
@@ -745,7 +797,8 @@ class RepairService:
                 artifact_ids=[],
                 next_suggestion="Resume with a decision for the repair_plan interrupt.",
             )
-        self._record_decision(approval, action="review_repair_plan")
+        if record_decision:
+            self._record_decision(approval, action="review_repair_plan")
         return _result_from_non_approve_decision(
             approval,
             node="review_repair_plan",
@@ -1154,6 +1207,13 @@ class RepairService:
         )
         self.run_context.artifact_store.write()
         return artifact_id
+
+
+def _run_relative_path(path: Path, *, run_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(run_dir.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _result_from_non_approve_decision(

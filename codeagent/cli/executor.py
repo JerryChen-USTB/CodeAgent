@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -107,7 +108,7 @@ def execute_task_config(
     progress.render_event(
         {
             "type": "key_files_summary",
-            "files": [_terminal_link(ref) for ref in key_file_refs],
+            "files": [ref.display for ref in key_file_refs],
         }
     )
     progress.render_event({"type": "run_directory", "path": context.run_dir.as_posix()})
@@ -259,11 +260,11 @@ def _approval_context_refs(
 
 def _approval_hint(action: str) -> str:
     if "plan" in action:
-        return "提示：现在只是在审查方案，补丁尚未生成；同意后才会调用 LLM 生成补丁草案。"
+        return "当前动作：补丁尚未生成；同意后开始生成补丁草案。"
     if "patch" in action:
-        return "提示：现在只是在审查补丁；批准后才会修改项目工作区文件。"
+        return "当前动作：只审查补丁；同意后才会修改项目文件。"
     if "command" in action:
-        return "提示：批准后会在项目目录中执行这条命令。"
+        return "当前动作：同意后会在项目目录中执行命令。"
     return ""
 
 
@@ -306,12 +307,18 @@ def _terminal_link(ref: DisplayPathRef) -> str:
 
 
 def _terminal_hyperlinks_enabled() -> bool:
+    if not sys.stdout.isatty():
+        return False
     if os.environ.get("CODEAGENT_DISABLE_TERMINAL_LINKS"):
         return False
     term_program = os.environ.get("TERM_PROGRAM", "").lower()
     if term_program in {"vscode", "wezterm", "iterm.app"}:
         return True
     return bool(os.environ.get("WT_SESSION") or os.environ.get("VTE_VERSION"))
+
+
+def _interactive_input_available() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _key_file_summary(context: RunContext) -> list[str]:
@@ -390,7 +397,11 @@ def _approval_request_from_payload(payload: dict[str, object]) -> ApprovalReques
         payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
         risk_level=risk,  # type: ignore[arg-type]
         allowed_decisions=safe_allowed or ("approve", "reject", "cancel"),
-        default_decision="reject",
+        default_decision=(
+            "approve"
+            if payload.get("default_decision") == "approve"
+            else "reject"
+        ),
     )
 
 
@@ -638,6 +649,21 @@ def _approval_feedback_limit_result(
 
 
 def _record_feedback_decision(
+    context: RunContext,
+    *,
+    stage: str,
+    action: str,
+    approval: ApprovalDecision,
+) -> None:
+    _record_approval_decision(
+        context,
+        stage=stage,
+        action=action,
+        approval=approval,
+    )
+
+
+def _record_approval_decision(
     context: RunContext,
     *,
     stage: str,
@@ -895,6 +921,12 @@ def _run_testing_with_approval(
             )
             continue
         request = replace(request, plan_review=plan_review)
+        _record_approval_decision(
+            context,
+            stage="testing",
+            action="review_test_plan",
+            approval=plan_review,
+        )
         request = _generate_testing_patch_request(
             context,
             request,
@@ -903,7 +935,11 @@ def _run_testing_with_approval(
         )
 
         for patch_round in range(1, _max_review_rounds(context) + 1):
-            patch_preview = service.prepare_patch_approval(request, plan_review=plan_review)
+            patch_preview = service.prepare_patch_approval(
+                request,
+                plan_review=plan_review,
+                record_plan_review=False,
+            )
             if patch_preview.result is not None:
                 return patch_preview.result
             if patch_preview.payload is None:
@@ -1144,6 +1180,12 @@ def _run_repair_with_approval(
             )
             continue
         request = replace(request, plan_review=plan_review)
+        _record_approval_decision(
+            context,
+            stage="repair",
+            action="review_repair_plan",
+            approval=plan_review,
+        )
         request = _generate_repair_patch_request(
             context,
             request,
@@ -1152,7 +1194,11 @@ def _run_repair_with_approval(
         )
 
         for patch_round in range(1, _max_review_rounds(context) + 1):
-            patch_preview = service.prepare_patch_approval(request, plan_review=plan_review)
+            patch_preview = service.prepare_patch_approval(
+                request,
+                plan_review=plan_review,
+                record_plan_review=False,
+            )
             if patch_preview.result is not None:
                 return patch_preview.result
             if patch_preview.payload is None:
@@ -1215,9 +1261,22 @@ def _debugging_request_from_config(
         or context.task_config.runtime.auto_approve_in_benchmark
     )
     user_auto = context.task_config.permissions.approval_mode == "auto"
-    command_auto = has_static_evidence or benchmark_auto or user_auto
+    manual_static_reproduction = (
+        has_static_evidence
+        and not benchmark_auto
+        and not user_auto
+        and context.task_config.permissions.approval_mode == "manual"
+        and _interactive_input_available()
+    )
+    command_auto = (
+        False
+        if manual_static_reproduction
+        else has_static_evidence or benchmark_auto or user_auto
+    )
     decision_source = (
-        "system_static_evidence"
+        "user"
+        if manual_static_reproduction
+        else "system_static_evidence"
         if has_static_evidence
         else "benchmark_auto"
         if benchmark_auto
@@ -1225,25 +1284,48 @@ def _debugging_request_from_config(
         if user_auto
         else "system_default"
     )
+    test_command = (
+        context.task_config.test_command.command
+        if manual_static_reproduction or not has_static_evidence
+        else None
+    )
+    decision_type = (
+        "approve"
+        if manual_static_reproduction or not has_static_evidence
+        else "reject"
+    )
     return DebuggingRequest(
-        test_command=None if has_static_evidence else context.task_config.test_command.command,
+        test_command=test_command,
         command_approval=ApprovalDecision(
             interrupt_id=REPRODUCTION_COMMAND_INTERRUPT_ID,
-            decision_type="reject" if has_static_evidence else "approve",
+            decision_type=decision_type,
             auto=command_auto,
             comment=(
-                "Static failure evidence supplied by CLI."
+                "Use the visible testing failure evidence; ask before rerunning reproduction."
+                if manual_static_reproduction
+                else "Static failure evidence supplied by CLI."
                 if has_static_evidence
                 else "Non-interactive CLI reproduction command."
             ),
-            decided_by="workflow" if has_static_evidence else "benchmark" if benchmark_auto else "config" if user_auto else "workflow",
+            decided_by=(
+                "user"
+                if manual_static_reproduction
+                else "workflow"
+                if has_static_evidence
+                else "benchmark"
+                if benchmark_auto
+                else "config"
+                if user_auto
+                else "workflow"
+            ),
             decision_source=decision_source,
-            presented_to_user=False,
+            presented_to_user=False if command_auto else True,
         ),
         failure_logs=failure_logs,
         test_report_path=test_report_path,
         framework=context.task_config.test_framework,
         command_timeout_seconds=context.task_config.test_command.timeout_seconds,
+        attempt_index=int(state.get("repair_attempt", 0)) + 1,
     )
 
 

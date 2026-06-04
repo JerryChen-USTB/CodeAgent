@@ -339,9 +339,51 @@ def test_approval_console_questionary_prompt_uses_chinese_choices(monkeypatch) -
     titles = [choice.title for choice in captured["choices"]]
     assert decision.decision_type == "respond"
     assert decision.comment == "请重新生成更完整的边界测试。"
-    assert any("批准并继续" in title for title in titles)
-    assert any("提出修改意见" in title for title in titles)
+    assert titles == ["是，实施此计划", "否，告知 CodeAgent 如何调整"]
     assert captured["kwargs"]["instruction"] == "（上下键移动，回车选中）"
+
+
+def test_approval_console_patch_prompt_uses_two_chinese_choices(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePrompt:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, *, title, value):
+                self.title = title
+                self.value = value
+
+        def select(self, message, choices, **kwargs):
+            captured["message"] = message
+            captured["choices"] = choices
+            return FakePrompt("approve")
+
+        def text(self, message, **kwargs):
+            return FakePrompt("")
+
+    request = ApprovalRequest(
+        interrupt_id="implementation_patch",
+        action="approve_implementation_patch",
+        title="应用此实现补丁？",
+        payload={"patch_path": "implementation/implementation.patch.diff"},
+        risk_level="medium",
+        allowed_decisions=("approve", "respond"),
+        default_decision="approve",
+    )
+    monkeypatch.setitem(sys.modules, "questionary", FakeQuestionary())
+
+    decision = ApprovalConsole()._prompt_questionary(request)
+
+    titles = [choice.title for choice in captured["choices"]]
+    assert decision.decision_type == "approve"
+    assert captured["message"] == "应用此实现补丁？"
+    assert titles == ["是，应用此补丁", "否，告知 CodeAgent 如何调整"]
 
 
 def test_approval_console_prompt_can_be_scripted() -> None:
