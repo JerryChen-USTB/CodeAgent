@@ -557,6 +557,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import get_app
     from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.cursor_shapes import CursorShape
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
@@ -863,6 +864,16 @@ def _run_wizard_application(state: WizardFormState) -> str:
             )
         return Window(form_control)
 
+    def ensure_terminal_cursor_visible(app) -> None:
+        if mode not in {"text", "material_text"}:
+            return
+        try:
+            app.layout.focus(edit_control)
+            app.output.show_cursor()
+            app.output.flush()
+        except Exception:
+            pass
+
     form_control = FormattedTextControl(render, focusable=True)
     app = Application(
         layout=Layout(DynamicContainer(active_container), focused_element=form_control),
@@ -870,6 +881,8 @@ def _run_wizard_application(state: WizardFormState) -> str:
         style=_tui_style(),
         full_screen=False,
         mouse_support=False,
+        cursor=CursorShape.BLOCK,
+        after_render=ensure_terminal_cursor_visible,
     )
     return app.run()
 
