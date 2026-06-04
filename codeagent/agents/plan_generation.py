@@ -24,6 +24,7 @@ from codeagent.models.factory import ModelClientFactory
 from codeagent.runtime.run_context import RunContext
 from codeagent.stages.implementation_service import (
     PATCH_INTERRUPT_ID,
+    PLAN_INTERRUPT_ID as IMPLEMENTATION_PLAN_INTERRUPT_ID,
     ImplementationPlan,
     ImplementationRequest,
 )
@@ -65,11 +66,18 @@ class PlanGenerationService:
     def create_implementation_request(
         self,
         context: RunContext,
+        *,
+        feedback: str | None = None,
     ) -> ImplementationRequest:
-        prompt = self._implementation_prompt(context)
+        prompt = self._implementation_prompt(context, feedback=feedback)
         plan = self._invoke_schema(context, prompt, ImplementationPlan)
         return ImplementationRequest(
             plan=plan,
+            plan_review=_approval(
+                context,
+                interrupt_id=IMPLEMENTATION_PLAN_INTERRUPT_ID,
+                comment="Auto-approved generated implementation plan.",
+            ),
             approval=_approval(
                 context,
                 interrupt_id=PATCH_INTERRUPT_ID,
@@ -79,8 +87,13 @@ class PlanGenerationService:
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
         )
 
-    def create_repair_request(self, context: RunContext) -> RepairRequest:
-        prompt = self._repair_prompt(context)
+    def create_repair_request(
+        self,
+        context: RunContext,
+        *,
+        feedback: str | None = None,
+    ) -> RepairRequest:
+        prompt = self._repair_prompt(context, feedback=feedback)
         plan = self._invoke_schema(context, prompt, RepairPlan)
         return RepairRequest(
             plan=plan,
@@ -98,8 +111,13 @@ class PlanGenerationService:
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
         )
 
-    def create_testing_request(self, context: RunContext) -> TestingRequest:
-        prompt = self._testing_prompt(context)
+    def create_testing_request(
+        self,
+        context: RunContext,
+        *,
+        feedback: str | None = None,
+    ) -> TestingRequest:
+        prompt = self._testing_prompt(context, feedback=feedback)
         plan = self._invoke_schema(context, prompt, TestingPlan)
         return TestingRequest(
             plan=plan,
@@ -122,9 +140,15 @@ class PlanGenerationService:
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
         )
 
-    def _implementation_prompt(self, context: RunContext) -> str:
+    def _implementation_prompt(
+        self,
+        context: RunContext,
+        *,
+        feedback: str | None = None,
+    ) -> str:
         return "\n\n".join(
-            [
+            _without_empty(
+                [
                 _system_rules("implementation", "ImplementationPlan"),
                 _schema_block(ImplementationPlan),
                 "Task inputs and visible project files:",
@@ -133,6 +157,7 @@ class PlanGenerationService:
                     include_failure_logs=False,
                     max_context_chars=self.max_context_chars,
                 ),
+                _feedback_block(feedback),
                 (
                     "Return only JSON. Include exact old_content when modifying an "
                     "existing file and full new_content for every changed file. "
@@ -144,10 +169,16 @@ class PlanGenerationService:
                     "already a workspace directory, do not prefix paths with workspace/; "
                     "for example use package/module.py, not workspace/package/module.py."
                 ),
-            ]
+                ]
+            )
         )
 
-    def _repair_prompt(self, context: RunContext) -> str:
+    def _repair_prompt(
+        self,
+        context: RunContext,
+        *,
+        feedback: str | None = None,
+    ) -> str:
         latest_testing_command = _latest_testing_command(context)
         command_guidance = (
             "Use the latest Agent self-test command from testing/test_command.json "
@@ -160,7 +191,8 @@ class PlanGenerationService:
             )
         )
         return "\n\n".join(
-            [
+            _without_empty(
+                [
                 _system_rules("repair", "RepairPlan"),
                 _schema_block(RepairPlan),
                 "Visible project files and failure evidence:",
@@ -169,18 +201,26 @@ class PlanGenerationService:
                     include_failure_logs=True,
                     max_context_chars=self.max_context_chars,
                 ),
+                _feedback_block(feedback),
                 (
                     "Return only JSON. Produce a complete, scope-controlled "
                     "source-code repair with enough context for audit. Do not modify "
                     f"tests. {command_guidance}"
                 ),
-            ]
+                ]
+            )
         )
 
-    def _testing_prompt(self, context: RunContext) -> str:
+    def _testing_prompt(
+        self,
+        context: RunContext,
+        *,
+        feedback: str | None = None,
+    ) -> str:
         configured_command = context.task_config.test_command.command
         return "\n\n".join(
-            [
+            _without_empty(
+                [
                 _system_rules("testing", "TestingPlan"),
                 _schema_block(TestingPlan),
                 "Task inputs, implementation artifacts, and visible project files:",
@@ -189,6 +229,7 @@ class PlanGenerationService:
                     include_failure_logs=False,
                     max_context_chars=self.max_context_chars,
                 ),
+                _feedback_block(feedback),
                 (
                     "Return only JSON. Generate meaningful visible tests that the "
                     "project test framework can discover. Test patches must target "
@@ -206,7 +247,8 @@ class PlanGenerationService:
                     "`project/` or `workspace/`. Prefer the "
                     f"configured public test command when it is safe: {configured_command!r}."
                 ),
-            ]
+                ]
+            )
         )
 
     def _invoke_schema(
@@ -310,6 +352,20 @@ def _system_rules(stage: str, schema_name: str) -> str:
         "When generating SQLite code, close every sqlite3.Connection explicitly, "
         "for example with contextlib.closing or try/finally; context manager alone "
         "does not close sqlite3.Connection, which can leave database files locked on Windows."
+    )
+
+
+def _without_empty(items: list[str | None]) -> list[str]:
+    return [item for item in items if item]
+
+
+def _feedback_block(feedback: str | None) -> str | None:
+    if not feedback or not feedback.strip():
+        return None
+    return (
+        "Human reviewer feedback for this regeneration. Treat it as a visible, "
+        "high-priority requirement, but still obey all safety, visibility, and "
+        f"schema rules above:\n{_redact(feedback.strip())}"
     )
 
 

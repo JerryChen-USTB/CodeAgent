@@ -132,7 +132,7 @@ class DebuggingService:
             payload={
                 "interrupt_id": REPRODUCTION_COMMAND_INTERRUPT_ID,
                 "action": "approve_reproduction_command",
-                "title": "Approve reproduction command",
+                "title": "审批复现命令",
                 "summary": request.test_command,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],

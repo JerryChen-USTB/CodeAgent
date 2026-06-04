@@ -230,7 +230,7 @@ class RepairService:
             payload={
                 "interrupt_id": REPAIR_PATCH_INTERRUPT_ID,
                 "action": "approve_repair_patch",
-                "title": "Approve repair patch",
+                "title": "审批修复补丁",
                 "summary": "Review the generated repair patch before source files are modified.",
                 "risk_level": prepared.risk.level,
                 "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
@@ -339,7 +339,7 @@ class RepairService:
             payload={
                 "interrupt_id": REPAIR_COMMAND_INTERRUPT_ID,
                 "action": "approve_regression_command",
-                "title": "Approve regression command",
+                "title": "审批回归验证命令",
                 "summary": plan.verification_command,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],

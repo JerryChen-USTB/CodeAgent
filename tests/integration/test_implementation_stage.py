@@ -15,6 +15,7 @@ from codeagent.stages.implementation_service import (
     ImplementationPlan,
     ImplementationRequest,
     ImplementationService,
+    PLAN_INTERRUPT_ID,
 )
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.workflow.checkpoint import CheckpointManager
@@ -258,6 +259,24 @@ def test_implementation_service_reports_syntax_check_failure(tmp_path) -> None:
     assert "exit_code:" in syntax_log
     assert "SyntaxError" in syntax_log
     assert (project_root / "broken.py").exists()
+
+
+def test_implementation_plan_review_only_allows_approve_or_feedback(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    service, _run_context_obj = _service(tmp_path, project_root)
+    request = ImplementationRequest(
+        plan=_plan("feature.py", "VALUE = 1\n"),
+        approval=_approve(),
+    )
+
+    preview = service.prepare_plan_review(request)
+
+    assert preview.payload is not None
+    assert preview.payload["interrupt_id"] == PLAN_INTERRUPT_ID
+    assert preview.payload["action"] == "review_implementation_plan"
+    assert preview.payload["allowed_decisions"] == ["approve", "respond"]
+    assert preview.payload["default_decision"] == "approve"
 
 
 def test_implementation_service_cancelled_approval_does_not_apply_patch(tmp_path) -> None:

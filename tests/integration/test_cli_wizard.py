@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,6 +48,18 @@ def _approval_request() -> ApprovalRequest:
         payload={"command": "pytest -q", "cwd": "."},
         risk_level="medium",
         allowed_decisions=("approve", "edit", "reject", "cancel"),
+    )
+
+
+def _approval_request_with_response() -> ApprovalRequest:
+    return ApprovalRequest(
+        interrupt_id="testing_plan",
+        action="review_test_plan",
+        title="审查测试方案",
+        payload={"plan_path": "testing/test_plan.md"},
+        risk_level="low",
+        allowed_decisions=("approve", "respond"),
+        default_decision="approve",
     )
 
 
@@ -278,6 +291,57 @@ def test_approval_console_parses_edit_payload_and_rejects_disallowed_choice() ->
     assert decision.comment == "narrow the command"
     with pytest.raises(ApprovalInputError, match="不适用于"):
         parse_approval_decision("respond", request=request, comment="explain first")
+
+
+def test_approval_console_parses_response_comment_for_plan_review() -> None:
+    decision = parse_approval_decision(
+        "提出意见",
+        request=_approval_request_with_response(),
+        comment="请补充边界测试，不要只做 smoke test。",
+    )
+
+    assert decision.decision_type == "respond"
+    assert decision.comment == "请补充边界测试，不要只做 smoke test。"
+    assert decision.presented_to_user is True
+
+
+def test_approval_console_questionary_prompt_uses_chinese_choices(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePrompt:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, *, title, value):
+                self.title = title
+                self.value = value
+
+        def select(self, message, choices, **kwargs):
+            captured["message"] = message
+            captured["choices"] = choices
+            captured["kwargs"] = kwargs
+            return FakePrompt("respond")
+
+        def text(self, message, **kwargs):
+            captured["text_message"] = message
+            captured["text_kwargs"] = kwargs
+            return FakePrompt("请重新生成更完整的边界测试。")
+
+    monkeypatch.setitem(sys.modules, "questionary", FakeQuestionary())
+
+    decision = ApprovalConsole()._prompt_questionary(_approval_request_with_response())
+
+    titles = [choice.title for choice in captured["choices"]]
+    assert decision.decision_type == "respond"
+    assert decision.comment == "请重新生成更完整的边界测试。"
+    assert any("批准并继续" in title for title in titles)
+    assert any("提出修改意见" in title for title in titles)
+    assert captured["kwargs"]["instruction"] == "（上下键移动，回车选中）"
 
 
 def test_approval_console_prompt_can_be_scripted() -> None:

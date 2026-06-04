@@ -14,6 +14,7 @@ from codeagent.stages.implementation_service import (
     ImplementationPlan,
     ImplementationRequest,
     PATCH_INTERRUPT_ID,
+    PLAN_INTERRUPT_ID,
 )
 from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
@@ -379,6 +380,17 @@ class _ManualApprovalPlanGenerationService:
         )
 
 
+class _ScriptedApprovalConsole:
+    decisions: list[ApprovalDecision] = []
+
+    def prompt(self, request):
+        if not self.decisions:
+            raise AssertionError(f"unexpected approval prompt: {request.interrupt_id}")
+        decision = self.decisions.pop(0)
+        assert decision.interrupt_id == request.interrupt_id
+        return decision
+
+
 def test_implement_subcommand_generates_plan_and_applies_patch(
     tmp_path,
     monkeypatch,
@@ -429,6 +441,78 @@ def test_implement_subcommand_generates_plan_and_applies_patch(
     assert stage_result["status"] == "succeeded"
     assert (project / "feature.py").read_text(encoding="utf-8") == 'VERSION = "1.0"\n'
     assert "implementation | succeeded" in report
+
+
+def test_manual_implementation_prompts_for_plan_before_patch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [implement]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+permissions:
+  approval_mode: manual
+""".strip(),
+        encoding="utf-8",
+    )
+    _ManualApprovalPlanGenerationService.implementation_plan = ImplementationPlan(
+        requirements_summary="Add a version constant.",
+        impact_summary="Create feature.py with a public constant.",
+        changes=[
+            ImplementationFileChange(
+                path="feature.py",
+                old_content=None,
+                new_content='VERSION = "1.0"\n',
+                rationale="Required by the visible requirements.",
+            )
+        ],
+        syntax_check_targets=["feature.py"],
+    )
+    _ScriptedApprovalConsole.decisions = [
+        ApprovalDecision(
+            interrupt_id=PLAN_INTERRUPT_ID,
+            decision_type="approve",
+            comment="计划可以执行。",
+            auto=False,
+            decision_source="user",
+            presented_to_user=True,
+        ),
+        ApprovalDecision(
+            interrupt_id=PATCH_INTERRUPT_ID,
+            decision_type="approve",
+            comment="补丁可以应用。",
+            auto=False,
+            decision_source="user",
+            presented_to_user=True,
+        ),
+    ]
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        _ManualApprovalPlanGenerationService,
+    )
+    monkeypatch.setattr("codeagent.cli.executor.ApprovalConsole", _ScriptedApprovalConsole)
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert (project / "feature.py").exists()
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    decisions = [
+        json.loads(line)
+        for line in (run_dir / "decision_trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert [event["action"] for event in decisions] == [
+        "review_implementation_plan",
+        "approve_implementation_patch",
+    ]
+    assert decisions[0]["presented_to_user"] is True
 
 
 def test_run_config_auto_approval_records_user_configured_source(
@@ -482,6 +566,143 @@ permissions:
     assert approval["presented_to_user"] is False
     assert (run_dir / "workflow.log").exists()
     assert (run_dir / "workflow_events.jsonl").exists()
+
+
+def test_testing_plan_response_regenerates_tests_without_entering_debug(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "math_utils.py").write_text(
+        "def add(left: int, right: int) -> int:\n    return left + right\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [test, debug, repair]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+test_command:
+  command: python -m pytest tests/test_math_utils.py -q
+permissions:
+  approval_mode: manual
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class FeedbackTestingPlanGenerationService:
+        calls: list[str | None] = []
+
+        def create_testing_request(self, _context, *, feedback: str | None = None):
+            self.calls.append(feedback)
+            if feedback:
+                content = (
+                    "from math_utils import add\n\n"
+                    "def test_add_positive_numbers():\n"
+                    "    assert add(2, 3) == 5\n\n"
+                    "def test_add_zero_boundary():\n"
+                    "    assert add(0, 4) == 4\n"
+                )
+            else:
+                content = "def test_placeholder():\n    assert True\n"
+            return TestingRequest(
+                plan=TestingPlan(
+                    target_summary="Exercise math_utils.add.",
+                    strategy="Generate visible pytest tests.",
+                    acceptance_criteria=["Generated tests must be collected."],
+                    changes=[
+                        TestFileChange(
+                            path="tests/test_math_utils.py",
+                            old_content=None,
+                            new_content=content,
+                            rationale="Visible Agent self-test.",
+                        )
+                    ],
+                    command="python -m pytest tests/test_math_utils.py -q",
+                    framework="pytest",
+                ),
+                plan_review=ApprovalDecision(
+                    interrupt_id=TEST_PLAN_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=False,
+                ),
+                patch_approval=ApprovalDecision(
+                    interrupt_id=TEST_PATCH_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=False,
+                ),
+                command_approval=ApprovalDecision(
+                    interrupt_id=TEST_COMMAND_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=False,
+                ),
+            )
+
+    _ScriptedApprovalConsole.decisions = [
+        ApprovalDecision(
+            interrupt_id=TEST_PLAN_INTERRUPT_ID,
+            decision_type="respond",
+            comment="请补充边界测试，不要只做占位测试。",
+            auto=False,
+            decision_source="user",
+            presented_to_user=True,
+        ),
+        ApprovalDecision(
+            interrupt_id=TEST_PLAN_INTERRUPT_ID,
+            decision_type="approve",
+            auto=False,
+            decision_source="user",
+            presented_to_user=True,
+        ),
+        ApprovalDecision(
+            interrupt_id=TEST_PATCH_INTERRUPT_ID,
+            decision_type="approve",
+            auto=False,
+            decision_source="user",
+            presented_to_user=True,
+        ),
+        ApprovalDecision(
+            interrupt_id=TEST_COMMAND_INTERRUPT_ID,
+            decision_type="approve",
+            auto=False,
+            decision_source="user",
+            presented_to_user=True,
+        ),
+    ]
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        FeedbackTestingPlanGenerationService,
+    )
+    monkeypatch.setattr("codeagent.cli.executor.ApprovalConsole", _ScriptedApprovalConsole)
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    assert (project / "tests" / "test_math_utils.py").read_text(
+        encoding="utf-8"
+    ).count("def test_") == 2
+    decisions = [
+        json.loads(line)
+        for line in (run_dir / "decision_trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert [event["decision_type"] for event in decisions[:4]] == [
+        "respond",
+        "approve",
+        "approve",
+        "approve",
+    ]
+    assert FeedbackTestingPlanGenerationService.calls == [
+        None,
+        "请补充边界测试，不要只做占位测试。",
+    ]
+    assert not (run_dir / "debugging" / "stage_result.json").exists()
+    workflow_log = (run_dir / "workflow.log").read_text(encoding="utf-8")
+    assert "approval_feedback_regeneration" in workflow_log
 
 
 def test_implement_subcommand_classifies_stage_runtime_errors_separately_from_model(

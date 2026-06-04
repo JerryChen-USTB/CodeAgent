@@ -53,7 +53,7 @@ class ProgressEventFormatter:
                 f"{skipped} skipped（total={total}）"
             )
         if event_type == "approval_required":
-            action = event.get("action", "审批")
+            action = _action_label(event.get("action", "approval"))
             return f"[需要确认] {action}"
         if event_type == "node_completed":
             return f"[节点] {_node_label(event.get('node'))} 已完成"
@@ -158,6 +158,17 @@ _STATUS_LABELS = {
     "cancel": "已取消",
 }
 
+_ACTION_LABELS = {
+    "review_implementation_plan": "审查实现计划",
+    "approve_implementation_patch": "审批实现补丁",
+    "review_test_plan": "审查测试方案",
+    "approve_test_patch": "审批测试补丁",
+    "approve_test_command": "审批测试命令",
+    "approve_reproduction_command": "审批复现命令",
+    "approve_repair_patch": "审批修复补丁",
+    "approve_regression_command": "审批回归验证命令",
+}
+
 
 def _stage_label(value: Any) -> str:
     text = str(value or "<unknown>")
@@ -172,6 +183,11 @@ def _node_label(value: Any) -> str:
 def _status_label(value: Any) -> str:
     text = str(value or "<unknown>")
     return _STATUS_LABELS.get(text, text)
+
+
+def _action_label(value: Any) -> str:
+    text = str(value or "<unknown>")
+    return _ACTION_LABELS.get(text, text)
 
 
 def _translate_reason(reason: str) -> str:

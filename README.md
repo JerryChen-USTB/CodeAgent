@@ -81,6 +81,11 @@ approval requests/results, patch application, command execution, and final stage
 summaries. `workflow_events.jsonl` stores the same trace as machine-readable
 events.
 
+In manual approval mode, plan review prompts are intentionally limited to two
+choices: approve the plan, or provide feedback and ask the Agent to regenerate
+the plan. Reject/cancel style decisions are reserved for side-effect approvals
+such as applying patches and running commands.
+
 Benchmark runs write aggregate `benchmark_result.json` and `benchmark_report.md`
 plus clean per-case workspaces and oracle logs under the benchmark output root.
 Original benchmark case templates are copied before execution and are checked for

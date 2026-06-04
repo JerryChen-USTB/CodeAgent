@@ -481,6 +481,8 @@ def test_interrupting_testing_subgraph_reviews_plan_patch_and_command(tmp_path) 
         first = subgraph.invoke(state, config=manager.get_thread_config())
         first_payload = first["__interrupt__"][0].value
         assert first_payload["action"] == "review_test_plan"
+        assert first_payload["allowed_decisions"] == ["approve", "respond"]
+        assert first_payload["default_decision"] == "approve"
         assert not (project_root / "tests" / "test_math_utils.py").exists()
 
         second = subgraph.invoke(

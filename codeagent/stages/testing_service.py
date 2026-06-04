@@ -152,11 +152,11 @@ class TestingService:
             payload={
                 "interrupt_id": TEST_PLAN_INTERRUPT_ID,
                 "action": "review_test_plan",
-                "title": "Review test plan",
+                "title": "审查测试方案",
                 "summary": request.plan.target_summary,
                 "risk_level": "low",
-                "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
-                "default_decision": "reject",
+                "allowed_decisions": ["approve", "respond"],
+                "default_decision": "approve",
                 "payload": {
                     "plan_path": "testing/test_plan.md",
                     "plan_json_path": "testing/test_plan.json",
@@ -294,8 +294,8 @@ class TestingService:
             payload={
                 "interrupt_id": TEST_PATCH_INTERRUPT_ID,
                 "action": "approve_test_patch",
-                "title": "Approve test patch",
-                "summary": "Review the generated test patch before test files are modified.",
+                "title": "审批测试补丁",
+                "summary": "在修改测试文件前审查生成的测试补丁。",
                 "risk_level": prepared.validation.risk_report.level,
                 "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
                 "default_decision": "reject",
@@ -426,7 +426,7 @@ class TestingService:
             payload={
                 "interrupt_id": TEST_COMMAND_INTERRUPT_ID,
                 "action": "approve_test_command",
-                "title": "Approve test command",
+                "title": "审批测试命令",
                 "summary": plan.command,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],

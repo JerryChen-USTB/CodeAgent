@@ -11,7 +11,7 @@
 codeagent_runs\interactive_demo\todo_manager\runs\2026-06-03_164411_134073_implement-test-debug-repair_5a9843
 ```
 
-> 版本说明：本文分析的是 2026-06-03 的一次历史 run。后续 OPT01 优化已经修正了审批记录语义、implementation/testing 解耦和完整 workflow 追踪日志。新 run 会额外生成 `workflow.log`、`workflow_events.jsonl`，并在 `decision_trace.jsonl` 中记录 `decision_source`、`presented_to_user`、`event_type=approval_decision`。因此，旧 run 中的 `"auto": false, "type": "human_decision"` 只能理解为旧 schema 的审批决策记录，不能证明用户当时真的收到了人工审批提示。
+> 版本说明：本文分析的是 2026-06-03 的一次历史 run。后续 OPT01 优化已经修正了审批记录语义、implementation/testing 解耦和完整 workflow 追踪日志。OPT02 又进一步修正了人工审批体验：计划审批只保留“同意”和“不同意并提出修改意见，重新生成”两个选项；补丁和命令审批仍保留更完整的风险控制选项。新 run 会额外生成 `workflow.log`、`workflow_events.jsonl`，并在 `decision_trace.jsonl` 中记录 `decision_source`、`presented_to_user`、`event_type=approval_decision`。因此，旧 run 中的 `"auto": false, "type": "human_decision"` 只能理解为旧 schema 的审批决策记录，不能证明用户当时真的收到了人工审批提示。
 
 ## 1. 先看整体结论
 
@@ -448,6 +448,8 @@ tests/test_todo.py
 1. 审批测试计划。
 2. 审批测试补丁。
 3. 审批测试命令。
+
+在当前版本中，第 1 类“计划审批”只提供两个选择：同意当前计划，或不同意并输入修改意见让 Agent 重新生成计划。它不是终止运行的按钮。第 2、3 类会实际修改文件或执行命令，因此仍是风险审批，保留拒绝、取消等选项。
 
 它们都记录在：
 

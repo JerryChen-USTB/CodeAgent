@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -33,6 +33,7 @@ from codeagent.tools.hitl import ApprovalDecision
 
 
 IMPLEMENTATION_STAGE = "implementation"
+PLAN_INTERRUPT_ID = "implementation_plan"
 PATCH_INTERRUPT_ID = "implementation_patch"
 
 
@@ -82,6 +83,7 @@ class ImplementationRequest:
 
     plan: ImplementationPlan
     approval: ApprovalDecision
+    plan_review: ApprovalDecision | None = None
     alternate_plans: list[ImplementationPlan] = field(default_factory=list)
     max_patch_attempts: int = 3
     command_timeout_seconds: float | None = None
@@ -282,6 +284,114 @@ class ImplementationService:
             syntax=syntax,
         )
 
+    def prepare_plan_review(self, request: ImplementationRequest) -> ImplementationApprovalPreview:
+        """Write the implementation plan and return a review payload before patch generation."""
+        _mkdir(self.stage_dir)
+        plan_path = self._write_plan(request.plan)
+        plan_json_path = self._write_plan_json(request.plan)
+        artifacts = [
+            self._record_artifact(
+                "implementation_plan",
+                ArtifactKind.REPORT,
+                plan_path,
+                "Implementation plan",
+            ),
+            self._record_artifact(
+                "implementation_plan_json",
+                ArtifactKind.JSON,
+                plan_json_path,
+                "Structured implementation plan",
+            ),
+        ]
+        return ImplementationApprovalPreview(
+            payload={
+                "interrupt_id": PLAN_INTERRUPT_ID,
+                "action": "review_implementation_plan",
+                "title": "审查实现计划",
+                "summary": request.plan.impact_summary,
+                "risk_level": "medium",
+                "allowed_decisions": ["approve", "respond"],
+                "default_decision": "approve",
+                "payload": {
+                    "plan_path": "implementation/implementation_plan.md",
+                    "plan_json_path": "implementation/implementation_plan.json",
+                    "requirements_summary": request.plan.requirements_summary,
+                    "impact_summary": request.plan.impact_summary,
+                    "changed_files": [
+                        change.path.as_posix() for change in request.plan.changes
+                    ],
+                    "artifact_ids": artifacts,
+                },
+            }
+        )
+
+    def apply_plan_review_decision(
+        self,
+        request: ImplementationRequest,
+        *,
+        approval: ApprovalDecision,
+    ) -> ImplementationRequest | StageResult:
+        """Record an implementation-plan decision and return the approved request."""
+        started_at = utc_timestamp()
+        if approval.interrupt_id != PLAN_INTERRUPT_ID:
+            return self._build_failed_result(
+                started_at=started_at,
+                summary="Implementation plan review did not match the expected interrupt.",
+                category="hitl",
+                message="approval decision interrupt_id does not match implementation plan",
+                artifact_ids=[],
+                next_suggestion="Resume with a decision for the implementation_plan interrupt.",
+            )
+        self._record_plan_decision(approval)
+        if approval.decision_type == "approve":
+            return replace(request, plan_review=approval)
+        if approval.decision_type == "edit":
+            raw_plan = (approval.edited_payload or {}).get("plan")
+            if not isinstance(raw_plan, dict):
+                return self._build_failed_result(
+                    started_at=started_at,
+                    summary="Implementation plan edit did not include an edited plan.",
+                    category="hitl",
+                    message="edited_payload.plan is required for edit decisions",
+                    artifact_ids=[],
+                    next_suggestion="Resume with edited_payload.plan or ask the Agent to regenerate.",
+                )
+            try:
+                edited_plan = ImplementationPlan.model_validate(raw_plan)
+            except ValidationError as exc:
+                return self._build_failed_result(
+                    started_at=started_at,
+                    summary="Implementation plan edit payload failed schema validation.",
+                    category="hitl",
+                    message=str(exc),
+                    artifact_ids=[],
+                    next_suggestion="Provide an edited implementation plan that matches the schema.",
+                )
+            return replace(request, plan=edited_plan, plan_review=approval)
+        status: Literal["failed", "cancelled"] = (
+            "cancelled" if approval.decision_type == "cancel" else "failed"
+        )
+        return StageResult(
+            stage=IMPLEMENTATION_STAGE,
+            status=status,
+            started_at=started_at,
+            ended_at=utc_timestamp(),
+            summary=f"Implementation plan review returned {approval.decision_type}.",
+            error=ErrorRecord(
+                error_id=f"implementation_plan_{approval.decision_type}",
+                stage=IMPLEMENTATION_STAGE,
+                node="review_implementation_plan",
+                category="hitl",
+                message=f"implementation plan decision: {approval.decision_type}",
+                retryable=status != "cancelled",
+            ),
+            next_suggestion=(
+                "Run was cancelled by the approval decision."
+                if status == "cancelled"
+                else "Ask the Agent to regenerate or approve the implementation plan."
+            ),
+        )
+
     def prepare_approval(self, request: ImplementationRequest) -> ImplementationApprovalPreview:
         """Prepare implementation artifacts and return a LangGraph interrupt payload."""
         started_at = utc_timestamp()
@@ -362,8 +472,8 @@ class ImplementationService:
         payload: dict[str, object] = {
             "interrupt_id": PATCH_INTERRUPT_ID,
             "action": "approve_implementation_patch",
-            "title": "Approve implementation patch",
-            "summary": "Review the generated implementation patch before project files are modified.",
+            "title": "审批实现补丁",
+            "summary": "在修改项目文件前审查生成的实现补丁。",
             "risk_level": prepared.validation.risk_report.level,
             "allowed_decisions": ["approve", "edit", "reject", "respond", "cancel"],
             "default_decision": "reject",
@@ -757,6 +867,34 @@ class ImplementationService:
             "approval_decision",
             stage=IMPLEMENTATION_STAGE,
             action="approve_implementation_patch",
+            interrupt_id=approval.interrupt_id,
+            decision_type=approval.decision_type,
+            auto=approval.auto,
+            decision_source=approval.decision_source,
+            presented_to_user=approval.presented_to_user,
+            decided_by=approval.decided_by,
+            comment=approval.comment,
+        )
+
+    def _record_plan_decision(self, approval: ApprovalDecision) -> None:
+        self.writer.record_human_decision(
+            HumanDecision(
+                interrupt_id=approval.interrupt_id,
+                action="review_implementation_plan",
+                decision_type=approval.decision_type,
+                edited_payload=approval.edited_payload,
+                comment=approval.comment,
+                timestamp=approval.decided_at,
+                auto=approval.auto,
+                decision_source=approval.decision_source,
+                presented_to_user=approval.presented_to_user,
+                decided_by=approval.decided_by,
+            )
+        )
+        self.run_context.workflow_trace.record(
+            "approval_decision",
+            stage=IMPLEMENTATION_STAGE,
+            action="review_implementation_plan",
             interrupt_id=approval.interrupt_id,
             decision_type=approval.decision_type,
             auto=approval.auto,
