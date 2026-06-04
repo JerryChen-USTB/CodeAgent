@@ -50,8 +50,8 @@ Implementation, testing, and repair now use a two-step LLM contract. The first
 LLM call produces a pure plan for human or policy review; it must not contain
 full file contents, diffs, `old_content`, or `new_content`. After the plan is
 approved, a second LLM call produces the concrete patch draft. The CLI prints the
-plan/patch files to inspect and the project files that will be touched before
-any side effect is applied.
+existing plan/patch files to inspect. Project files are listed only when they
+already exist on disk, so clickable terminal paths always point to real files.
 
 `python -m codeagent wizard` opens a Chinese semi-interactive form. In a real
 terminal, stage selection and input-material selection use arrow-key choices and

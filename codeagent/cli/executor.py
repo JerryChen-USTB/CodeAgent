@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,12 @@ class CliRunResult:
     stage_results: dict[str, StageResult]
 
 
+@dataclass(frozen=True)
+class DisplayPathRef:
+    display: str
+    absolute_path: Path
+
+
 def execute_task_config(
     task_config: TaskConfig,
     *,
@@ -94,9 +101,15 @@ def execute_task_config(
     _write_final_report(context, list(stage_results.values()))
     final_status = str(final_state.get("final_status") or "failed")
     context.workflow_trace.record("run_completed", final_status=final_status)
-    key_files = _key_file_summary(context)
+    key_file_refs = _key_file_summary_refs(context)
+    key_files = [ref.display for ref in key_file_refs]
     context.workflow_trace.record("key_files_summary", files=key_files)
-    progress.render_event({"type": "key_files_summary", "files": key_files})
+    progress.render_event(
+        {
+            "type": "key_files_summary",
+            "files": [_terminal_link(ref) for ref in key_file_refs],
+        }
+    )
     progress.render_event({"type": "run_directory", "path": context.run_dir.as_posix()})
     return CliRunResult(
         run_id=context.run_id,
@@ -184,13 +197,14 @@ def _prompt_approval(context: RunContext, payload: dict[str, object]) -> Approva
 
 
 def _print_approval_context(context: RunContext, request: ApprovalRequest) -> None:
-    lines = _approval_context_lines(context, request)
-    if not lines:
+    refs = _approval_context_refs(context, request)
+    if not refs:
         return
+    lines = [ref.display for ref in refs]
     print("")
     print("请先审查以下文件：")
-    for line in lines:
-        print(f"- {line}")
+    for ref in refs:
+        print(f"- {_terminal_link(ref)}")
     hint = _approval_hint(request.action)
     if hint:
         print(hint)
@@ -208,8 +222,15 @@ def _approval_context_lines(
     context: RunContext,
     request: ApprovalRequest,
 ) -> list[str]:
+    return [ref.display for ref in _approval_context_refs(context, request)]
+
+
+def _approval_context_refs(
+    context: RunContext,
+    request: ApprovalRequest,
+) -> list[DisplayPathRef]:
     payload = request.payload
-    lines: list[str] = []
+    refs: list[DisplayPathRef] = []
     artifact_keys = [
         ("plan_path", context.run_dir),
         ("plan_json_path", context.run_dir),
@@ -219,13 +240,21 @@ def _approval_context_lines(
     for key, base in artifact_keys:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            lines.append(_display_path(value, base=base))
+            ref = _existing_display_path_ref(value, base=base)
+            if ref is not None:
+                refs.append(ref)
     changed_files = payload.get("changed_files")
-    if isinstance(changed_files, list):
+    include_changed_files = "plan" not in request.action
+    if include_changed_files and isinstance(changed_files, list):
         for value in changed_files:
             if isinstance(value, str) and value.strip():
-                lines.append(_display_path(value, base=context.task_config.project_path))
-    return _dedupe_lines(lines)
+                ref = _existing_display_path_ref(
+                    value,
+                    base=context.task_config.project_path,
+                )
+                if ref is not None:
+                    refs.append(ref)
+    return _dedupe_refs(refs)
 
 
 def _approval_hint(action: str) -> str:
@@ -239,20 +268,58 @@ def _approval_hint(action: str) -> str:
 
 
 def _display_path(path_text: str, *, base: Path) -> str:
+    return _display_path_ref(path_text, base=base).display
+
+
+def _display_path_ref(path_text: str, *, base: Path) -> DisplayPathRef:
     path = Path(path_text)
     relative = path
+    base_resolved = base.resolve()
     if path.is_absolute():
+        absolute = path.resolve()
         try:
-            relative = path.resolve().relative_to(base.resolve())
+            relative = absolute.relative_to(base_resolved)
         except ValueError:
             relative = Path(path.name)
+    else:
+        absolute = (base_resolved / path).resolve()
     normalized = relative.as_posix()
     name = Path(normalized).name or normalized
-    return f"{name} ({normalized})"
+    return DisplayPathRef(display=f"{name} ({normalized})", absolute_path=absolute)
+
+
+def _existing_display_path_ref(path_text: str, *, base: Path) -> DisplayPathRef | None:
+    ref = _display_path_ref(path_text, base=base)
+    if ref.absolute_path.exists():
+        return ref
+    return None
+
+
+def _terminal_link(ref: DisplayPathRef) -> str:
+    if not _terminal_hyperlinks_enabled():
+        return ref.display
+    try:
+        uri = ref.absolute_path.resolve().as_uri()
+    except ValueError:
+        return ref.display
+    return f"\033]8;;{uri}\033\\{ref.display}\033]8;;\033\\"
+
+
+def _terminal_hyperlinks_enabled() -> bool:
+    if os.environ.get("CODEAGENT_DISABLE_TERMINAL_LINKS"):
+        return False
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if term_program in {"vscode", "wezterm", "iterm.app"}:
+        return True
+    return bool(os.environ.get("WT_SESSION") or os.environ.get("VTE_VERSION"))
 
 
 def _key_file_summary(context: RunContext) -> list[str]:
-    files: list[str] = []
+    return [ref.display for ref in _key_file_summary_refs(context)]
+
+
+def _key_file_summary_refs(context: RunContext) -> list[DisplayPathRef]:
+    refs: list[DisplayPathRef] = []
     for stage in (Stage.IMPLEMENT, Stage.TEST, Stage.REPAIR):
         changed_files_path = context.stage_dirs[stage] / "changed_files.json"
         if not fs.exists(changed_files_path):
@@ -266,7 +333,7 @@ def _key_file_summary(context: RunContext) -> list[str]:
             continue
         for value in changed_files:
             if isinstance(value, str) and value.strip():
-                files.append(_display_path(value, base=context.task_config.project_path))
+                refs.append(_display_path_ref(value, base=context.task_config.project_path))
     for value in [
         "final_report.md",
         "workflow.log",
@@ -274,8 +341,8 @@ def _key_file_summary(context: RunContext) -> list[str]:
         "decision_trace.jsonl",
         "artifacts_index.json",
     ]:
-        files.append(_display_path(value, base=context.run_dir))
-    return _dedupe_lines(files)
+        refs.append(_display_path_ref(value, base=context.run_dir))
+    return _dedupe_refs(refs)
 
 
 def _dedupe_lines(lines: list[str]) -> list[str]:
@@ -286,6 +353,18 @@ def _dedupe_lines(lines: list[str]) -> list[str]:
             continue
         seen.add(line)
         deduped.append(line)
+    return deduped
+
+
+def _dedupe_refs(refs: list[DisplayPathRef]) -> list[DisplayPathRef]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[DisplayPathRef] = []
+    for ref in refs:
+        key = (ref.display, str(ref.absolute_path).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
     return deduped
 
 
