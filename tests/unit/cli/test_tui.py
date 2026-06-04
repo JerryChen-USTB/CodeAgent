@@ -10,8 +10,8 @@ from codeagent.cli.tui import (
     TuiChoice,
     TuiProgressReporter,
     WizardFormState,
-    _form_cursor_position,
     _render_form_panel,
+    _text_with_cursor_fragments,
     _tui_style,
 )
 from codeagent.config import defaults
@@ -101,24 +101,21 @@ def test_form_rendering_expands_choices_inline_under_the_active_field() -> None:
     assert "    审批模式:" in text
 
 
-def test_text_editing_uses_real_cursor_position() -> None:
-    from prompt_toolkit.utils import get_cwidth
+def test_text_editing_uses_prompt_toolkit_cursor_marker() -> None:
+    from prompt_toolkit.layout.controls import FormattedTextControl
 
-    state = WizardFormState.create()
-    rows = state.visible_rows()
-    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "test_command")
+    fragments = _text_with_cursor_fragments("pytest -q", len("pytest"))
 
-    point = _form_cursor_position(
-        state,
-        mode="text",
-        edit_field="test_command",
-        text_value="pytest -q",
-        text_cursor=len("pytest -q"),
-    )
+    assert fragments == [
+        ("class:input", "pytest"),
+        ("[SetCursorPosition]", ""),
+        ("class:input", " -q"),
+    ]
 
-    assert point is not None
-    assert point.x == get_cwidth(">   测试命令: pytest -q")
-    assert point.y > 0
+    content = FormattedTextControl(fragments).create_content(width=80, height=None)
+    assert content.cursor_position is not None
+    assert content.cursor_position.x == len("pytest")
+    assert content.cursor_position.y == 0
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:
