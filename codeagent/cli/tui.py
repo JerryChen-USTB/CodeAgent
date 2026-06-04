@@ -557,7 +557,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import get_app
     from prompt_toolkit.buffer import Buffer
-    from prompt_toolkit.cursor_shapes import CursorShape
+    from prompt_toolkit.data_structures import Point
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
@@ -869,6 +869,16 @@ def _run_wizard_application(state: WizardFormState) -> str:
             return
         try:
             app.layout.focus(edit_control)
+            target = _wizard_text_cursor_position(
+                state,
+                mode=mode,
+                edit_field=edit_field,
+                text=edit_buffer.text,
+                cursor=edit_buffer.cursor_position,
+            )
+            current = getattr(app.renderer, "_cursor_pos", Point(x=0, y=0))
+            _move_output_cursor(app.output, current, target)
+            app.renderer._cursor_pos = target
             app.output.show_cursor()
             app.output.flush()
         except Exception:
@@ -881,7 +891,6 @@ def _run_wizard_application(state: WizardFormState) -> str:
         style=_tui_style(),
         full_screen=False,
         mouse_support=False,
-        cursor=CursorShape.BLOCK,
         after_render=ensure_terminal_cursor_visible,
     )
     return app.run()
@@ -1095,6 +1104,70 @@ def _build_wizard_text_container(
     if selected.row_id in FIELD_HELP:
         containers.append(line([("class:help", FIELD_HELP[selected.row_id])]))
     return HSplit(containers)
+
+
+def _wizard_text_cursor_position(
+    state: WizardFormState,
+    *,
+    mode: str,
+    edit_field: str,
+    text: str,
+    cursor: int,
+):
+    from prompt_toolkit.data_structures import Point
+    from prompt_toolkit.utils import get_cwidth
+
+    cursor = max(0, min(cursor, len(text)))
+    text_width = get_cwidth(text[:cursor])
+    rows = state.visible_rows()
+    state.cursor = max(0, min(state.cursor, len(rows) - 1))
+    current_group: str | None = None
+    y = 3  # CodeAgent, subtitle, blank line.
+    for index, row in enumerate(rows):
+        selected = index == state.cursor
+        group_id = FIELD_GROUPS[row.row_id]
+        if group_id != current_group:
+            if current_group is not None:
+                y += 1
+            current_group = group_id
+            y += 1
+
+        prefix = "> " if selected else "  "
+
+        if row.kind == "action":
+            y += 1
+            continue
+
+        if row.row_id == "input_materials":
+            y += 1
+            materials = _material_values(state.values.get("input_materials"))
+            y += len(materials) if materials else 1
+            if mode == "material_text" and row.row_id == edit_field:
+                label = "      手动输入路径: "
+                return Point(x=get_cwidth(label) + text_width, y=y)
+            continue
+
+        if mode == "text" and row.row_id == edit_field:
+            label = f"{prefix}  {row.label}: "
+            return Point(x=get_cwidth(label) + text_width, y=y)
+
+        y += 1
+
+    return Point(x=text_width, y=y)
+
+
+def _move_output_cursor(output, current, target) -> None:
+    y_delta = target.y - current.y
+    if y_delta < 0:
+        output.cursor_up(-y_delta)
+    elif y_delta > 0:
+        output.cursor_down(y_delta)
+
+    x_delta = target.x - current.x
+    if x_delta < 0:
+        output.cursor_backward(-x_delta)
+    elif x_delta > 0:
+        output.cursor_forward(x_delta)
 
 
 def _render_material_list(materials: list[str]) -> list[tuple[str, str]]:

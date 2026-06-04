@@ -13,6 +13,7 @@ from codeagent.cli.tui import (
     _build_wizard_text_container,
     _render_form_panel,
     _tui_style,
+    _wizard_text_cursor_position,
 )
 from codeagent.config import defaults
 from codeagent.tools.hitl import ApprovalRequest
@@ -134,6 +135,45 @@ def test_text_editing_container_uses_real_buffer_control() -> None:
         return False
 
     assert contains_buffer_control(container)
+
+
+def test_text_cursor_position_matches_inline_field_layout() -> None:
+    from prompt_toolkit.utils import get_cwidth
+
+    state = WizardFormState.create()
+    rows = state.visible_rows()
+    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "project_path")
+
+    position = _wizard_text_cursor_position(
+        state,
+        mode="text",
+        edit_field="project_path",
+        text="ffff",
+        cursor=4,
+    )
+
+    assert position.x == get_cwidth(">   项目目录: ") + get_cwidth("ffff")
+    assert position.y == 5
+
+
+def test_material_text_cursor_position_accounts_for_material_list() -> None:
+    from prompt_toolkit.utils import get_cwidth
+
+    state = WizardFormState.create()
+    state.values["input_materials"] = ["requirements.md", "api.md"]
+    rows = state.visible_rows()
+    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "input_materials")
+
+    position = _wizard_text_cursor_position(
+        state,
+        mode="material_text",
+        edit_field="input_materials",
+        text="notes.md",
+        cursor=len("notes.md"),
+    )
+
+    assert position.x == get_cwidth("      手动输入路径: ") + get_cwidth("notes.md")
+    assert position.y == 11
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:
