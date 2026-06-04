@@ -13,6 +13,8 @@ from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.implementation_service import (
     ImplementationFileChange,
     ImplementationPlan,
+    ImplementationPatchDraft,
+    ImplementationPatchFileChange,
     ImplementationRequest,
     ImplementationService,
     PLAN_INTERRUPT_ID,
@@ -60,9 +62,24 @@ def _long_readable_path(path: Path) -> Path:
 def _plan(path: str, content: str, *, summary: str = "Create implementation file.") -> ImplementationPlan:
     return ImplementationPlan(
         requirements_summary="Add a small calculator utility.",
-        impact_summary=summary,
+        implementation_strategy=summary,
         changes=[
             ImplementationFileChange(
+                path=path,
+                rationale="Required by the fixture acceptance criteria.",
+                public_interfaces=[],
+                acceptance_notes=["Generated file should match the requested behavior."],
+            )
+        ],
+        acceptance_criteria=["Generated file should match the requested behavior."],
+    )
+
+
+def _draft(path: str, content: str) -> ImplementationPatchDraft:
+    return ImplementationPatchDraft(
+        plan_summary="Concrete implementation patch for the approved plan.",
+        changes=[
+            ImplementationPatchFileChange(
                 path=path,
                 old_content=None,
                 new_content=content,
@@ -77,8 +94,9 @@ def test_implementation_plan_schema_rejects_empty_plans() -> None:
     with pytest.raises(ValidationError):
         ImplementationPlan(
             requirements_summary="",
-            impact_summary="No changes.",
+            implementation_strategy="No changes.",
             changes=[],
+            acceptance_criteria=[],
         )
 
 
@@ -88,6 +106,10 @@ def test_implementation_service_success_generates_patch_artifacts_and_stage_resu
     service, run_context = _service(tmp_path, project_root)
     request = ImplementationRequest(
         plan=_plan(
+            "calculator.py",
+            "def add(left: int, right: int) -> int:\n    return left + right\n",
+        ),
+        patch_draft=_draft(
             "calculator.py",
             "def add(left: int, right: int) -> int:\n    return left + right\n",
         ),
@@ -103,6 +125,7 @@ def test_implementation_service_success_generates_patch_artifacts_and_stage_resu
     )
     for filename in [
         "implementation_plan.md",
+        "implementation_patch_draft.json",
         "implementation.patch.diff",
         "changed_files.json",
         "syntax_check.log",
@@ -134,6 +157,10 @@ def test_implementation_service_writes_artifacts_under_long_windows_paths(tmp_pa
     service = ImplementationService(run_context=run_context)
     request = ImplementationRequest(
         plan=_plan(
+            "long_path_module.py",
+            "def value() -> int:\n    return 42\n",
+        ),
+        patch_draft=_draft(
             "long_path_module.py",
             "def value() -> int:\n    return 42\n",
         ),
@@ -171,6 +198,10 @@ def test_implementation_syntax_check_does_not_write_pycache_under_long_project_p
             "workspace/student_gradebook/__init__.py",
             "VALUE = 42\n",
         ),
+        patch_draft=_draft(
+            "workspace/student_gradebook/__init__.py",
+            "VALUE = 42\n",
+        ),
         approval=_approve(),
     )
 
@@ -192,10 +223,10 @@ def test_implementation_service_retries_next_patch_candidate_after_validation_fa
     project_root.mkdir()
     service, run_context = _service(tmp_path, project_root)
     invalid_plan = _plan("../escape.py", "VALUE = 1\n", summary="Invalid path first.")
-    valid_plan = _plan("safe_module.py", "VALUE = 42\n", summary="Fallback valid path.")
     request = ImplementationRequest(
         plan=invalid_plan,
-        alternate_plans=[valid_plan],
+        patch_draft=_draft("../escape.py", "VALUE = 1\n"),
+        alternate_patch_drafts=[_draft("safe_module.py", "VALUE = 42\n")],
         approval=_approve(),
     )
 
@@ -219,6 +250,7 @@ def test_implementation_service_does_not_persist_sensitive_candidate_diff(tmp_pa
     service, run_context = _service(tmp_path, project_root)
     request = ImplementationRequest(
         plan=_plan(".env", "SAMPLE_VALUE=fixture\n", summary="Invalid sensitive path."),
+        patch_draft=_draft(".env", "SAMPLE_VALUE=fixture\n"),
         approval=_approve(),
     )
 
@@ -239,6 +271,7 @@ def test_implementation_service_reports_syntax_check_failure(tmp_path) -> None:
     service, run_context = _service(tmp_path, project_root)
     request = ImplementationRequest(
         plan=_plan("broken.py", "def broken(:\n    return 1\n"),
+        patch_draft=_draft("broken.py", "def broken(:\n    return 1\n"),
         approval=_approve(),
     )
 
@@ -285,6 +318,7 @@ def test_implementation_service_cancelled_approval_does_not_apply_patch(tmp_path
     service, run_context = _service(tmp_path, project_root)
     request = ImplementationRequest(
         plan=_plan("cancelled.py", "VALUE = 'should not be written'\n"),
+        patch_draft=_draft("cancelled.py", "VALUE = 'should not be written'\n"),
         approval=ApprovalDecision(
             interrupt_id="implementation_patch",
             decision_type="cancel",
@@ -311,14 +345,15 @@ def test_implementation_service_applies_edited_approval_plan(tmp_path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
     service, run_context = _service(tmp_path, project_root)
-    edited_plan = _plan("edited.py", "VALUE = 2\n", summary="Human edited implementation.")
+    edited_draft = _draft("edited.py", "VALUE = 2\n")
     request = ImplementationRequest(
         plan=_plan("edited.py", "VALUE = 1\n", summary="Initial implementation."),
+        patch_draft=_draft("edited.py", "VALUE = 1\n"),
         approval=ApprovalDecision(
             interrupt_id="implementation_patch",
             decision_type="edit",
-            edited_payload={"plan": edited_plan.model_dump(mode="json")},
-            comment="Use the edited implementation plan.",
+            edited_payload={"patch_draft": edited_draft.model_dump(mode="json")},
+            comment="Use the edited implementation patch draft.",
         ),
     )
 
@@ -342,6 +377,7 @@ def test_implementation_subgraph_handler_updates_checkpoint_safe_state(tmp_path)
     service, _run_context_obj = _service(tmp_path, project_root)
     request = ImplementationRequest(
         plan=_plan("subgraph_file.py", "ANSWER = 42\n"),
+        patch_draft=_draft("subgraph_file.py", "ANSWER = 42\n"),
         approval=_approve(),
     )
     handler = create_implementation_stage_handler(
@@ -369,6 +405,7 @@ def test_interrupting_implementation_subgraph_pauses_before_apply_and_resumes(tm
     service, run_context = _service(tmp_path, project_root)
     request = ImplementationRequest(
         plan=_plan("interrupt_file.py", "VALUE = 7\n"),
+        patch_draft=_draft("interrupt_file.py", "VALUE = 7\n"),
         approval=_approve(),
     )
     manager = CheckpointManager(run_context.run_dir, run_id=run_context.run_id)
@@ -416,6 +453,7 @@ def test_interrupting_subgraph_applies_approved_patch_without_regenerating(tmp_p
     request_box = {
         "request": ImplementationRequest(
             plan=_plan("approved_file.py", "APPROVED = True\n"),
+            patch_draft=_draft("approved_file.py", "APPROVED = True\n"),
             approval=_approve(),
         )
     }
@@ -437,6 +475,7 @@ def test_interrupting_subgraph_applies_approved_patch_without_regenerating(tmp_p
 
         request_box["request"] = ImplementationRequest(
             plan=_plan("mutated_file.py", "MUTATED = True\n"),
+            patch_draft=_draft("mutated_file.py", "MUTATED = True\n"),
             approval=_approve(),
         )
         resumed = subgraph.invoke(

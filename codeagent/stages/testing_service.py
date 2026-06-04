@@ -45,7 +45,18 @@ TEST_COMMAND_INTERRUPT_ID = "testing_command"
 
 
 class TestFileChange(BaseModel):
-    """Structured test-file change intent."""
+    """Pure test planning item without file contents."""
+
+    __test__: ClassVar[bool] = False
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    test_focus: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+
+
+class TestPatchFileChange(BaseModel):
+    """Concrete test file content generated only after testing plan approval."""
 
     __test__: ClassVar[bool] = False
     model_config = ConfigDict(extra="forbid")
@@ -56,14 +67,14 @@ class TestFileChange(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)
 
     @model_validator(mode="after")
-    def require_real_change(self) -> "TestFileChange":
+    def require_real_change(self) -> "TestPatchFileChange":
         if self.old_content is None and self.new_content is None:
             raise ValueError("test file change must include old_content or new_content")
         return self
 
 
 class TestingPlan(BaseModel):
-    """Validated test plan and test patch intent."""
+    """Validated pure test plan reviewed before test code generation."""
 
     __test__: ClassVar[bool] = False
     model_config = ConfigDict(extra="forbid")
@@ -76,6 +87,18 @@ class TestingPlan(BaseModel):
     framework: Literal["pytest", "unittest"] = "pytest"
 
 
+class TestingPatchDraft(BaseModel):
+    """Concrete testing patch draft generated after test plan approval."""
+
+    __test__: ClassVar[bool] = False
+    model_config = ConfigDict(extra="forbid")
+
+    plan_summary: str = Field(min_length=1, max_length=8000)
+    changes: list[TestPatchFileChange] = Field(min_length=1)
+    command: str = Field(min_length=1, max_length=1000)
+    framework: Literal["pytest", "unittest"] = "pytest"
+
+
 @dataclass(frozen=True)
 class TestingRequest:
     __test__: ClassVar[bool] = False
@@ -84,7 +107,9 @@ class TestingRequest:
     plan_review: ApprovalDecision
     patch_approval: ApprovalDecision
     command_approval: ApprovalDecision
+    patch_draft: TestingPatchDraft | None = None
     alternate_plans: list[TestingPlan] = field(default_factory=list)
+    alternate_patch_drafts: list[TestingPatchDraft] = field(default_factory=list)
     max_patch_attempts: int = 3
     command_timeout_seconds: float | None = None
 
@@ -92,6 +117,7 @@ class TestingRequest:
 @dataclass(frozen=True)
 class _PreparedTestPatch:
     plan: TestingPlan
+    draft: TestingPatchDraft
     patch: PatchArtifact
     validation: PatchValidationResult
     summary: PatchSummary
@@ -162,6 +188,9 @@ class TestingService:
                     "plan_json_path": "testing/test_plan.json",
                     "strategy": request.plan.strategy,
                     "acceptance_criteria": request.plan.acceptance_criteria,
+                    "changed_files": [
+                        change.path.as_posix() for change in request.plan.changes
+                    ],
                     "artifact_ids": artifacts,
                 },
             }
@@ -200,10 +229,30 @@ class TestingService:
                     attempts=[],
                 )
             )
-        quality_error = _test_plan_quality_error(reviewed.plan)
+        if reviewed.patch_draft is None:
+            artifacts = self._register_existing_artifacts(reviewed.plan)
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing patch draft is missing.",
+                category="model",
+                message="testing patch generation must run after test plan approval",
+                artifact_ids=artifacts,
+                next_suggestion="Generate a TestingPatchDraft from the approved test plan.",
+            )
+            return TestingApprovalPreview(
+                result=self._finalize_result(
+                    result,
+                    plan=reviewed.plan,
+                    patch_draft=None,
+                    artifact_ids=artifacts,
+                    attempts=[],
+                )
+            )
+        quality_error = _test_patch_quality_error(reviewed.patch_draft)
         if quality_error:
             plan_path = self._write_plan(reviewed.plan)
             plan_json_path = self._write_plan_json(reviewed.plan)
+            draft_json_path = self._write_patch_draft_json(reviewed.patch_draft)
             artifacts = [
                 self._record_artifact(
                     "testing_test_plan",
@@ -216,6 +265,12 @@ class TestingService:
                     ArtifactKind.JSON,
                     plan_json_path,
                     "Structured testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured testing patch draft",
                 ),
             ]
             result = self._failed_result(
@@ -230,16 +285,18 @@ class TestingService:
                 result=self._finalize_result(
                     result,
                     plan=reviewed.plan,
+                    patch_draft=reviewed.patch_draft,
                     artifact_ids=artifacts,
                     attempts=[],
                 )
             )
-        candidates = [reviewed.plan, *reviewed.alternate_plans][
+        candidates = [reviewed.patch_draft, *reviewed.alternate_patch_drafts][
             : max(1, reviewed.max_patch_attempts)
         ]
-        prepared, attempts = self._prepare_patch_candidates(candidates)
+        prepared, attempts = self._prepare_patch_candidates(reviewed.plan, candidates)
         plan_path = self._write_plan(reviewed.plan)
         plan_json_path = self._write_plan_json(reviewed.plan)
+        draft_json_path = self._write_patch_draft_json(reviewed.patch_draft)
         artifacts = [
             self._record_artifact(
                 "testing_test_plan",
@@ -252,6 +309,12 @@ class TestingService:
                 ArtifactKind.JSON,
                 plan_json_path,
                 "Structured testing plan",
+            ),
+            self._record_artifact(
+                "testing_test_patch_draft_json",
+                ArtifactKind.JSON,
+                draft_json_path,
+                "Structured testing patch draft",
             ),
         ]
         attempts_path = self._write_attempts(attempts)
@@ -276,6 +339,7 @@ class TestingService:
                 result=self._finalize_result(
                     result,
                     plan=reviewed.plan,
+                    patch_draft=reviewed.patch_draft,
                     artifact_ids=artifacts,
                     attempts=attempts,
                 )
@@ -301,6 +365,7 @@ class TestingService:
                 "default_decision": "reject",
                 "payload": {
                     "patch_path": "testing/test.patch.diff",
+                    "patch_draft_json_path": "testing/test_patch_draft.json",
                     "changed_files": prepared.validation.changed_files,
                     "added_lines": prepared.summary.added_lines,
                     "removed_lines": prepared.summary.removed_lines,
@@ -319,13 +384,15 @@ class TestingService:
     ) -> TestingApprovalPreview:
         started_at = utc_timestamp()
         plan = self._load_prepared_plan(request.plan)
-        artifacts = self._register_existing_artifacts(plan)
+        draft = self._load_prepared_patch_draft(request.patch_draft)
+        artifacts = self._register_existing_artifacts(plan, draft)
         edited_patch = self._request_from_patch_edit(request, started_at=started_at)
         if isinstance(edited_patch, StageResult):
             return TestingApprovalPreview(
                 result=self._finalize_result(
                     edited_patch,
                     plan=plan,
+                    patch_draft=draft,
                     artifact_ids=artifacts,
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
@@ -350,6 +417,7 @@ class TestingService:
                 result=self._finalize_result(
                     patch_decision,
                     plan=plan,
+                    patch_draft=draft,
                     artifact_ids=artifacts,
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
@@ -368,6 +436,7 @@ class TestingService:
                 result=self._finalize_result(
                     result,
                     plan=plan,
+                    patch_draft=draft,
                     artifact_ids=artifacts,
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
@@ -386,6 +455,7 @@ class TestingService:
                 result=self._finalize_result(
                     result,
                     plan=plan,
+                    patch_draft=draft,
                     artifact_ids=artifacts,
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
@@ -409,6 +479,7 @@ class TestingService:
                 result=self._finalize_result(
                     result,
                     plan=plan,
+                    patch_draft=draft,
                     artifact_ids=artifacts,
                     attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 )
@@ -422,18 +493,20 @@ class TestingService:
                 "Testing changed files",
             )
         )
+        command = draft.command if draft is not None else plan.command
+        framework = draft.framework if draft is not None else plan.framework
         return TestingApprovalPreview(
             payload={
                 "interrupt_id": TEST_COMMAND_INTERRUPT_ID,
                 "action": "approve_test_command",
                 "title": "审批测试命令",
-                "summary": plan.command,
+                "summary": command,
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],
                 "default_decision": "reject",
                 "payload": {
-                    "command": plan.command,
-                    "framework": plan.framework,
+                    "command": command,
+                    "framework": framework,
                     "changed_files": applied.changed_files,
                     "artifact_ids": artifacts,
                 },
@@ -448,12 +521,15 @@ class TestingService:
     ) -> StageResult:
         started_at = utc_timestamp()
         plan = self._load_prepared_plan(request.plan)
-        artifacts = self._register_existing_artifacts(plan)
+        draft = self._load_prepared_patch_draft(request.patch_draft)
+        artifacts = self._register_existing_artifacts(plan, draft)
         changed_files = _read_changed_files(self.stage_dir / "changed_files.json")
-        command = self._command_from_decision(plan.command, command_approval)
+        planned_command = draft.command if draft is not None else plan.command
+        framework = draft.framework if draft is not None else plan.framework
+        command = self._command_from_decision(planned_command, command_approval)
         if isinstance(command, StageResult):
             command_path = self._write_command_record(
-                command=plan.command,
+                command=planned_command,
                 executed=False,
                 decision=command_approval.decision_type,
             )
@@ -469,6 +545,7 @@ class TestingService:
             return self._finalize_result(
                 command,
                 plan=plan,
+                patch_draft=draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 changed_files=changed_files,
@@ -506,11 +583,12 @@ class TestingService:
             return self._finalize_result(
                 result,
                 plan=plan,
+                patch_draft=draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
                 changed_files=changed_files,
             )
-        parsed = parse_shell_result(framework=plan.framework, shell_result=shell)
+        parsed = parse_shell_result(framework=framework, shell_result=shell)
         emit_progress(
             "test_result",
             stage=TESTING_STAGE,
@@ -566,6 +644,7 @@ class TestingService:
         return self._finalize_result(
             result,
             plan=plan,
+            patch_draft=draft,
             artifact_ids=artifacts,
             attempts=_read_attempts(self.stage_dir / "test_patch_attempts.json"),
             changed_files=changed_files,
@@ -573,6 +652,405 @@ class TestingService:
         )
 
     def run(self, request: TestingRequest) -> StageResult:
+        started_at = utc_timestamp()
+        emit_progress(
+            "phase_started",
+            stage=TESTING_STAGE,
+            message="测试阶段开始：先审查测试计划，再生成测试补丁。",
+        )
+        edited_plan = self._request_from_plan_edit(request, started_at=started_at)
+        if isinstance(edited_plan, StageResult):
+            return self._finalize_result(
+                edited_plan,
+                plan=request.plan,
+                patch_draft=request.patch_draft,
+                artifact_ids=[],
+                attempts=[],
+            )
+        if edited_plan is not None:
+            return self.run(edited_plan)
+
+        plan_decision = self._handle_plan_review(request.plan_review, started_at)
+        if plan_decision is not None:
+            return self._finalize_result(
+                plan_decision,
+                plan=request.plan,
+                patch_draft=request.patch_draft,
+                artifact_ids=[],
+                attempts=[],
+            )
+
+        fs.mkdir(self.stage_dir)
+        if request.patch_draft is None:
+            artifacts = self._register_existing_artifacts(request.plan)
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing patch draft is missing.",
+                category="model",
+                message="testing patch generation must run after test plan approval",
+                artifact_ids=artifacts,
+                next_suggestion="Generate a TestingPatchDraft from the approved test plan.",
+            )
+            return self._finalize_result(
+                result,
+                plan=request.plan,
+                patch_draft=None,
+                artifact_ids=artifacts,
+                attempts=[],
+            )
+
+        quality_error = _test_patch_quality_error(request.patch_draft)
+        if quality_error:
+            plan_path = self._write_plan(request.plan)
+            plan_json_path = self._write_plan_json(request.plan)
+            draft_json_path = self._write_patch_draft_json(request.patch_draft)
+            artifacts = [
+                self._record_artifact(
+                    "testing_test_plan",
+                    ArtifactKind.REPORT,
+                    plan_path,
+                    "Testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_plan_json",
+                    ArtifactKind.JSON,
+                    plan_json_path,
+                    "Structured testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured testing patch draft",
+                ),
+            ]
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing patch did not generate meaningful self-tests.",
+                category="validation",
+                message=quality_error,
+                artifact_ids=artifacts,
+                next_suggestion="Regenerate a complete visible testing-stage patch with real test cases.",
+            )
+            return self._finalize_result(
+                result,
+                plan=request.plan,
+                patch_draft=request.patch_draft,
+                artifact_ids=artifacts,
+                attempts=[],
+            )
+
+        emit_progress(
+            "artifact_written",
+            stage=TESTING_STAGE,
+            artifact="testing/test_plan.md",
+            message="测试方案已通过，正在根据已批准方案生成测试补丁。",
+        )
+        candidates = [request.patch_draft, *request.alternate_patch_drafts][
+            : max(1, request.max_patch_attempts)
+        ]
+        prepared, attempts = self._prepare_patch_candidates(request.plan, candidates)
+        artifacts: list[str] = []
+        if prepared is None:
+            plan_path = self._write_plan(request.plan)
+            plan_json_path = self._write_plan_json(request.plan)
+            draft_json_path = self._write_patch_draft_json(candidates[0])
+            attempts_path = self._write_attempts(attempts)
+            artifacts.extend(
+                [
+                    self._record_artifact(
+                        "testing_test_plan",
+                        ArtifactKind.REPORT,
+                        plan_path,
+                        "Testing plan",
+                    ),
+                    self._record_artifact(
+                        "testing_test_plan_json",
+                        ArtifactKind.JSON,
+                        plan_json_path,
+                        "Structured testing plan",
+                    ),
+                    self._record_artifact(
+                        "testing_test_patch_draft_json",
+                        ArtifactKind.JSON,
+                        draft_json_path,
+                        "Structured testing patch draft",
+                    ),
+                    self._record_artifact(
+                        "testing_test_patch_attempts",
+                        ArtifactKind.JSON,
+                        attempts_path,
+                        "Testing patch validation attempts",
+                    ),
+                ]
+            )
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing patch validation failed before approval.",
+                category="patch",
+                message=_last_attempt_error(attempts),
+                artifact_ids=artifacts,
+                next_suggestion="Revise the approved test plan or regenerate the test patch draft.",
+            )
+            return self._finalize_result(
+                result,
+                plan=request.plan,
+                patch_draft=candidates[0],
+                artifact_ids=artifacts,
+                attempts=attempts,
+            )
+
+        plan_path = self._write_plan(prepared.plan)
+        plan_json_path = self._write_plan_json(prepared.plan)
+        draft_json_path = self._write_patch_draft_json(prepared.draft)
+        patch_path = self.stage_dir / "test.patch.diff"
+        fs.write_text(patch_path, prepared.patch.text)
+        emit_progress(
+            "artifact_written",
+            stage=TESTING_STAGE,
+            artifact="testing/test.patch.diff",
+            message="测试补丁已生成，正在等待补丁审批。",
+        )
+        attempts_path = self._write_attempts(attempts)
+        artifacts.extend(
+            [
+                self._record_artifact(
+                    "testing_test_plan",
+                    ArtifactKind.REPORT,
+                    plan_path,
+                    "Testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_plan_json",
+                    ArtifactKind.JSON,
+                    plan_json_path,
+                    "Structured testing plan",
+                ),
+                self._record_artifact(
+                    "testing_test_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured testing patch draft",
+                ),
+                self._record_artifact(
+                    "testing_test_patch",
+                    ArtifactKind.PATCH,
+                    patch_path,
+                    "Testing patch diff",
+                ),
+                self._record_artifact(
+                    "testing_test_patch_attempts",
+                    ArtifactKind.JSON,
+                    attempts_path,
+                    "Testing patch validation attempts",
+                ),
+            ]
+        )
+
+        edited_patch = self._request_from_patch_edit(request, started_at=started_at)
+        if isinstance(edited_patch, StageResult):
+            return self._finalize_result(
+                edited_patch,
+                plan=prepared.plan,
+                patch_draft=prepared.draft,
+                artifact_ids=artifacts,
+                attempts=attempts,
+                patch_summary=prepared.summary,
+            )
+        if edited_patch is not None:
+            return self.run(edited_patch)
+
+        patch_decision = self._handle_patch_approval(request.patch_approval, started_at)
+        if patch_decision is not None:
+            patch_decision = patch_decision.model_copy(update={"artifact_ids": artifacts})
+            return self._finalize_result(
+                patch_decision,
+                plan=prepared.plan,
+                patch_draft=prepared.draft,
+                artifact_ids=artifacts,
+                attempts=attempts,
+                patch_summary=prepared.summary,
+            )
+
+        try:
+            emit_progress(
+                "tool_started",
+                stage=TESTING_STAGE,
+                tool_name="apply_patch",
+                message="正在应用测试补丁到可见项目工作区。",
+            )
+            applied = self.patch_service.apply_patch(
+                patch_path,
+                self.run_context.task_config.project_path,
+                operation_id="testing_apply_patch",
+            )
+        except (PatchApplyError, PatchValidationError) as exc:
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing patch could not be applied.",
+                category="patch",
+                message=str(exc),
+                artifact_ids=artifacts,
+                next_suggestion="Regenerate the testing patch against the current project files.",
+            )
+            return self._finalize_result(
+                result,
+                plan=prepared.plan,
+                patch_draft=prepared.draft,
+                artifact_ids=artifacts,
+                attempts=attempts,
+                patch_summary=prepared.summary,
+            )
+
+        changed_files_path = self._write_changed_files(applied.changed_files)
+        emit_progress(
+            "tool_finished",
+            stage=TESTING_STAGE,
+            tool_name="apply_patch",
+            status="succeeded",
+            message=f"测试补丁已应用，新增/修改 {len(applied.changed_files)} 个测试文件。",
+        )
+        artifacts.append(
+            self._record_artifact(
+                "testing_changed_files",
+                ArtifactKind.JSON,
+                changed_files_path,
+                "Testing changed files",
+            )
+        )
+
+        command = self._command_from_decision(prepared.draft.command, request.command_approval)
+        if isinstance(command, StageResult):
+            command_path = self._write_command_record(
+                command=prepared.draft.command,
+                executed=False,
+                decision=request.command_approval.decision_type,
+            )
+            artifacts.append(
+                self._record_artifact(
+                    "testing_test_command",
+                    ArtifactKind.JSON,
+                    command_path,
+                    "Testing command approval record",
+                )
+            )
+            command = command.model_copy(update={"artifact_ids": artifacts})
+            return self._finalize_result(
+                command,
+                plan=prepared.plan,
+                patch_draft=prepared.draft,
+                artifact_ids=artifacts,
+                attempts=attempts,
+                patch_summary=prepared.summary,
+                changed_files=applied.changed_files,
+            )
+
+        command_path = self._write_command_record(
+            command=command,
+            executed=True,
+            decision=request.command_approval.decision_type,
+        )
+        artifacts.append(
+            self._record_artifact(
+                "testing_test_command",
+                ArtifactKind.JSON,
+                command_path,
+                "Testing command approval record",
+            )
+        )
+        try:
+            emit_progress(
+                "tool_started",
+                stage=TESTING_STAGE,
+                tool_name="run_shell",
+                message=f"正在执行 Agent 自测命令：{command}",
+            )
+            shell = self._run_command(command, request)
+        except RuntimeError as exc:
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing command was denied or could not start.",
+                category="shell",
+                message=str(exc),
+                artifact_ids=artifacts,
+                next_suggestion="Approve an allowed pytest or unittest command.",
+            )
+            return self._finalize_result(
+                result,
+                plan=prepared.plan,
+                patch_draft=prepared.draft,
+                artifact_ids=artifacts,
+                attempts=attempts,
+                patch_summary=prepared.summary,
+                changed_files=applied.changed_files,
+            )
+        parsed = parse_shell_result(framework=prepared.draft.framework, shell_result=shell)
+        emit_progress(
+            "test_result",
+            stage=TESTING_STAGE,
+            passed=parsed.passed,
+            failed=parsed.failed,
+            errors=parsed.errors,
+            skipped=parsed.skipped,
+            total=parsed.total,
+            success=parsed.success,
+        )
+        result_path = self._write_test_result(parsed.to_json_dict())
+        artifacts.append(
+            self._record_artifact(
+                "testing_test_result",
+                ArtifactKind.JSON,
+                result_path,
+                "Parsed test result",
+            )
+        )
+        report_path = self._write_test_report(
+            plan=prepared.plan,
+            patch_draft=prepared.draft,
+            test_result=parsed.to_json_dict(),
+            command=command,
+        )
+        artifacts.append(
+            self._record_artifact(
+                "testing_test_report",
+                ArtifactKind.REPORT,
+                report_path,
+                "Testing report",
+            )
+        )
+
+        if _is_no_tests_result(parsed):
+            result = self._no_tests_result(started_at=started_at, artifact_ids=artifacts)
+        elif parsed.success:
+            result = StageResult(
+                stage=TESTING_STAGE,
+                status="succeeded",
+                started_at=started_at,
+                ended_at=utc_timestamp(),
+                summary=_test_summary(parsed),
+                artifact_ids=artifacts,
+            )
+        else:
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Testing command failed.",
+                category="pytest_failure",
+                message=parsed.error_summary or "tests failed",
+                artifact_ids=artifacts,
+                next_suggestion="Enter debugging stage with the saved test logs and parsed failures.",
+            )
+        return self._finalize_result(
+            result,
+            plan=prepared.plan,
+            patch_draft=prepared.draft,
+            artifact_ids=artifacts,
+            attempts=attempts,
+            patch_summary=prepared.summary,
+            changed_files=applied.changed_files,
+            test_result=parsed.to_json_dict(),
+        )
+
+    def _run_legacy(self, request: TestingRequest) -> StageResult:
         started_at = utc_timestamp()
         emit_progress(
             "phase_started",
@@ -957,12 +1435,12 @@ class TestingService:
         if approval.decision_type != "edit":
             return None
         self._record_decision(approval, action="approve_test_patch")
-        edited = _plan_from_payload(approval.edited_payload)
+        edited = _patch_draft_from_payload(approval.edited_payload)
         if isinstance(edited, StageResult):
             return edited
         return replace(
             request,
-            plan=edited,
+            patch_draft=edited,
             patch_approval=ApprovalDecision(
                 interrupt_id=TEST_PATCH_INTERRUPT_ID,
                 decision_type="approve",
@@ -1075,12 +1553,13 @@ class TestingService:
 
     def _prepare_patch_candidates(
         self,
-        candidates: list[TestingPlan],
+        plan: TestingPlan,
+        candidates: list[TestingPatchDraft],
     ) -> tuple[_PreparedTestPatch | None, list[dict[str, object]]]:
         attempts: list[dict[str, object]] = []
-        for index, plan in enumerate(candidates, start=1):
+        for index, draft in enumerate(candidates, start=1):
             try:
-                precheck_error = self._precheck_test_paths(plan)
+                precheck_error = self._precheck_test_paths(draft)
                 if precheck_error:
                     attempts.append(
                         {
@@ -1092,7 +1571,7 @@ class TestingService:
                     )
                     continue
                 patch = self.patch_service.create_unified_diff(
-                    self._file_changes_for_plan(plan)
+                    self._file_changes_for_patch_draft(draft)
                 )
                 candidate_path = self.stage_dir / f"test_patch_attempt_{index}.diff"
                 fs.write_text(candidate_path, patch.text)
@@ -1122,6 +1601,7 @@ class TestingService:
                 )
                 return _PreparedTestPatch(
                     plan=plan,
+                    draft=draft,
                     patch=patch,
                     validation=validation,
                     summary=summary,
@@ -1137,11 +1617,11 @@ class TestingService:
                 )
         return None, attempts
 
-    def _precheck_test_paths(self, plan: TestingPlan) -> str:
+    def _precheck_test_paths(self, draft: TestingPatchDraft) -> str:
         root = self.run_context.task_config.project_path.resolve()
         errors: list[str] = []
         sensitive_filter = SensitiveFilter(root)
-        for change in plan.changes:
+        for change in draft.changes:
             normalized = _normalize_plan_path(change.path)
             if normalized is None:
                 errors.append(f"patch path outside project root: {change.path}")
@@ -1160,10 +1640,10 @@ class TestingService:
                 errors.append(f"test patch must target a test path: {normalized}")
         return "; ".join(errors)
 
-    def _file_changes_for_plan(self, plan: TestingPlan) -> list[FileChange]:
+    def _file_changes_for_patch_draft(self, draft: TestingPatchDraft) -> list[FileChange]:
         root = self.run_context.task_config.project_path
         changes: list[FileChange] = []
-        for change in plan.changes:
+        for change in draft.changes:
             old_content = change.old_content
             if old_content is None:
                 old_content = self._read_existing_content_if_safe(root, change.path)
@@ -1288,6 +1768,27 @@ class TestingService:
         except (OSError, json.JSONDecodeError, ValidationError):
             return fallback_plan
 
+    def _write_patch_draft_json(self, draft: TestingPatchDraft) -> Path:
+        path = self.stage_dir / "test_patch_draft.json"
+        fs.write_text(
+            path,
+            json.dumps(draft.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        )
+        return path
+
+    def _load_prepared_patch_draft(
+        self,
+        fallback_draft: TestingPatchDraft | None,
+    ) -> TestingPatchDraft | None:
+        path = self.stage_dir / "test_patch_draft.json"
+        if not fs.exists(path):
+            return fallback_draft
+        try:
+            data = json.loads(fs.read_text(path))
+            return TestingPatchDraft.model_validate(data)
+        except (OSError, json.JSONDecodeError, ValidationError):
+            return fallback_draft
+
     def _write_attempts(self, attempts: list[dict[str, object]]) -> Path:
         path = self.stage_dir / "test_patch_attempts.json"
         fs.write_text(
@@ -1342,6 +1843,7 @@ class TestingService:
         self,
         *,
         plan: TestingPlan,
+        patch_draft: TestingPatchDraft | None = None,
         test_result: dict[str, object],
         command: str,
     ) -> Path:
@@ -1373,6 +1875,10 @@ class TestingService:
         ]
         if test_result.get("error_summary"):
             lines.extend(["", "## Failure Summary", "", str(test_result["error_summary"])])
+        if patch_draft is not None:
+            lines.extend(["", "## Generated Test Files", ""])
+            for change in patch_draft.changes:
+                lines.append(f"- `{change.path.as_posix()}`: {change.rationale}")
         fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
@@ -1429,6 +1935,7 @@ class TestingService:
         result: StageResult,
         *,
         plan: TestingPlan,
+        patch_draft: TestingPatchDraft | None = None,
         artifact_ids: list[str],
         attempts: list[dict[str, object]],
         patch_summary: PatchSummary | None = None,
@@ -1446,8 +1953,9 @@ class TestingService:
             }
             report_path = self._write_test_report(
                 plan=plan,
+                patch_draft=patch_draft,
                 test_result=report_payload,
-                command=plan.command,
+                command=patch_draft.command if patch_draft is not None else plan.command,
             )
             artifact_ids = [
                 *artifact_ids,
@@ -1475,6 +1983,7 @@ class TestingService:
             summary=finalized.summary,
             artifact_ids=artifact_ids,
             attempts=attempts,
+            patch_draft_present=patch_draft is not None,
             changed_files=changed_files or [],
             test_result=test_result or {},
         )
@@ -1500,7 +2009,11 @@ class TestingService:
         self.run_context.artifact_store.write()
         return artifact_id
 
-    def _register_existing_artifacts(self, fallback_plan: TestingPlan) -> list[str]:
+    def _register_existing_artifacts(
+        self,
+        fallback_plan: TestingPlan,
+        fallback_draft: TestingPatchDraft | None = None,
+    ) -> list[str]:
         plan_path = self.stage_dir / "test_plan.md"
         plan_json_path = self.stage_dir / "test_plan.json"
         if not fs.exists(plan_path):
@@ -1521,6 +2034,18 @@ class TestingService:
                 "Structured testing plan",
             ),
         ]
+        draft_json_path = self.stage_dir / "test_patch_draft.json"
+        if not fs.exists(draft_json_path) and fallback_draft is not None:
+            draft_json_path = self._write_patch_draft_json(fallback_draft)
+        if fs.exists(draft_json_path):
+            artifacts.append(
+                self._record_artifact(
+                    "testing_test_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured testing patch draft",
+                )
+            )
         patch_path = self.stage_dir / "test.patch.diff"
         if fs.exists(patch_path):
             artifacts.append(
@@ -1554,17 +2079,17 @@ class TestingService:
         return artifacts
 
 
-def _test_plan_quality_error(plan: TestingPlan) -> str | None:
-    if any(not _is_allowed_test_path(str(change.path)) for change in plan.changes):
+def _test_patch_quality_error(draft: TestingPatchDraft) -> str | None:
+    if any(not _is_allowed_test_path(str(change.path)) for change in draft.changes):
         return None
     generated_test_changes = [
         change
-        for change in plan.changes
+        for change in draft.changes
         if _contains_test_case(change.new_content or "")
     ]
     if not generated_test_changes:
         return (
-            "testing plans must include new_content with pytest/unittest test cases; "
+            "testing patch drafts must include new_content with pytest/unittest test cases; "
             "helper files, empty packages, or references to existing tests are not enough"
         )
     return None
@@ -1618,6 +2143,50 @@ def _plan_from_payload(payload: dict[str, object] | None) -> TestingPlan | Stage
                 retryable=True,
             ),
             next_suggestion="Provide an edited testing plan that matches the TestingPlan schema.",
+        )
+
+
+def _patch_draft_from_payload(
+    payload: dict[str, object] | None,
+) -> TestingPatchDraft | StageResult:
+    raw_draft = (payload or {}).get("patch_draft")
+    if not isinstance(raw_draft, dict):
+        raw_draft = (payload or {}).get("plan")
+    if not isinstance(raw_draft, dict):
+        return StageResult(
+            stage=TESTING_STAGE,
+            status="failed",
+            started_at=utc_timestamp(),
+            ended_at=utc_timestamp(),
+            summary="Testing patch edit did not include an edited patch draft.",
+            error=ErrorRecord(
+                error_id="testing_hitl",
+                stage=TESTING_STAGE,
+                node="approval_edit",
+                category="hitl",
+                message="edited_payload.patch_draft is required for patch edit decisions",
+                retryable=True,
+            ),
+            next_suggestion="Resume with edited_payload.patch_draft or regenerate the testing patch.",
+        )
+    try:
+        return TestingPatchDraft.model_validate(raw_draft)
+    except ValidationError as exc:
+        return StageResult(
+            stage=TESTING_STAGE,
+            status="failed",
+            started_at=utc_timestamp(),
+            ended_at=utc_timestamp(),
+            summary="Testing patch edit payload failed schema validation.",
+            error=ErrorRecord(
+                error_id="testing_hitl",
+                stage=TESTING_STAGE,
+                node="approval_edit",
+                category="hitl",
+                message=str(exc),
+                retryable=True,
+            ),
+            next_suggestion="Provide an edited testing patch draft that matches the TestingPatchDraft schema.",
         )
 
 
@@ -1676,6 +2245,7 @@ def _render_plan(plan: TestingPlan) -> str:
         lines.extend(
             [
                 f"- `{change.path.as_posix()}`",
+                f"  - Focus: {change.test_focus}",
                 f"  - Rationale: {change.rationale}",
             ]
         )

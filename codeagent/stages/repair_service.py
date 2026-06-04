@@ -37,12 +37,25 @@ from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
 
 
 REPAIR_STAGE = "repair"
+REPAIR_PLAN_INTERRUPT_ID = "repair_plan"
 REPAIR_PATCH_INTERRUPT_ID = "repair_patch"
 REPAIR_COMMAND_INTERRUPT_ID = "repair_regression_command"
 
 
 class RepairFileChange(BaseModel):
-    """Structured repair-file change intent."""
+    """Pure repair planning item without file contents."""
+
+    __test__: ClassVar[bool] = False
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    change_type: Literal["add", "modify", "delete"] = "modify"
+    rationale: str = Field(min_length=1, max_length=4000)
+    expected_effect: str = Field(min_length=1, max_length=4000)
+
+
+class RepairPatchFileChange(BaseModel):
+    """Concrete repair file content generated only after repair plan approval."""
 
     __test__: ClassVar[bool] = False
     model_config = ConfigDict(extra="forbid")
@@ -53,14 +66,14 @@ class RepairFileChange(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)
 
     @model_validator(mode="after")
-    def require_real_change(self) -> "RepairFileChange":
+    def require_real_change(self) -> "RepairPatchFileChange":
         if self.old_content is None and self.new_content is None:
             raise ValueError("repair file change must include old_content or new_content")
         return self
 
 
 class RepairPlan(BaseModel):
-    """Validated repair plan and patch intent."""
+    """Validated pure repair plan reviewed before repair code generation."""
 
     __test__: ClassVar[bool] = False
     model_config = ConfigDict(extra="forbid")
@@ -72,6 +85,18 @@ class RepairPlan(BaseModel):
     framework: Literal["pytest", "unittest"] = "pytest"
 
 
+class RepairPatchDraft(BaseModel):
+    """Concrete repair patch draft generated after repair plan approval."""
+
+    __test__: ClassVar[bool] = False
+    model_config = ConfigDict(extra="forbid")
+
+    plan_summary: str = Field(min_length=1, max_length=8000)
+    changes: list[RepairPatchFileChange] = Field(min_length=1)
+    verification_command: str = Field(min_length=1, max_length=1000)
+    framework: Literal["pytest", "unittest"] = "pytest"
+
+
 @dataclass(frozen=True)
 class RepairRequest:
     __test__: ClassVar[bool] = False
@@ -79,7 +104,10 @@ class RepairRequest:
     plan: RepairPlan
     patch_approval: ApprovalDecision
     command_approval: ApprovalDecision
+    plan_review: ApprovalDecision | None = None
+    patch_draft: RepairPatchDraft | None = None
     alternate_plans: list[RepairPlan] = field(default_factory=list)
+    alternate_patch_drafts: list[RepairPatchDraft] = field(default_factory=list)
     max_patch_attempts: int = 3
     command_timeout_seconds: float | None = None
 
@@ -87,6 +115,7 @@ class RepairRequest:
 @dataclass(frozen=True)
 class _PreparedRepairPatch:
     plan: RepairPlan
+    draft: RepairPatchDraft
     validation: PatchValidationResult
     summary: PatchSummary
     risk: RepairRiskReport
@@ -128,14 +157,47 @@ class RepairService:
             stage_dirs=run_context.stage_dirs,
         )
 
+    def prepare_plan_review(self, request: RepairRequest) -> RepairApprovalPreview:
+        fs.mkdir(self.stage_dir)
+        artifacts = self._write_plan_artifacts(request.plan)
+        return RepairApprovalPreview(
+            payload={
+                "interrupt_id": REPAIR_PLAN_INTERRUPT_ID,
+                "action": "review_repair_plan",
+                "title": "审查修复方案",
+                "summary": request.plan.strategy,
+                "risk_level": "medium",
+                "allowed_decisions": ["approve", "respond"],
+                "default_decision": "approve",
+                "payload": {
+                    "plan_path": "repair/repair_plan.md",
+                    "plan_json_path": "repair/repair_plan.json",
+                    "root_cause": request.plan.root_cause,
+                    "changed_files": [
+                        change.path.as_posix() for change in request.plan.changes
+                    ],
+                    "verification_command": request.plan.verification_command,
+                    "artifact_ids": artifacts,
+                },
+            }
+        )
+
     def run(self, request: RepairRequest) -> StageResult:
         started_at = utc_timestamp()
+        plan_review = request.plan_review or ApprovalDecision(
+            interrupt_id=REPAIR_PLAN_INTERRUPT_ID,
+            decision_type="approve",
+            comment="Approve repair plan for non-interactive run.",
+            auto=True,
+            decision_source="auto_default",
+            presented_to_user=False,
+        )
         edited = self._request_from_patch_edit(request, started_at=started_at)
         if isinstance(edited, StageResult):
             return self._finalize_result(edited, artifact_ids=[])
         if edited is not None:
             return self.run(edited)
-        preview = self.prepare_patch_approval(request)
+        preview = self.prepare_patch_approval(request, plan_review=plan_review)
         if preview.result is not None:
             return preview.result
         patch_path = self.stage_dir / "repair.patch.diff"
@@ -156,23 +218,71 @@ class RepairService:
             command_approval=request.command_approval,
         )
 
-    def prepare_patch_approval(self, request: RepairRequest) -> RepairApprovalPreview:
+    def prepare_patch_approval(
+        self,
+        request: RepairRequest,
+        *,
+        plan_review: ApprovalDecision | None = None,
+    ) -> RepairApprovalPreview:
         started_at = utc_timestamp()
         fs.mkdir(self.stage_dir)
+        review = plan_review or request.plan_review
+        if review is None:
+            artifacts = self._write_plan_artifacts(request.plan)
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Repair plan approval is missing.",
+                category="hitl",
+                message="repair plan must be approved before patch generation",
+                artifact_ids=artifacts,
+                next_suggestion="Approve the repair plan or provide feedback to regenerate it.",
+            )
+            return RepairApprovalPreview(
+                result=self._finalize_result(result, artifact_ids=artifacts)
+            )
+        plan_decision = self._handle_plan_review(review, started_at)
+        if plan_decision is not None:
+            return RepairApprovalPreview(
+                result=self._finalize_result(plan_decision, artifact_ids=[])
+            )
         edited = self._request_from_patch_edit(request, started_at=started_at)
         if isinstance(edited, StageResult):
             return RepairApprovalPreview(
                 result=self._finalize_result(edited, artifact_ids=[])
             )
         if edited is not None:
-            return self.prepare_patch_approval(edited)
+            return self.prepare_patch_approval(edited, plan_review=review)
 
-        candidates = [request.plan, *request.alternate_plans][
+        if request.patch_draft is None:
+            artifacts = self._write_plan_artifacts(request.plan)
+            result = self._failed_result(
+                started_at=started_at,
+                summary="Repair patch draft is missing.",
+                category="model",
+                message="repair patch generation must run after repair plan approval",
+                artifact_ids=artifacts,
+                next_suggestion="Generate a RepairPatchDraft from the approved repair plan.",
+            )
+            return RepairApprovalPreview(
+                result=self._finalize_result(result, artifact_ids=artifacts)
+            )
+
+        candidates = [request.patch_draft, *request.alternate_patch_drafts][
             : max(1, request.max_patch_attempts)
         ]
-        prepared, attempts = self._prepare_patch_candidates(candidates)
-        plan = prepared.plan if prepared is not None else candidates[0]
+        prepared, attempts = self._prepare_patch_candidates(request.plan, candidates)
+        plan = prepared.plan if prepared is not None else request.plan
+        draft = prepared.draft if prepared is not None else candidates[0]
         artifacts = self._write_plan_artifacts(plan)
+        draft_json_path = self._write_patch_draft_json(draft)
+        artifacts.append(
+            self._record_artifact(
+                "repair_patch_draft_json",
+                ArtifactKind.JSON,
+                draft_json_path,
+                "Structured repair patch draft",
+            )
+        )
         attempts_path = self._write_attempts(attempts)
         artifacts.append(
             self._record_artifact(
@@ -189,7 +299,7 @@ class RepairService:
                 category="patch",
                 message=_last_attempt_error(attempts),
                 artifact_ids=artifacts,
-                next_suggestion="Revise the repair plan or patch candidate and retry.",
+                next_suggestion="Revise the approved repair plan or regenerate the repair patch draft.",
             )
             return RepairApprovalPreview(
                 result=self._finalize_result(result, artifact_ids=artifacts)
@@ -237,6 +347,7 @@ class RepairService:
                 "default_decision": "reject",
                 "payload": {
                     "patch_path": "repair/repair.patch.diff",
+                    "patch_draft_json_path": "repair/repair_patch_draft.json",
                     "changed_files": prepared.validation.changed_files,
                     "added_lines": prepared.summary.added_lines,
                     "removed_lines": prepared.summary.removed_lines,
@@ -253,10 +364,11 @@ class RepairService:
         *,
         patch_approval: ApprovalDecision,
         approved_patch_sha256: str | None = None,
-    ) -> RepairApprovalPreview:
+        ) -> RepairApprovalPreview:
         started_at = utc_timestamp()
         plan = self._load_prepared_plan(request.plan)
-        artifacts = self._register_existing_artifacts(plan)
+        draft = self._load_prepared_patch_draft(request.patch_draft)
+        artifacts = self._register_existing_artifacts(plan, draft)
         edited = self._request_from_patch_edit(
             replace(request, patch_approval=patch_approval),
             started_at=started_at,
@@ -266,7 +378,10 @@ class RepairService:
                 result=self._finalize_result(edited, artifact_ids=artifacts)
             )
         if edited is not None:
-            return self.prepare_patch_approval(edited)
+            return self.prepare_patch_approval(
+                edited,
+                plan_review=request.plan_review,
+            )
         patch_decision = self._handle_patch_approval(patch_approval, started_at)
         if patch_decision is not None:
             patch_decision = patch_decision.model_copy(update={"artifact_ids": artifacts})
@@ -340,13 +455,19 @@ class RepairService:
                 "interrupt_id": REPAIR_COMMAND_INTERRUPT_ID,
                 "action": "approve_regression_command",
                 "title": "审批回归验证命令",
-                "summary": plan.verification_command,
+                "summary": (
+                    draft.verification_command if draft is not None else plan.verification_command
+                ),
                 "risk_level": "medium",
                 "allowed_decisions": ["approve", "edit", "reject", "cancel"],
                 "default_decision": "reject",
                 "payload": {
-                    "command": plan.verification_command,
-                    "framework": plan.framework,
+                    "command": (
+                        draft.verification_command
+                        if draft is not None
+                        else plan.verification_command
+                    ),
+                    "framework": draft.framework if draft is not None else plan.framework,
                     "changed_files": applied.changed_files,
                     "artifact_ids": artifacts,
                 },
@@ -358,12 +479,17 @@ class RepairService:
         request: RepairRequest,
         *,
         command_approval: ApprovalDecision,
-    ) -> StageResult:
+        ) -> StageResult:
         started_at = utc_timestamp()
         plan = self._load_prepared_plan(request.plan)
-        artifacts = self._register_existing_artifacts(plan)
+        draft = self._load_prepared_patch_draft(request.patch_draft)
+        artifacts = self._register_existing_artifacts(plan, draft)
         changed_files = _read_changed_files(self.stage_dir / "changed_files.json")
-        command = self._command_from_decision(plan.verification_command, command_approval)
+        planned_command = (
+            draft.verification_command if draft is not None else plan.verification_command
+        )
+        framework = draft.framework if draft is not None else plan.framework
+        command = self._command_from_decision(planned_command, command_approval)
         if isinstance(command, StageResult):
             command = command.model_copy(update={"artifact_ids": artifacts})
             return self._finalize_result(command, artifact_ids=artifacts)
@@ -379,7 +505,7 @@ class RepairService:
                 next_suggestion="Approve an allowed pytest or unittest command.",
             )
             return self._finalize_result(result, artifact_ids=artifacts)
-        parsed = parse_shell_result(framework=plan.framework, shell_result=shell)
+        parsed = parse_shell_result(framework=framework, shell_result=shell)
         after_log_path = self._write_after_test_log(shell)
         result_path = self._write_test_result(parsed.to_json_dict())
         artifacts.extend(
@@ -400,6 +526,7 @@ class RepairService:
         )
         report_path = self._write_repair_report(
             plan=plan,
+            patch_draft=draft,
             command=command,
             changed_files=changed_files,
             test_result=parsed.to_json_dict(),
@@ -436,12 +563,13 @@ class RepairService:
 
     def _prepare_patch_candidates(
         self,
-        candidates: list[RepairPlan],
+        plan: RepairPlan,
+        candidates: list[RepairPatchDraft],
     ) -> tuple[_PreparedRepairPatch | None, list[dict[str, object]]]:
         attempts: list[dict[str, object]] = []
-        for index, plan in enumerate(candidates, start=1):
+        for index, draft in enumerate(candidates, start=1):
             try:
-                precheck_error = self._precheck_repair_paths(plan)
+                precheck_error = self._precheck_repair_paths(draft)
                 if precheck_error:
                     attempts.append(
                         {
@@ -453,7 +581,7 @@ class RepairService:
                     )
                     continue
                 patch = self.patch_service.create_unified_diff(
-                    self._file_changes_for_plan(plan)
+                    self._file_changes_for_patch_draft(draft)
                 )
                 candidate_path = self.stage_dir / f"repair_patch_attempt_{index}.diff"
                 fs.write_text(candidate_path, patch.text)
@@ -485,6 +613,7 @@ class RepairService:
                 return (
                     _PreparedRepairPatch(
                         plan=plan,
+                        draft=draft,
                         validation=validation,
                         summary=summary,
                         risk=risk,
@@ -503,11 +632,11 @@ class RepairService:
                 )
         return None, attempts
 
-    def _precheck_repair_paths(self, plan: RepairPlan) -> str:
+    def _precheck_repair_paths(self, draft: RepairPatchDraft) -> str:
         root = self.run_context.task_config.project_path.resolve()
         sensitive_filter = SensitiveFilter(root)
         errors: list[str] = []
-        for change in plan.changes:
+        for change in draft.changes:
             normalized = _normalize_plan_path(change.path)
             if normalized is None:
                 errors.append(f"repair path outside project root: {change.path}")
@@ -523,10 +652,10 @@ class RepairService:
                 errors.append(f"repair path targets sensitive or generated path: {normalized}")
         return "; ".join(errors)
 
-    def _file_changes_for_plan(self, plan: RepairPlan) -> list[FileChange]:
+    def _file_changes_for_patch_draft(self, draft: RepairPatchDraft) -> list[FileChange]:
         root = self.run_context.task_config.project_path
         changes: list[FileChange] = []
-        for change in plan.changes:
+        for change in draft.changes:
             old_content = change.old_content
             if old_content is None:
                 old_content = self._read_existing_content_if_safe(root, change.path)
@@ -567,18 +696,20 @@ class RepairService:
         if approval.decision_type != "edit":
             return None
         self._record_decision(approval, action="approve_repair_patch")
-        raw_plan = (approval.edited_payload or {}).get("plan")
-        if not isinstance(raw_plan, dict):
+        raw_draft = (approval.edited_payload or {}).get("patch_draft")
+        if not isinstance(raw_draft, dict):
+            raw_draft = (approval.edited_payload or {}).get("plan")
+        if not isinstance(raw_draft, dict):
             return self._failed_result(
                 started_at=started_at,
-                summary="Repair edit did not include an edited plan.",
+                summary="Repair edit did not include an edited patch draft.",
                 category="hitl",
-                message="edited_payload.plan is required for repair patch edit decisions",
+                message="edited_payload.patch_draft is required for repair patch edit decisions",
                 artifact_ids=[],
-                next_suggestion="Resume with edited_payload.plan or regenerate repair.",
+                next_suggestion="Resume with edited_payload.patch_draft or regenerate repair.",
             )
         try:
-            plan = RepairPlan.model_validate(raw_plan)
+            draft = RepairPatchDraft.model_validate(raw_draft)
         except ValidationError as exc:
             return self._failed_result(
                 started_at=started_at,
@@ -590,7 +721,7 @@ class RepairService:
             )
         return replace(
             request,
-            plan=plan,
+            patch_draft=draft,
             patch_approval=ApprovalDecision(
                 interrupt_id=REPAIR_PATCH_INTERRUPT_ID,
                 decision_type="approve",
@@ -598,6 +729,27 @@ class RepairService:
                 decided_by=approval.decided_by,
                 auto=approval.auto,
             ),
+        )
+
+    def _handle_plan_review(
+        self,
+        approval: ApprovalDecision,
+        started_at: str,
+    ) -> StageResult | None:
+        if approval.interrupt_id != REPAIR_PLAN_INTERRUPT_ID:
+            return self._failed_result(
+                started_at=started_at,
+                summary="Repair plan review decision did not match the expected interrupt.",
+                category="hitl",
+                message="approval decision interrupt_id does not match repair plan",
+                artifact_ids=[],
+                next_suggestion="Resume with a decision for the repair_plan interrupt.",
+            )
+        self._record_decision(approval, action="review_repair_plan")
+        return _result_from_non_approve_decision(
+            approval,
+            node="review_repair_plan",
+            started_at=started_at,
         )
 
     def _handle_patch_approval(
@@ -725,9 +877,9 @@ class RepairService:
         )
 
     def _write_plan_artifacts(self, plan: RepairPlan) -> list[str]:
-        plan_path = self.stage_dir / "repair_plan.final.md"
+        plan_path = self.stage_dir / "repair_plan.md"
         fs.write_text(plan_path, _render_plan(plan))
-        plan_json_path = self.stage_dir / "repair_plan.final.json"
+        plan_json_path = self.stage_dir / "repair_plan.json"
         fs.write_text(
             plan_json_path,
             json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
@@ -748,13 +900,33 @@ class RepairService:
         ]
 
     def _load_prepared_plan(self, fallback_plan: RepairPlan) -> RepairPlan:
-        path = self.stage_dir / "repair_plan.final.json"
+        path = self.stage_dir / "repair_plan.json"
         if not fs.exists(path):
             return fallback_plan
         try:
             return RepairPlan.model_validate(json.loads(fs.read_text(path)))
         except (OSError, json.JSONDecodeError, ValidationError):
             return fallback_plan
+
+    def _write_patch_draft_json(self, draft: RepairPatchDraft) -> Path:
+        path = self.stage_dir / "repair_patch_draft.json"
+        fs.write_text(
+            path,
+            json.dumps(draft.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        )
+        return path
+
+    def _load_prepared_patch_draft(
+        self,
+        fallback_draft: RepairPatchDraft | None,
+    ) -> RepairPatchDraft | None:
+        path = self.stage_dir / "repair_patch_draft.json"
+        if not fs.exists(path):
+            return fallback_draft
+        try:
+            return RepairPatchDraft.model_validate(json.loads(fs.read_text(path)))
+        except (OSError, json.JSONDecodeError, ValidationError):
+            return fallback_draft
 
     def _write_attempts(self, attempts: list[dict[str, object]]) -> Path:
         path = self.stage_dir / "repair_patch_attempts.json"
@@ -815,6 +987,7 @@ class RepairService:
         self,
         *,
         plan: RepairPlan,
+        patch_draft: RepairPatchDraft | None = None,
         command: str,
         changed_files: list[str],
         test_result: dict[str, object],
@@ -836,6 +1009,10 @@ class RepairService:
             "",
         ]
         lines.extend(f"- `{item}`" for item in changed_files)
+        if patch_draft is not None:
+            lines.extend(["", "## Generated Repair Files", ""])
+            for change in patch_draft.changes:
+                lines.append(f"- `{change.path.as_posix()}`: {change.rationale}")
         lines.extend(
             [
                 "",
@@ -853,24 +1030,40 @@ class RepairService:
         fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
-    def _register_existing_artifacts(self, fallback_plan: RepairPlan) -> list[str]:
-        if not fs.exists(self.stage_dir / "repair_plan.final.md"):
+    def _register_existing_artifacts(
+        self,
+        fallback_plan: RepairPlan,
+        fallback_draft: RepairPatchDraft | None = None,
+    ) -> list[str]:
+        if not fs.exists(self.stage_dir / "repair_plan.md"):
             artifacts = self._write_plan_artifacts(fallback_plan)
         else:
             artifacts = [
                 self._record_artifact(
                     "repair_plan_final",
                     ArtifactKind.REPORT,
-                    self.stage_dir / "repair_plan.final.md",
+                    self.stage_dir / "repair_plan.md",
                     "Final repair plan",
                 ),
                 self._record_artifact(
                     "repair_plan_final_json",
                     ArtifactKind.JSON,
-                    self.stage_dir / "repair_plan.final.json",
+                    self.stage_dir / "repair_plan.json",
                     "Structured final repair plan",
                 ),
             ]
+        draft_json_path = self.stage_dir / "repair_patch_draft.json"
+        if not fs.exists(draft_json_path) and fallback_draft is not None:
+            draft_json_path = self._write_patch_draft_json(fallback_draft)
+        if fs.exists(draft_json_path):
+            artifacts.append(
+                self._record_artifact(
+                    "repair_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured repair patch draft",
+                )
+            )
         existing = [
             ("repair_patch", ArtifactKind.PATCH, "repair.patch.diff", "Repair patch diff"),
             ("repair_risk", ArtifactKind.JSON, "repair_risk.json", "Repair patch risk report"),
@@ -1012,7 +1205,13 @@ def _render_plan(plan: RepairPlan) -> str:
         "",
     ]
     for change in plan.changes:
-        lines.append(f"- `{change.path.as_posix()}`: {change.rationale}")
+        lines.extend(
+            [
+                f"- `{change.path.as_posix()}`",
+                f"  - Rationale: {change.rationale}",
+                f"  - Expected effect: {change.expected_effect}",
+            ]
+        )
     lines.extend(["", "## Verification", "", f"`{plan.verification_command}`"])
     return "\n".join(lines) + "\n"
 

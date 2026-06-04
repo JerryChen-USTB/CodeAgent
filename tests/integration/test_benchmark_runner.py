@@ -18,7 +18,9 @@ from codeagent.stages.testing_service import (
     TEST_COMMAND_INTERRUPT_ID,
     TEST_PATCH_INTERRUPT_ID,
     TEST_PLAN_INTERRUPT_ID,
+    TestPatchFileChange,
     TestFileChange,
+    TestingPatchDraft,
     TestingPlan,
     TestingRequest,
 )
@@ -29,6 +31,8 @@ runner = CliRunner()
 
 
 class _FakePlanGenerationService:
+    _last_draft: TestingPatchDraft | None = None
+
     def create_testing_request(self, context) -> TestingRequest:
         if context.task_config.test_framework == "unittest":
             content = (
@@ -53,13 +57,26 @@ class _FakePlanGenerationService:
             and "py_compile" not in configured
         ):
             command = configured
+        path = "tests/test_codeagent_generated.py"
         plan = TestingPlan(
             target_summary="Generated visible benchmark self-tests.",
             strategy="Add a generated visible smoke test and run visible tests only.",
             acceptance_criteria=["At least one visible generated test is executed."],
             changes=[
                 TestFileChange(
-                    path="tests/test_codeagent_generated.py",
+                    path=path,
+                    test_focus="Visible generated smoke coverage.",
+                    rationale="Benchmark self-test must not use hidden oracle material.",
+                )
+            ],
+            command=command,
+            framework=framework,
+        )
+        self._last_draft = TestingPatchDraft(
+            plan_summary="Concrete visible benchmark self-test patch.",
+            changes=[
+                TestPatchFileChange(
+                    path=path,
                     old_content=None,
                     new_content=content,
                     rationale="Benchmark self-test must not use hidden oracle material.",
@@ -92,6 +109,12 @@ class _FakePlanGenerationService:
                 decided_by="test",
             ),
         )
+
+    def create_testing_patch_draft(self, context, _plan, *, feedback: str | None = None):
+        if self._last_draft is None:
+            self.create_testing_request(context)
+        assert self._last_draft is not None
+        return self._last_draft
 
 
 @pytest.fixture(autouse=True)

@@ -12,6 +12,7 @@ from langgraph.types import interrupt
 
 from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
+    REPAIR_PLAN_INTERRUPT_ID,
     REPAIR_PATCH_INTERRUPT_ID,
     REPAIR_STAGE,
     RepairRequest,
@@ -78,10 +79,30 @@ def build_interrupting_repair_subgraph(
     request_builder: RepairRequestBuilder,
     checkpointer=None,
 ):
-    """Build the repair subgraph with patch and command HITL interrupts."""
+    """Build the repair subgraph with plan, patch, and command HITL interrupts."""
+
+    def prepare_plan(state: AgentState) -> dict[str, Any]:
+        preview = service.prepare_plan_review(request_builder(state))
+        if preview.payload is None:
+            raise ValueError("repair plan preview produced no payload")
+        return _pending_update(state, preview.payload, event_type="repair_plan_ready")
+
+    def review_plan(state: AgentState) -> dict[str, Any]:
+        payload = state.get("pending_interrupt")
+        if payload is None:
+            raise ValueError("repair plan approval payload missing")
+        decision = interrupt(payload)
+        resumed = dict(payload)
+        resumed["decision"] = decision
+        return {"pending_interrupt": resumed}
 
     def prepare_patch(state: AgentState) -> dict[str, Any]:
-        preview = service.prepare_patch_approval(request_builder(state))
+        plan_decision = _approval_from_pending(
+            state.get("pending_interrupt"),
+            expected_interrupt_id=REPAIR_PLAN_INTERRUPT_ID,
+        )
+        request = replace(request_builder(state), plan_review=plan_decision)
+        preview = service.prepare_patch_approval(request, plan_review=plan_decision)
         if preview.result is not None:
             update = _state_update_from_result(state, preview.result)
             update["pending_interrupt"] = None
@@ -140,12 +161,16 @@ def build_interrupting_repair_subgraph(
         return update
 
     graph = StateGraph(AgentState)
+    graph.add_node("prepare_plan", prepare_plan)
+    graph.add_node("review_plan", review_plan)
     graph.add_node("prepare_patch", prepare_patch)
     graph.add_node("approve_patch", approve_patch)
     graph.add_node("apply_patch", apply_patch)
     graph.add_node("approve_command", approve_command)
     graph.add_node("run_command", run_command)
-    graph.add_edge(START, "prepare_patch")
+    graph.add_edge(START, "prepare_plan")
+    graph.add_edge("prepare_plan", "review_plan")
+    graph.add_edge("review_plan", "prepare_patch")
     graph.add_conditional_edges(
         "prepare_patch",
         _route_after_result_or_continue,

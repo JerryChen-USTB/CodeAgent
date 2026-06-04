@@ -55,6 +55,21 @@ class ProgressEventFormatter:
         if event_type == "approval_required":
             action = _action_label(event.get("action", "approval"))
             return f"[需要确认] {action}"
+        if event_type == "key_files_summary":
+            files = event.get("files")
+            if not isinstance(files, list) or not files:
+                return "[关键文件] <无>"
+            rendered = "\n".join(f"- {item}" for item in files)
+            return f"[关键文件]\n{rendered}"
+        if event_type == "run_directory":
+            return f"运行目录：{event.get('path', '<unknown>')}"
+        if event_type == "human_decision":
+            decision = event.get("decision_type", "<unknown>")
+            action = event.get("action", "approval")
+            return f"[审批] {action} {_status_label(decision)}"
+        if event_type == "approval_required":
+            action = _action_label(event.get("action", "approval"))
+            return f"[需要确认] {action}"
         if event_type == "node_completed":
             return f"[节点] {_node_label(event.get('node'))} 已完成"
         if event_type == "route_decision":
@@ -187,6 +202,19 @@ def _status_label(value: Any) -> str:
 
 def _action_label(value: Any) -> str:
     text = str(value or "<unknown>")
+    clean_labels = {
+        "review_implementation_plan": "审查实现方案",
+        "approve_implementation_patch": "审批实现补丁",
+        "review_test_plan": "审查测试方案",
+        "approve_test_patch": "审批测试补丁",
+        "approve_test_command": "审批测试命令",
+        "approve_reproduction_command": "审批复现命令",
+        "review_repair_plan": "审查修复方案",
+        "approve_repair_patch": "审批修复补丁",
+        "approve_regression_command": "审批回归验证命令",
+    }
+    if text in clean_labels:
+        return clean_labels[text]
     return _ACTION_LABELS.get(text, text)
 
 

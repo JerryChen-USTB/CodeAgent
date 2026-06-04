@@ -28,7 +28,11 @@ from codeagent.stages.implementation_service import (
     ImplementationRequest,
     ImplementationService,
 )
-from codeagent.stages.repair_service import RepairRequest, RepairService
+from codeagent.stages.repair_service import (
+    REPAIR_PLAN_INTERRUPT_ID,
+    RepairRequest,
+    RepairService,
+)
 from codeagent.stages.testing_service import TestingRequest, TestingService
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
@@ -90,6 +94,9 @@ def execute_task_config(
     _write_final_report(context, list(stage_results.values()))
     final_status = str(final_state.get("final_status") or "failed")
     context.workflow_trace.record("run_completed", final_status=final_status)
+    key_files = _key_file_summary(context)
+    context.workflow_trace.record("key_files_summary", files=key_files)
+    progress.render_event({"type": "key_files_summary", "files": key_files})
     progress.render_event({"type": "run_directory", "path": context.run_dir.as_posix()})
     return CliRunResult(
         run_id=context.run_id,
@@ -161,6 +168,7 @@ def _prompt_approval(context: RunContext, payload: dict[str, object]) -> Approva
         risk_level=request.risk_level,
         payload=request.payload,
     )
+    _print_approval_context(context, request)
     decision = ApprovalConsole().prompt(request)
     return ApprovalDecision(
         interrupt_id=decision.interrupt_id,
@@ -173,6 +181,112 @@ def _prompt_approval(context: RunContext, payload: dict[str, object]) -> Approva
         decision_source="user",
         presented_to_user=True,
     )
+
+
+def _print_approval_context(context: RunContext, request: ApprovalRequest) -> None:
+    lines = _approval_context_lines(context, request)
+    if not lines:
+        return
+    print("")
+    print("请先审查以下文件：")
+    for line in lines:
+        print(f"- {line}")
+    hint = _approval_hint(request.action)
+    if hint:
+        print(hint)
+    print("")
+    context.workflow_trace.record(
+        "approval_context_presented",
+        stage=_stage_from_approval_action(request.action),
+        action=request.action,
+        files=lines,
+        hint=hint,
+    )
+
+
+def _approval_context_lines(
+    context: RunContext,
+    request: ApprovalRequest,
+) -> list[str]:
+    payload = request.payload
+    lines: list[str] = []
+    artifact_keys = [
+        ("plan_path", context.run_dir),
+        ("plan_json_path", context.run_dir),
+        ("patch_draft_json_path", context.run_dir),
+        ("patch_path", context.run_dir),
+    ]
+    for key, base in artifact_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            lines.append(_display_path(value, base=base))
+    changed_files = payload.get("changed_files")
+    if isinstance(changed_files, list):
+        for value in changed_files:
+            if isinstance(value, str) and value.strip():
+                lines.append(_display_path(value, base=context.task_config.project_path))
+    return _dedupe_lines(lines)
+
+
+def _approval_hint(action: str) -> str:
+    if "plan" in action:
+        return "提示：现在只是在审查方案，补丁尚未生成；同意后才会调用 LLM 生成补丁草案。"
+    if "patch" in action:
+        return "提示：现在只是在审查补丁；批准后才会修改项目工作区文件。"
+    if "command" in action:
+        return "提示：批准后会在项目目录中执行这条命令。"
+    return ""
+
+
+def _display_path(path_text: str, *, base: Path) -> str:
+    path = Path(path_text)
+    relative = path
+    if path.is_absolute():
+        try:
+            relative = path.resolve().relative_to(base.resolve())
+        except ValueError:
+            relative = Path(path.name)
+    normalized = relative.as_posix()
+    name = Path(normalized).name or normalized
+    return f"{name} ({normalized})"
+
+
+def _key_file_summary(context: RunContext) -> list[str]:
+    files: list[str] = []
+    for stage in (Stage.IMPLEMENT, Stage.TEST, Stage.REPAIR):
+        changed_files_path = context.stage_dirs[stage] / "changed_files.json"
+        if not fs.exists(changed_files_path):
+            continue
+        try:
+            data = json.loads(fs.read_text(changed_files_path))
+        except (OSError, json.JSONDecodeError):
+            continue
+        changed_files = data.get("changed_files") if isinstance(data, dict) else None
+        if not isinstance(changed_files, list):
+            continue
+        for value in changed_files:
+            if isinstance(value, str) and value.strip():
+                files.append(_display_path(value, base=context.task_config.project_path))
+    for value in [
+        "final_report.md",
+        "workflow.log",
+        "workflow_events.jsonl",
+        "decision_trace.jsonl",
+        "artifacts_index.json",
+    ]:
+        files.append(_display_path(value, base=context.run_dir))
+    return _dedupe_lines(files)
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line in lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        deduped.append(line)
+    return deduped
 
 
 def _approval_request_from_payload(payload: dict[str, object]) -> ApprovalRequest:
@@ -331,6 +445,87 @@ def _regenerate_repair_request(
     )
 
 
+def _generate_implementation_patch_request(
+    context: RunContext,
+    request: ImplementationRequest,
+    *,
+    planner: PlanGenerationService,
+    feedback: str | None = None,
+    review_round: int = 1,
+) -> ImplementationRequest:
+    emit_progress(
+        "agent_status",
+        stage="implementation",
+        message="实现方案已通过，正在调用 LLM 生成实现补丁草案。",
+    )
+    context.workflow_trace.record(
+        "patch_generation_requested",
+        stage="implementation",
+        review_round=review_round,
+        feedback=feedback,
+    )
+    draft = planner.create_implementation_patch_draft(
+        context,
+        request.plan,
+        feedback=feedback,
+    )
+    return replace(request, patch_draft=draft, alternate_patch_drafts=[])
+
+
+def _generate_testing_patch_request(
+    context: RunContext,
+    request: TestingRequest,
+    *,
+    planner: PlanGenerationService,
+    feedback: str | None = None,
+    review_round: int = 1,
+) -> TestingRequest:
+    emit_progress(
+        "agent_status",
+        stage="testing",
+        message="测试方案已通过，正在调用 LLM 生成完整测试补丁草案。",
+    )
+    context.workflow_trace.record(
+        "patch_generation_requested",
+        stage="testing",
+        review_round=review_round,
+        feedback=feedback,
+    )
+    draft = planner.create_testing_patch_draft(
+        context,
+        request.plan,
+        feedback=feedback,
+    )
+    return replace(request, patch_draft=draft, alternate_patch_drafts=[])
+
+
+def _generate_repair_patch_request(
+    context: RunContext,
+    request: RepairRequest,
+    *,
+    planner: PlanGenerationService,
+    feedback: str | None = None,
+    review_round: int = 1,
+) -> RepairRequest:
+    emit_progress(
+        "agent_status",
+        stage="repair",
+        message="修复方案已通过，正在调用 LLM 生成修复补丁草案。",
+    )
+    context.workflow_trace.record(
+        "patch_generation_requested",
+        stage="repair",
+        review_round=review_round,
+        feedback=feedback,
+    )
+    draft = planner.create_repair_patch_draft(
+        context,
+        request.plan,
+        feedback=feedback,
+    )
+    return replace(request, patch_draft=draft, alternate_patch_drafts=[])
+
+
 def _planner_create_request(
     planner: PlanGenerationService,
     method_name: str,
@@ -427,7 +622,7 @@ def _implementation_handler(context: RunContext) -> StageHandler:
             emit_progress(
                 "agent_status",
                 stage="implementation",
-                message="已获得实现计划，等待审批后再生成、校验并应用实现补丁",
+                message="已获得实现计划，等待方案审批；补丁尚未生成",
             )
             result = _run_implementation_with_approval(context, service, request)
         except Exception as exc:
@@ -487,42 +682,50 @@ def _run_implementation_with_approval(
         else:
             request = replace(request, plan_review=plan_review)
 
-        if not _should_prompt_for_approval(context, request.approval):
-            return service.run(
-                replace(request, approval=_effective_approval(context, request.approval))
-            )
-
-        preview = service.prepare_approval(request)
-        if preview.result is not None:
-            return preview.result
-        if preview.payload is None:
-            raise RuntimeError("implementation approval payload missing")
-        approval = (
-            _prompt_approval(context, preview.payload)
-            if _should_prompt_for_approval(context, request.approval)
-            else _effective_approval(context, request.approval)
-        )
-        if approval.decision_type == "respond":
-            _record_feedback_decision(
-                context,
-                stage="implementation",
-                action="approve_implementation_patch",
-                approval=approval,
-            )
-            request = _regenerate_implementation_request(
-                context,
-                planner=planner,
-                feedback=_feedback_from_decision(approval),
-                review_round=review_round,
-            )
-            continue
-        if approval.decision_type == "edit":
-            return service.run(replace(request, approval=approval))
-        return service.apply_prepared_patch(
+        request = _generate_implementation_patch_request(
+            context,
             request,
-            approval=approval,
-            approved_patch_sha256=_payload_patch_sha256(preview.payload),
+            planner=planner,
+            review_round=review_round,
         )
+        for patch_round in range(1, _max_review_rounds(context) + 1):
+            if not _should_prompt_for_approval(context, request.approval):
+                return service.run(
+                    replace(request, approval=_effective_approval(context, request.approval))
+                )
+
+            preview = service.prepare_approval(request)
+            if preview.result is not None:
+                return preview.result
+            if preview.payload is None:
+                raise RuntimeError("implementation approval payload missing")
+            approval = (
+                _prompt_approval(context, preview.payload)
+                if _should_prompt_for_approval(context, request.approval)
+                else _effective_approval(context, request.approval)
+            )
+            if approval.decision_type == "respond":
+                _record_feedback_decision(
+                    context,
+                    stage="implementation",
+                    action="approve_implementation_patch",
+                    approval=approval,
+                )
+                request = _generate_implementation_patch_request(
+                    context,
+                    request,
+                    planner=planner,
+                    feedback=_feedback_from_decision(approval),
+                    review_round=patch_round,
+                )
+                continue
+            if approval.decision_type == "edit":
+                return service.run(replace(request, approval=approval))
+            return service.apply_prepared_patch(
+                request,
+                approval=approval,
+                approved_patch_sha256=_payload_patch_sha256(preview.payload),
+            )
     return _approval_feedback_limit_result(
         stage="implementation",
         started_at=started_at,
@@ -559,7 +762,7 @@ def _testing_handler(context: RunContext) -> StageHandler:
             emit_progress(
                 "agent_status",
                 stage="testing",
-                message="测试方案已生成，正在写入测试补丁并执行 Agent 自测",
+                message="测试方案已生成，等待方案审批；测试补丁尚未生成",
             )
             result = _run_testing_with_approval(context, service, request)
         except Exception as exc:
@@ -613,49 +816,57 @@ def _run_testing_with_approval(
             )
             continue
         request = replace(request, plan_review=plan_review)
-
-        patch_preview = service.prepare_patch_approval(request, plan_review=plan_review)
-        if patch_preview.result is not None:
-            return patch_preview.result
-        if patch_preview.payload is None:
-            raise RuntimeError("testing patch approval payload missing")
-        patch_approval = (
-            _prompt_approval(context, patch_preview.payload)
-            if _should_prompt_for_approval(context, request.patch_approval)
-            else _effective_approval(context, request.patch_approval)
-        )
-        if patch_approval.decision_type == "respond":
-            _record_feedback_decision(
-                context,
-                stage="testing",
-                action="approve_test_patch",
-                approval=patch_approval,
-            )
-            request = _regenerate_testing_request(
-                context,
-                planner=planner,
-                feedback=_feedback_from_decision(patch_approval),
-                review_round=review_round,
-            )
-            continue
-        request = replace(request, patch_approval=patch_approval)
-
-        command_preview = service.apply_patch_and_prepare_command(
+        request = _generate_testing_patch_request(
+            context,
             request,
-            patch_approval=patch_approval,
-            approved_patch_sha256=_payload_patch_sha256(patch_preview.payload),
+            planner=planner,
+            review_round=review_round,
         )
-        if command_preview.result is not None:
-            return command_preview.result
-        if command_preview.payload is None:
-            raise RuntimeError("testing command approval payload missing")
-        command_approval = (
-            _prompt_approval(context, command_preview.payload)
-            if _should_prompt_for_approval(context, request.command_approval)
-            else _effective_approval(context, request.command_approval)
-        )
-        request = replace(request, command_approval=command_approval)
-        return service.run_prepared_command(request, command_approval=command_approval)
+
+        for patch_round in range(1, _max_review_rounds(context) + 1):
+            patch_preview = service.prepare_patch_approval(request, plan_review=plan_review)
+            if patch_preview.result is not None:
+                return patch_preview.result
+            if patch_preview.payload is None:
+                raise RuntimeError("testing patch approval payload missing")
+            patch_approval = (
+                _prompt_approval(context, patch_preview.payload)
+                if _should_prompt_for_approval(context, request.patch_approval)
+                else _effective_approval(context, request.patch_approval)
+            )
+            if patch_approval.decision_type == "respond":
+                _record_feedback_decision(
+                    context,
+                    stage="testing",
+                    action="approve_test_patch",
+                    approval=patch_approval,
+                )
+                request = _generate_testing_patch_request(
+                    context,
+                    request,
+                    planner=planner,
+                    feedback=_feedback_from_decision(patch_approval),
+                    review_round=patch_round,
+                )
+                continue
+            request = replace(request, patch_approval=patch_approval)
+
+            command_preview = service.apply_patch_and_prepare_command(
+                request,
+                patch_approval=patch_approval,
+                approved_patch_sha256=_payload_patch_sha256(patch_preview.payload),
+            )
+            if command_preview.result is not None:
+                return command_preview.result
+            if command_preview.payload is None:
+                raise RuntimeError("testing command approval payload missing")
+            command_approval = (
+                _prompt_approval(context, command_preview.payload)
+                if _should_prompt_for_approval(context, request.command_approval)
+                else _effective_approval(context, request.command_approval)
+            )
+            request = replace(request, command_approval=command_approval)
+            return service.run_prepared_command(request, command_approval=command_approval)
     return _approval_feedback_limit_result(
         stage="testing",
         started_at=started_at,
@@ -793,7 +1004,7 @@ def _repair_handler(context: RunContext) -> StageHandler:
             emit_progress(
                 "agent_status",
                 stage="repair",
-                message="已获得修复计划，正在生成、校验并验证修复补丁",
+                message="已获得修复计划，等待方案审批；修复补丁尚未生成",
             )
             result = _run_repair_with_approval(context, service, request)
         except Exception as exc:
@@ -818,63 +1029,93 @@ def _run_repair_with_approval(
     service: RepairService,
     request: RepairRequest,
 ) -> StageResult:
-    if (
-        not _should_prompt_for_approval(context, request.patch_approval)
-        and not _should_prompt_for_approval(context, request.command_approval)
-    ):
-        return service.run(
-            replace(
-                request,
-                patch_approval=_effective_approval(context, request.patch_approval),
-                command_approval=_effective_approval(context, request.command_approval),
-            )
-        )
-
     planner = PlanGenerationService()
     started_at = utc_timestamp()
     for review_round in range(1, _max_review_rounds(context) + 1):
-        patch_preview = service.prepare_patch_approval(request)
-        if patch_preview.result is not None:
-            return patch_preview.result
-        if patch_preview.payload is None:
-            raise RuntimeError("repair patch approval payload missing")
-        patch_approval = (
-            _prompt_approval(context, patch_preview.payload)
-            if _should_prompt_for_approval(context, request.patch_approval)
-            else _effective_approval(context, request.patch_approval)
+        plan_preview = service.prepare_plan_review(request)
+        if plan_preview.result is not None:
+            return plan_preview.result
+        if plan_preview.payload is None:
+            raise RuntimeError("repair plan approval payload missing")
+        default_plan_review = request.plan_review or ApprovalDecision(
+            interrupt_id=REPAIR_PLAN_INTERRUPT_ID,
+            decision_type="approve",
+            comment="Generated repair plan review.",
+            auto=False,
+            decision_source="system_default",
+            presented_to_user=False,
         )
-        if patch_approval.decision_type == "respond":
+        plan_review = (
+            _prompt_approval(context, plan_preview.payload)
+            if _should_prompt_for_approval(context, default_plan_review)
+            else _effective_approval(context, default_plan_review)
+        )
+        if plan_review.decision_type == "respond":
             _record_feedback_decision(
                 context,
                 stage="repair",
-                action="approve_repair_patch",
-                approval=patch_approval,
+                action="review_repair_plan",
+                approval=plan_review,
             )
             request = _regenerate_repair_request(
                 context,
                 planner=planner,
-                feedback=_feedback_from_decision(patch_approval),
+                feedback=_feedback_from_decision(plan_review),
                 review_round=review_round,
             )
             continue
-        request = replace(request, patch_approval=patch_approval)
-
-        command_preview = service.apply_patch_and_prepare_command(
+        request = replace(request, plan_review=plan_review)
+        request = _generate_repair_patch_request(
+            context,
             request,
-            patch_approval=patch_approval,
-            approved_patch_sha256=_payload_patch_sha256(patch_preview.payload),
+            planner=planner,
+            review_round=review_round,
         )
-        if command_preview.result is not None:
-            return command_preview.result
-        if command_preview.payload is None:
-            raise RuntimeError("repair command approval payload missing")
-        command_approval = (
-            _prompt_approval(context, command_preview.payload)
-            if _should_prompt_for_approval(context, request.command_approval)
-            else _effective_approval(context, request.command_approval)
-        )
-        request = replace(request, command_approval=command_approval)
-        return service.run_prepared_command(request, command_approval=command_approval)
+
+        for patch_round in range(1, _max_review_rounds(context) + 1):
+            patch_preview = service.prepare_patch_approval(request, plan_review=plan_review)
+            if patch_preview.result is not None:
+                return patch_preview.result
+            if patch_preview.payload is None:
+                raise RuntimeError("repair patch approval payload missing")
+            patch_approval = (
+                _prompt_approval(context, patch_preview.payload)
+                if _should_prompt_for_approval(context, request.patch_approval)
+                else _effective_approval(context, request.patch_approval)
+            )
+            if patch_approval.decision_type == "respond":
+                _record_feedback_decision(
+                    context,
+                    stage="repair",
+                    action="approve_repair_patch",
+                    approval=patch_approval,
+                )
+                request = _generate_repair_patch_request(
+                    context,
+                    request,
+                    planner=planner,
+                    feedback=_feedback_from_decision(patch_approval),
+                    review_round=patch_round,
+                )
+                continue
+            request = replace(request, patch_approval=patch_approval)
+
+            command_preview = service.apply_patch_and_prepare_command(
+                request,
+                patch_approval=patch_approval,
+                approved_patch_sha256=_payload_patch_sha256(patch_preview.payload),
+            )
+            if command_preview.result is not None:
+                return command_preview.result
+            if command_preview.payload is None:
+                raise RuntimeError("repair command approval payload missing")
+            command_approval = (
+                _prompt_approval(context, command_preview.payload)
+                if _should_prompt_for_approval(context, request.command_approval)
+                else _effective_approval(context, request.command_approval)
+            )
+            request = replace(request, command_approval=command_approval)
+            return service.run_prepared_command(request, command_approval=command_approval)
     return _approval_feedback_limit_result(
         stage="repair",
         started_at=started_at,

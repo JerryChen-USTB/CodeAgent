@@ -26,12 +26,15 @@ from codeagent.stages.implementation_service import (
     PATCH_INTERRUPT_ID,
     PLAN_INTERRUPT_ID as IMPLEMENTATION_PLAN_INTERRUPT_ID,
     ImplementationPlan,
+    ImplementationPatchDraft,
     ImplementationRequest,
 )
 from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
+    REPAIR_PLAN_INTERRUPT_ID,
     REPAIR_PATCH_INTERRUPT_ID,
     RepairPlan,
+    RepairPatchDraft,
     RepairRequest,
 )
 from codeagent.stages.testing_service import (
@@ -39,6 +42,7 @@ from codeagent.stages.testing_service import (
     TEST_PATCH_INTERRUPT_ID,
     TEST_PLAN_INTERRUPT_ID,
     TestingPlan,
+    TestingPatchDraft,
     TestingRequest,
 )
 from codeagent.tools.hitl import ApprovalDecision
@@ -87,6 +91,21 @@ class PlanGenerationService:
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
         )
 
+    def create_implementation_patch_draft(
+        self,
+        context: RunContext,
+        plan: ImplementationPlan,
+        *,
+        feedback: str | None = None,
+    ) -> ImplementationPatchDraft:
+        prompt = self._implementation_patch_prompt(context, plan, feedback=feedback)
+        return self._invoke_schema(
+            context,
+            prompt,
+            ImplementationPatchDraft,
+            generation_kind="patch_generation",
+        )
+
     def create_repair_request(
         self,
         context: RunContext,
@@ -97,6 +116,11 @@ class PlanGenerationService:
         plan = self._invoke_schema(context, prompt, RepairPlan)
         return RepairRequest(
             plan=plan,
+            plan_review=_approval(
+                context,
+                interrupt_id=REPAIR_PLAN_INTERRUPT_ID,
+                comment="Auto-approved generated repair plan.",
+            ),
             patch_approval=_approval(
                 context,
                 interrupt_id=REPAIR_PATCH_INTERRUPT_ID,
@@ -109,6 +133,21 @@ class PlanGenerationService:
             ),
             max_patch_attempts=max(1, context.task_config.model.max_retries + 1),
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
+        )
+
+    def create_repair_patch_draft(
+        self,
+        context: RunContext,
+        plan: RepairPlan,
+        *,
+        feedback: str | None = None,
+    ) -> RepairPatchDraft:
+        prompt = self._repair_patch_prompt(context, plan, feedback=feedback)
+        return self._invoke_schema(
+            context,
+            prompt,
+            RepairPatchDraft,
+            generation_kind="patch_generation",
         )
 
     def create_testing_request(
@@ -140,6 +179,21 @@ class PlanGenerationService:
             command_timeout_seconds=context.task_config.test_command.timeout_seconds,
         )
 
+    def create_testing_patch_draft(
+        self,
+        context: RunContext,
+        plan: TestingPlan,
+        *,
+        feedback: str | None = None,
+    ) -> TestingPatchDraft:
+        prompt = self._testing_patch_prompt(context, plan, feedback=feedback)
+        return self._invoke_schema(
+            context,
+            prompt,
+            TestingPatchDraft,
+            generation_kind="patch_generation",
+        )
+
     def _implementation_prompt(
         self,
         context: RunContext,
@@ -159,16 +213,52 @@ class PlanGenerationService:
                 ),
                 _feedback_block(feedback),
                 (
-                    "Return only JSON. Include exact old_content when modifying an "
-                    "existing file and full new_content for every changed file. "
-                    "Implementation changes must modify product/source files only: "
+                    "Return only JSON for a pure plan. Do not include patch text, "
+                    "complete code, old_content, new_content, diffs, or full file "
+                    "contents. Describe what should be implemented, why, which "
+                    "source files are likely involved, public interfaces, acceptance "
+                    "criteria, and risks. Implementation planning must target "
+                    "product/source files only: "
                     "do not create, modify, delete, or list tests, tests/, test_*.py, "
                     "*_test.py, or any other test artifact. The dedicated testing "
-                    "stage will generate a separate complete visible test suite. "
+                    "stage will later generate a separate complete visible test suite. "
                     "Use project-root-relative paths. If the configured project root is "
                     "already a workspace directory, do not prefix paths with workspace/; "
                     "for example use package/module.py, not workspace/package/module.py."
                 ),
+                ]
+            )
+        )
+
+    def _implementation_patch_prompt(
+        self,
+        context: RunContext,
+        plan: ImplementationPlan,
+        *,
+        feedback: str | None = None,
+    ) -> str:
+        return "\n\n".join(
+            _without_empty(
+                [
+                    _system_rules("implementation patch", "ImplementationPatchDraft"),
+                    _schema_block(ImplementationPatchDraft),
+                    "Approved implementation plan JSON:",
+                    json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
+                    "Task inputs and visible project files:",
+                    _visible_context(
+                        context,
+                        include_failure_logs=False,
+                        max_context_chars=self.max_context_chars,
+                    ),
+                    _feedback_block(feedback),
+                    (
+                        "Return only JSON. Now generate the concrete patch draft for "
+                        "the approved plan. Include exact old_content when modifying "
+                        "an existing file and full new_content for every changed file. "
+                        "Do not modify tests, tests/, test_*.py, *_test.py, conftest.py, "
+                        "or other test artifacts during implementation. Use "
+                        "project-root-relative paths only."
+                    ),
                 ]
             )
         )
@@ -203,10 +293,53 @@ class PlanGenerationService:
                 ),
                 _feedback_block(feedback),
                 (
-                    "Return only JSON. Produce a complete, scope-controlled "
-                    "source-code repair with enough context for audit. Do not modify "
-                    f"tests. {command_guidance}"
+                    "Return only JSON for a pure repair plan. Do not include patch "
+                    "text, complete code, old_content, new_content, diffs, or full file "
+                    "contents. Describe root cause, strategy, likely source files, "
+                    "expected effects, and the recommended verification command. "
+                    f"Do not modify tests in repair planning. {command_guidance}"
                 ),
+                ]
+            )
+        )
+
+    def _repair_patch_prompt(
+        self,
+        context: RunContext,
+        plan: RepairPlan,
+        *,
+        feedback: str | None = None,
+    ) -> str:
+        latest_testing_command = _latest_testing_command(context)
+        command_guidance = (
+            "Use this latest Agent self-test command for verification unless the approved "
+            f"plan requires a safer equivalent: {latest_testing_command!r}."
+            if latest_testing_command
+            else (
+                "Use the approved plan verification command unless a safer equivalent "
+                "is required."
+            )
+        )
+        return "\n\n".join(
+            _without_empty(
+                [
+                    _system_rules("repair patch", "RepairPatchDraft"),
+                    _schema_block(RepairPatchDraft),
+                    "Approved repair plan JSON:",
+                    json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
+                    "Visible project files and failure evidence:",
+                    _visible_context(
+                        context,
+                        include_failure_logs=True,
+                        max_context_chars=self.max_context_chars,
+                    ),
+                    _feedback_block(feedback),
+                    (
+                        "Return only JSON. Now generate the concrete repair patch draft "
+                        "for the approved plan. Include exact old_content when modifying "
+                        "an existing file and full new_content for every changed file. "
+                        f"Do not modify tests or hidden benchmark materials. {command_guidance}"
+                    ),
                 ]
             )
         )
@@ -231,10 +364,12 @@ class PlanGenerationService:
                 ),
                 _feedback_block(feedback),
                 (
-                    "Return only JSON. Generate meaningful visible tests that the "
-                    "project test framework can discover. Test patches must target "
-                    "tests/ or test_*.py paths only. The command must run the generated "
-                    "tests and must not reference hidden benchmark directories such as "
+                    "Return only JSON for a pure test plan. Do not include patch text, "
+                    "complete code, old_content, new_content, diffs, or full file "
+                    "contents. Describe the test strategy, planned test files, coverage "
+                    "points, acceptance criteria, and safe command recommendation. "
+                    "Planned test files must target tests/ or test_*.py paths only. "
+                    "The command must run the generated tests and must not reference hidden benchmark directories such as "
                     "oracle_tests, evaluation, or expected_result.json. Do not use "
                     "py_compile as the testing command; py_compile is only a syntax "
                     "smoke check and does not count as product testing. The command "
@@ -251,11 +386,50 @@ class PlanGenerationService:
             )
         )
 
+    def _testing_patch_prompt(
+        self,
+        context: RunContext,
+        plan: TestingPlan,
+        *,
+        feedback: str | None = None,
+    ) -> str:
+        configured_command = context.task_config.test_command.command
+        return "\n\n".join(
+            _without_empty(
+                [
+                    _system_rules("testing patch", "TestingPatchDraft"),
+                    _schema_block(TestingPatchDraft),
+                    "Approved testing plan JSON:",
+                    json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
+                    "Task inputs, implementation artifacts, and visible project files:",
+                    _visible_context(
+                        context,
+                        include_failure_logs=False,
+                        max_context_chars=self.max_context_chars,
+                    ),
+                    _feedback_block(feedback),
+                    (
+                        "Return only JSON. Now generate the concrete visible test patch "
+                        "for the approved plan. Include full pytest/unittest test code "
+                        "in new_content and exact old_content when modifying an existing "
+                        "visible test file. The command must execute the tests generated "
+                        "or fully rewritten by this testing stage. Do not reference hidden "
+                        "benchmark directories, oracle_tests, evaluation, or "
+                        "expected_result.json. Do not use py_compile as the testing "
+                        "command. Prefer the configured public command when safe: "
+                        f"{configured_command!r}."
+                    ),
+                ]
+            )
+        )
+
     def _invoke_schema(
         self,
         context: RunContext,
         prompt: str,
         schema: type[SchemaT],
+        *,
+        generation_kind: str = "plan_generation",
     ) -> SchemaT:
         model = self.model_factory.create(context.task_config.model)
         last_error: Exception | None = None
@@ -277,6 +451,7 @@ class PlanGenerationService:
                 context.workflow_trace.record(
                     "llm_prompt",
                     stage=_stage_name_for_schema(schema),
+                    generation_kind=generation_kind,
                     attempt=attempt,
                     schema=schema.__name__,
                     model=context.task_config.model.model_name,
@@ -297,6 +472,7 @@ class PlanGenerationService:
             context.workflow_trace.record(
                 "llm_response",
                 stage=_stage_name_for_schema(schema),
+                generation_kind=generation_kind,
                 attempt=attempt,
                 schema=schema.__name__,
                 response=response_text,
@@ -309,6 +485,7 @@ class PlanGenerationService:
                 context.workflow_trace.record(
                     "llm_structured_output",
                     stage=_stage_name_for_schema(schema),
+                    generation_kind=generation_kind,
                     attempt=attempt,
                     schema=schema.__name__,
                     output=value.model_dump(mode="json"),
@@ -344,7 +521,7 @@ class PlanGenerationService:
 def _system_rules(stage: str, schema_name: str) -> str:
     return (
         f"You are CodeAgent's {stage} planner. Generate a {schema_name} that can be "
-        "validated by Pydantic and applied as a complete, scope-controlled patch. "
+        "validated by Pydantic and audited by the workflow. "
         "Use only visible inputs and visible project files supplied below. Never infer or request "
         "hidden benchmark oracle material, evaluation directories, expected answers, "
         "secret files, API keys, tokens, or credentials. Do not claim tests pass; "
@@ -377,6 +554,14 @@ def _normalize_generated_plan(plan: SchemaT, project_root: Path) -> SchemaT:
             )
             for change in plan.changes
         ]
+        return plan.model_copy(update={"changes": changes})  # type: ignore[return-value]
+    if isinstance(plan, ImplementationPatchDraft):
+        changes = [
+            change.model_copy(
+                update={"path": _project_relative_path(change.path, project_root)}
+            )
+            for change in plan.changes
+        ]
         syntax_targets = [
             _project_relative_path(target, project_root)
             for target in plan.syntax_check_targets
@@ -400,7 +585,36 @@ def _normalize_generated_plan(plan: SchemaT, project_root: Path) -> SchemaT:
                 ),
             }
         )  # type: ignore[return-value]
+    if isinstance(plan, RepairPatchDraft):
+        changes = [
+            change.model_copy(
+                update={"path": _project_relative_path(change.path, project_root)}
+            )
+            for change in plan.changes
+        ]
+        return plan.model_copy(
+            update={
+                "changes": changes,
+                "verification_command": _normalize_testing_command(
+                    plan.verification_command,
+                    project_root,
+                ),
+            }
+        )  # type: ignore[return-value]
     if isinstance(plan, TestingPlan):
+        changes = [
+            change.model_copy(
+                update={"path": _project_relative_path(change.path, project_root)}
+            )
+            for change in plan.changes
+        ]
+        return plan.model_copy(
+            update={
+                "changes": changes,
+                "command": _normalize_testing_command(plan.command, project_root),
+            }
+        )  # type: ignore[return-value]
+    if isinstance(plan, TestingPatchDraft):
         changes = [
             change.model_copy(
                 update={"path": _project_relative_path(change.path, project_root)}
@@ -448,23 +662,32 @@ def _validate_generated_plan_targets(plan: BaseModel, context: RunContext) -> No
                 f"generated plan targets sensitive or generated path: {normalized}"
             )
             continue
-        if isinstance(plan, ImplementationPlan) and _is_test_artifact_target(normalized):
+        if isinstance(plan, (ImplementationPlan, ImplementationPatchDraft)) and _is_test_artifact_target(normalized):
             errors.append(
                 f"implementation plan must not target test artifact: {normalized}"
             )
             continue
-        if isinstance(plan, TestingPlan) and not _is_allowed_test_target(normalized):
+        if isinstance(plan, (TestingPlan, TestingPatchDraft)) and not _is_allowed_test_target(normalized):
             errors.append(f"testing plan target is not a test path: {normalized}")
+            continue
+        if isinstance(plan, (RepairPlan, RepairPatchDraft)) and _is_test_artifact_target(normalized):
+            errors.append(f"repair plan must not target test artifact: {normalized}")
     if errors:
         raise ValueError("; ".join(errors))
 
 
 def _generated_plan_target_paths(plan: BaseModel) -> list[Path]:
     if isinstance(plan, ImplementationPlan):
+        return [change.path for change in plan.changes]
+    if isinstance(plan, ImplementationPatchDraft):
         return [change.path for change in plan.changes] + list(plan.syntax_check_targets)
     if isinstance(plan, RepairPlan):
         return [change.path for change in plan.changes]
+    if isinstance(plan, RepairPatchDraft):
+        return [change.path for change in plan.changes]
     if isinstance(plan, TestingPlan):
+        return [change.path for change in plan.changes]
+    if isinstance(plan, TestingPatchDraft):
         return [change.path for change in plan.changes]
     return []
 
@@ -788,16 +1011,24 @@ def _write_attempt_audit(
     schema: type[BaseModel],
     audit: dict[str, Any],
 ) -> None:
-    if issubclass(schema, RepairPlan):
+    if issubclass(schema, (RepairPlan, RepairPatchDraft)):
         stage = Stage.REPAIR
-    elif issubclass(schema, TestingPlan):
+    elif issubclass(schema, (TestingPlan, TestingPatchDraft)):
         stage = Stage.TEST
     else:
         stage = Stage.IMPLEMENT
+    filename = (
+        "patch_generation_attempts.json"
+        if issubclass(
+            schema,
+            (ImplementationPatchDraft, TestingPatchDraft, RepairPatchDraft),
+        )
+        else "plan_generation_attempts.json"
+    )
     stage_dir = context.stage_dirs[stage]
     _mkdir(stage_dir)
     _write_text(
-        stage_dir / "plan_generation_attempts.json",
+        stage_dir / filename,
         json.dumps(audit, ensure_ascii=False, indent=2),
     )
 
@@ -857,9 +1088,9 @@ def _approval(context: RunContext, *, interrupt_id: str, comment: str) -> Approv
 
 
 def _stage_name_for_schema(schema: type[BaseModel]) -> str:
-    if issubclass(schema, TestingPlan):
+    if issubclass(schema, (TestingPlan, TestingPatchDraft)):
         return "testing"
-    if issubclass(schema, RepairPlan):
+    if issubclass(schema, (RepairPlan, RepairPatchDraft)):
         return "repair"
     return "implementation"
 

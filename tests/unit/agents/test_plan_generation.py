@@ -33,7 +33,60 @@ class _FakeModel:
 
     def invoke(self, prompt: str) -> _Response:
         self.prompts.append(prompt)
-        return _Response("```json\n" + json.dumps(self.response) + "\n```")
+        return _Response("```json\n" + json.dumps(_normalize_fixture_response(self.response)) + "\n```")
+
+
+def _normalize_fixture_response(response: dict) -> dict:
+    if "requirements_summary" in response and "impact_summary" in response:
+        return {
+            "requirements_summary": response["requirements_summary"],
+            "implementation_strategy": response["impact_summary"],
+            "changes": [
+                {
+                    "path": change["path"],
+                    "change_type": "modify",
+                    "rationale": change.get("rationale") or "Fixture implementation change.",
+                    "public_interfaces": [],
+                    "acceptance_notes": [],
+                }
+                for change in response.get("changes", [])
+            ],
+            "acceptance_criteria": ["Visible requirements are satisfied."],
+            "risk_notes": [],
+        }
+    if "target_summary" in response:
+        return {
+            "target_summary": response["target_summary"],
+            "strategy": response["strategy"],
+            "acceptance_criteria": response["acceptance_criteria"],
+            "changes": [
+                {
+                    "path": change["path"],
+                    "test_focus": change.get("rationale") or "Fixture test focus.",
+                    "rationale": change.get("rationale") or "Fixture test change.",
+                }
+                for change in response.get("changes", [])
+            ],
+            "command": response["command"],
+            "framework": response.get("framework", "pytest"),
+        }
+    if "root_cause" in response:
+        return {
+            "root_cause": response["root_cause"],
+            "strategy": response["strategy"],
+            "changes": [
+                {
+                    "path": change["path"],
+                    "change_type": "modify",
+                    "rationale": change.get("rationale") or "Fixture repair change.",
+                    "expected_effect": "Visible regression tests pass after repair.",
+                }
+                for change in response.get("changes", [])
+            ],
+            "verification_command": response["verification_command"],
+            "framework": response.get("framework", "pytest"),
+        }
+    return response
 
 
 class _SequenceModel:
@@ -422,7 +475,7 @@ def test_plan_generation_strips_duplicate_workspace_prefix_for_empty_project_roo
     )
 
     assert request.plan.changes[0].path.as_posix() == "meeting_room_booking/app.py"
-    assert request.plan.syntax_check_targets[0].as_posix() == "meeting_room_booking/app.py"
+    assert not hasattr(request.plan, "syntax_check_targets")
 
 
 def test_plan_generation_preserves_existing_directory_named_like_project_root(
@@ -477,7 +530,7 @@ def test_plan_generation_preserves_existing_directory_named_like_project_root(
     )
 
     assert request.plan.changes[0].path.as_posix() == "workspace/pkg.py"
-    assert request.plan.syntax_check_targets[0].as_posix() == "workspace/pkg.py"
+    assert not hasattr(request.plan, "syntax_check_targets")
 
 
 def test_plan_generation_honors_configured_context_budget(tmp_path) -> None:
@@ -819,7 +872,8 @@ def test_plan_generation_rejects_hidden_plan_targets_before_patch_stage(
     assert "oracle_tests" in audit_text
     assert "generated plan targets hidden benchmark material" in audit_text
     assert "sk-or-should-not-leak" not in audit_text
-    assert "<redacted>" in audit_text
+    assert "old_content" not in audit_text
+    assert "new_content" not in audit_text
 
 
 def test_plan_generation_rejects_sensitive_plan_targets_before_patch_stage(
@@ -852,7 +906,8 @@ def test_plan_generation_rejects_sensitive_plan_targets_before_patch_stage(
     ).read_text(encoding="utf-8")
     assert "generated plan targets sensitive or generated path: .env" in audit_text
     assert "sk-or-should-not-leak" not in audit_text
-    assert "<redacted>" in audit_text
+    assert "old_content" not in audit_text
+    assert "new_content" not in audit_text
 
 
 def test_plan_generation_normalizes_model_paths_to_project_root_relative(

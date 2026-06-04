@@ -15,7 +15,9 @@ from codeagent.workflow.checkpoint import CheckpointManager
 from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.testing_service import (
     TestFileChange,
+    TestPatchFileChange,
     TestingPlan,
+    TestingPatchDraft,
     TestingRequest,
     TestingService,
 )
@@ -60,21 +62,57 @@ def _long_readable_path(path: Path) -> Path:
     return Path("\\\\?\\" + str(path.resolve()))
 
 
+_PLAN_FIXTURES: dict[int, tuple[str, str, str, str]] = {}
+
+
 def _plan(test_content: str, *, path: str = "tests/test_math_utils.py") -> TestingPlan:
-    return TestingPlan(
+    plan = TestingPlan(
         target_summary="Verify the add helper.",
         strategy="Add pytest coverage for the public add function.",
         acceptance_criteria=["add(2, 3) returns 5"],
         changes=[
             TestFileChange(
                 path=path,
-                old_content=None,
-                new_content=test_content,
+                test_focus="Exercise the requested public behavior.",
                 rationale="Required regression coverage.",
             )
         ],
         command="python -m pytest -q",
         framework="pytest",
+    )
+    _PLAN_FIXTURES[id(plan)] = (path, test_content, plan.command, plan.framework)
+    return plan
+
+
+def _with_command(plan: TestingPlan, command: str) -> TestingPlan:
+    updated = plan.model_copy(update={"command": command})
+    path, content, _old_command, framework = _PLAN_FIXTURES[id(plan)]
+    _PLAN_FIXTURES[id(updated)] = (path, content, command, framework)
+    return updated
+
+
+def _draft_from_plan(plan: TestingPlan) -> TestingPatchDraft:
+    path, content, command, framework = _PLAN_FIXTURES.get(
+        id(plan),
+        (
+            plan.changes[0].path.as_posix(),
+            "def test_placeholder():\n    assert True\n",
+            plan.command,
+            plan.framework,
+        ),
+    )
+    return TestingPatchDraft(
+        plan_summary="Concrete test patch for the approved test plan.",
+        changes=[
+            TestPatchFileChange(
+                path=path,
+                old_content=None,
+                new_content=content,
+                rationale="Required regression coverage.",
+            )
+        ],
+        command=command,
+        framework=framework,  # type: ignore[arg-type]
     )
 
 
@@ -90,6 +128,7 @@ def _write_project(project_root: Path, *, broken: bool = False) -> None:
 def _request(plan: TestingPlan, **overrides: ApprovalDecision) -> TestingRequest:
     return TestingRequest(
         plan=plan,
+        patch_draft=_draft_from_plan(plan),
         plan_review=overrides.get("plan_review", _decision(action_id="testing_plan")),
         patch_approval=overrides.get("patch_approval", _decision(action_id="testing_patch")),
         command_approval=overrides.get("command_approval", _decision(action_id="testing_command")),
@@ -154,14 +193,12 @@ def test_testing_service_rejects_zero_collected_tests(tmp_path) -> None:
         changes=[
             TestFileChange(
                 path="tests/__init__.py",
-                old_content=None,
-                new_content="",
+                test_focus="Package marker; intentionally not a test case.",
                 rationale="Make the unittest discovery directory importable.",
             ),
             TestFileChange(
                 path="tests/helper.py",
-                old_content=None,
-                new_content="VALUE = 1\n",
+                test_focus="Helper file; intentionally not a collected test module.",
                 rationale="This file is intentionally not a unittest test module.",
             )
         ],
@@ -169,7 +206,33 @@ def test_testing_service_rejects_zero_collected_tests(tmp_path) -> None:
         framework="unittest",
     )
 
-    result = service.run(_request(plan))
+    result = service.run(
+        TestingRequest(
+            plan=plan,
+            patch_draft=TestingPatchDraft(
+                plan_summary="Concrete non-test patch used to verify zero-test rejection.",
+                changes=[
+                    TestPatchFileChange(
+                        path="tests/__init__.py",
+                        old_content=None,
+                        new_content="",
+                        rationale="Make the unittest discovery directory importable.",
+                    ),
+                    TestPatchFileChange(
+                        path="tests/helper.py",
+                        old_content=None,
+                        new_content="VALUE = 1\n",
+                        rationale="This file is intentionally not a unittest test module.",
+                    ),
+                ],
+                command="python -m unittest discover -s tests",
+                framework="unittest",
+            ),
+            plan_review=_decision(action_id="testing_plan"),
+            patch_approval=_decision(action_id="testing_patch"),
+            command_approval=_decision(action_id="testing_command"),
+        )
+    )
 
     assert result.status == "failed"
     assert result.error is not None
@@ -551,18 +614,10 @@ def test_interrupting_testing_subgraph_rejects_tampered_approved_patch(tmp_path)
     assert "hash mismatch" in final["stage_results"]["testing"]["error"]["message"]
 
 
-def test_interrupting_testing_subgraph_accepts_edited_plan_review(tmp_path) -> None:
+def test_interrupting_testing_subgraph_plan_review_is_plan_only(tmp_path) -> None:
     project_root = tmp_path / "project"
     _write_project(project_root)
     service, run_context = _service(tmp_path, project_root)
-    edited_plan = _plan(
-        "from math_utils import add\n\n"
-        "def test_add_edited_plan():\n"
-        "    assert add(1, 4) == 5\n",
-        path="tests/test_edited_plan.py",
-    ).model_copy(
-        update={"command": "python -m pytest tests/test_edited_plan.py -q"}
-    )
     request = _request(_plan("def test_placeholder():\n    assert True\n"))
     manager = CheckpointManager(run_context.run_dir, run_id=run_context.run_id)
 
@@ -577,51 +632,28 @@ def test_interrupting_testing_subgraph_accepts_edited_plan_review(tmp_path) -> N
             mode="run",
             selected_stages=["test"],
         )
-        subgraph.invoke(state, config=manager.get_thread_config())
-        second = subgraph.invoke(
-            Command(
-                resume={
-                    "decision_type": "edit",
-                    "edited_payload": {"plan": edited_plan.model_dump(mode="json")},
-                    "auto": True,
-                }
-            ),
-            config=manager.get_thread_config(),
-        )
+        first = subgraph.invoke(state, config=manager.get_thread_config())
 
-    patch_payload = second["__interrupt__"][0].value
-    assert patch_payload["action"] == "approve_test_patch"
-    assert "tests/test_edited_plan.py" in patch_payload["payload"]["changed_files"]
-    with manager.create_sqlite_saver() as saver:
-        subgraph = build_interrupting_testing_subgraph(
-            service=service,
-            request_builder=lambda _state: request,
-            checkpointer=saver,
-        )
-        command_review = subgraph.invoke(
-            Command(resume={"decision_type": "approve", "auto": True}),
-            config=manager.get_thread_config(),
-        )
-
-    command_payload = command_review["__interrupt__"][0].value
-    assert command_payload["action"] == "approve_test_command"
-    assert (
-        command_payload["payload"]["command"]
-        == "python -m pytest tests/test_edited_plan.py -q"
-    )
+    plan_payload = first["__interrupt__"][0].value
+    assert plan_payload["action"] == "review_test_plan"
+    assert plan_payload["allowed_decisions"] == ["approve", "respond"]
+    assert not (run_context.run_dir / "testing" / "test.patch.diff").exists()
 
 
 def test_interrupting_testing_subgraph_accepts_edited_patch_plan(tmp_path) -> None:
     project_root = tmp_path / "project"
     _write_project(project_root)
     service, run_context = _service(tmp_path, project_root)
-    edited_plan = _plan(
-        "from math_utils import add\n\n"
-        "def test_add_edited_patch():\n"
-        "    assert add(2, 2) == 4\n",
-        path="tests/test_edited_patch.py",
-    ).model_copy(
-        update={"command": "python -m pytest tests/test_edited_patch.py -q"}
+    edited_draft = _draft_from_plan(
+        _with_command(
+            _plan(
+                "from math_utils import add\n\n"
+                "def test_add_edited_patch():\n"
+                "    assert add(2, 2) == 4\n",
+                path="tests/test_edited_patch.py",
+            ),
+            "python -m pytest tests/test_edited_patch.py -q",
+        )
     )
     request = _request(_plan("def test_placeholder():\n    assert True\n"))
     manager = CheckpointManager(run_context.run_dir, run_id=run_context.run_id)
@@ -646,7 +678,7 @@ def test_interrupting_testing_subgraph_accepts_edited_patch_plan(tmp_path) -> No
             Command(
                 resume={
                     "decision_type": "edit",
-                    "edited_payload": {"plan": edited_plan.model_dump(mode="json")},
+                    "edited_payload": {"patch_draft": edited_draft.model_dump(mode="json")},
                     "auto": True,
                 }
             ),

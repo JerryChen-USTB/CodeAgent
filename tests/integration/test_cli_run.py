@@ -12,13 +12,18 @@ from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.implementation_service import (
     ImplementationFileChange,
     ImplementationPlan,
+    ImplementationPatchDraft,
+    ImplementationPatchFileChange,
     ImplementationRequest,
     PATCH_INTERRUPT_ID,
     PLAN_INTERRUPT_ID,
 )
 from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
+    REPAIR_PLAN_INTERRUPT_ID,
     REPAIR_PATCH_INTERRUPT_ID,
+    RepairPatchDraft,
+    RepairPatchFileChange,
     RepairFileChange,
     RepairPlan,
     RepairRequest,
@@ -27,7 +32,9 @@ from codeagent.stages.testing_service import (
     TEST_COMMAND_INTERRUPT_ID,
     TEST_PATCH_INTERRUPT_ID,
     TEST_PLAN_INTERRUPT_ID,
+    TestPatchFileChange,
     TestFileChange,
+    TestingPatchDraft,
     TestingPlan,
     TestingRequest,
 )
@@ -35,6 +42,125 @@ from codeagent.tools.hitl import ApprovalDecision
 
 
 runner = CliRunner()
+
+
+def _implementation_plan(path: str, *, strategy: str = "Create implementation file.") -> ImplementationPlan:
+    return ImplementationPlan(
+        requirements_summary="Add the requested implementation.",
+        implementation_strategy=strategy,
+        changes=[
+            ImplementationFileChange(
+                path=path,
+                rationale="Required by the visible requirements.",
+                public_interfaces=[],
+                acceptance_notes=["Generated source should satisfy visible requirements."],
+            )
+        ],
+        acceptance_criteria=["Generated source should satisfy visible requirements."],
+    )
+
+
+def _implementation_draft(path: str, content: str) -> ImplementationPatchDraft:
+    return ImplementationPatchDraft(
+        plan_summary="Concrete implementation patch for the approved plan.",
+        changes=[
+            ImplementationPatchFileChange(
+                path=path,
+                old_content=None,
+                new_content=content,
+                rationale="Required by the visible requirements.",
+            )
+        ],
+        syntax_check_targets=[path] if path.endswith(".py") else [],
+    )
+
+
+def _testing_plan(
+    path: str,
+    *,
+    command: str,
+    framework: str = "pytest",
+) -> TestingPlan:
+    return TestingPlan(
+        target_summary="Generated visible regression tests.",
+        strategy="Add visible tests so the testing stage executes real discovered tests.",
+        acceptance_criteria=["At least one generated visible test is collected and executed."],
+        changes=[
+            TestFileChange(
+                path=path,
+                test_focus="Exercise the visible product behavior.",
+                rationale="Exercise the testing pipeline without hidden benchmark material.",
+            )
+        ],
+        command=command,
+        framework=framework,  # type: ignore[arg-type]
+    )
+
+
+def _testing_draft(
+    path: str,
+    content: str,
+    *,
+    command: str,
+    framework: str = "pytest",
+) -> TestingPatchDraft:
+    return TestingPatchDraft(
+        plan_summary="Concrete visible test patch for the approved plan.",
+        changes=[
+            TestPatchFileChange(
+                path=path,
+                old_content=None,
+                new_content=content,
+                rationale="Exercise the testing pipeline without hidden benchmark material.",
+            )
+        ],
+        command=command,
+        framework=framework,  # type: ignore[arg-type]
+    )
+
+
+def _repair_plan(
+    path: str,
+    *,
+    command: str,
+    framework: str = "pytest",
+) -> RepairPlan:
+    return RepairPlan(
+        root_cause="Visible failure identifies an implementation bug.",
+        strategy="Repair the implementation source and verify with visible tests.",
+        changes=[
+            RepairFileChange(
+                path=path,
+                rationale="Required by the visible failure evidence.",
+                expected_effect="The failing visible tests pass after repair.",
+            )
+        ],
+        verification_command=command,
+        framework=framework,  # type: ignore[arg-type]
+    )
+
+
+def _repair_draft(
+    path: str,
+    content: str,
+    *,
+    old_content: str | None = None,
+    command: str,
+    framework: str = "pytest",
+) -> RepairPatchDraft:
+    return RepairPatchDraft(
+        plan_summary="Concrete repair patch for the approved repair plan.",
+        changes=[
+            RepairPatchFileChange(
+                path=path,
+                old_content=old_content,
+                new_content=content,
+                rationale="Required by the visible failure evidence.",
+            )
+        ],
+        verification_command=command,
+        framework=framework,  # type: ignore[arg-type]
+    )
 
 
 def _debug_fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -252,8 +378,11 @@ project_path: {project_file.as_posix()}
 
 class _FakePlanGenerationService:
     implementation_plan: ImplementationPlan | None = None
+    implementation_patch_draft: ImplementationPatchDraft | None = None
     repair_plan: RepairPlan | None = None
+    repair_patch_draft: RepairPatchDraft | None = None
     testing_plan: TestingPlan | None = None
+    testing_patch_draft: TestingPatchDraft | None = None
 
     def __init__(self) -> None:
         pass
@@ -271,10 +400,27 @@ class _FakePlanGenerationService:
             ),
         )
 
+    def create_implementation_patch_draft(
+        self,
+        _context,
+        _plan,
+        *,
+        feedback: str | None = None,
+    ) -> ImplementationPatchDraft:
+        assert self.implementation_patch_draft is not None
+        return self.implementation_patch_draft
+
     def create_repair_request(self, _context) -> RepairRequest:
         assert self.repair_plan is not None
         return RepairRequest(
             plan=self.repair_plan,
+            plan_review=ApprovalDecision(
+                interrupt_id=REPAIR_PLAN_INTERRUPT_ID,
+                decision_type="approve",
+                comment="Generated by fake LLM repair planner.",
+                auto=True,
+                decided_by="test",
+            ),
             patch_approval=ApprovalDecision(
                 interrupt_id=REPAIR_PATCH_INTERRUPT_ID,
                 decision_type="approve",
@@ -291,8 +437,23 @@ class _FakePlanGenerationService:
             ),
         )
 
+    def create_repair_patch_draft(
+        self,
+        _context,
+        _plan,
+        *,
+        feedback: str | None = None,
+    ) -> RepairPatchDraft:
+        assert self.repair_patch_draft is not None
+        return self.repair_patch_draft
+
     def create_testing_request(self, context) -> TestingRequest:
-        plan = self.testing_plan or _generated_testing_plan_for_context(context)
+        plan, draft = (
+            (self.testing_plan, self.testing_patch_draft)
+            if self.testing_plan is not None and self.testing_patch_draft is not None
+            else _generated_testing_plan_for_context(context)
+        )
+        assert plan is not None
         return TestingRequest(
             plan=plan,
             plan_review=ApprovalDecision(
@@ -318,8 +479,20 @@ class _FakePlanGenerationService:
             ),
         )
 
+    def create_testing_patch_draft(
+        self,
+        context,
+        _plan,
+        *,
+        feedback: str | None = None,
+    ) -> TestingPatchDraft:
+        if self.testing_patch_draft is not None:
+            return self.testing_patch_draft
+        _plan_value, draft = _generated_testing_plan_for_context(context)
+        return draft
 
-def _generated_testing_plan_for_context(context) -> TestingPlan:
+
+def _generated_testing_plan_for_context(context) -> tuple[TestingPlan, TestingPatchDraft]:
     if context.task_config.test_framework == "unittest":
         content = (
             "import unittest\n\n"
@@ -338,20 +511,10 @@ def _generated_testing_plan_for_context(context) -> TestingPlan:
     configured = context.task_config.test_command.command
     if "oracle_tests" not in configured and "evaluation" not in configured and "py_compile" not in configured:
         command = configured
-    return TestingPlan(
-        target_summary="Generated visible regression tests.",
-        strategy="Add a smoke test so the testing stage executes real discovered tests.",
-        acceptance_criteria=["At least one generated visible test is collected and executed."],
-        changes=[
-            TestFileChange(
-                path="tests/test_codeagent_generated.py",
-                old_content=None,
-                new_content=content,
-                rationale="Exercise the testing pipeline without hidden benchmark material.",
-            )
-        ],
-        command=command,
-        framework=framework,
+    path = "tests/test_codeagent_generated.py"
+    return (
+        _testing_plan(path, command=command, framework=framework),
+        _testing_draft(path, content, command=command, framework=framework),
     )
 
 
@@ -365,6 +528,7 @@ class _FailingImplementationService:
 
 class _ManualApprovalPlanGenerationService:
     implementation_plan: ImplementationPlan | None = None
+    implementation_patch_draft: ImplementationPatchDraft | None = None
 
     def create_implementation_request(self, _context) -> ImplementationRequest:
         assert self.implementation_plan is not None
@@ -378,6 +542,16 @@ class _ManualApprovalPlanGenerationService:
                 decided_by="workflow",
             ),
         )
+
+    def create_implementation_patch_draft(
+        self,
+        _context,
+        _plan,
+        *,
+        feedback: str | None = None,
+    ) -> ImplementationPatchDraft:
+        assert self.implementation_patch_draft is not None
+        return self.implementation_patch_draft
 
 
 class _ScriptedApprovalConsole:
@@ -400,18 +574,13 @@ def test_implement_subcommand_generates_plan_and_applies_patch(
     requirements = tmp_path / "requirements.md"
     requirements.write_text("Add a tiny feature.\n", encoding="utf-8")
     output_dir = tmp_path / "runs"
-    _FakePlanGenerationService.implementation_plan = ImplementationPlan(
-        requirements_summary="Add a version constant.",
-        impact_summary="Create feature.py with a public constant.",
-        changes=[
-            ImplementationFileChange(
-                path="feature.py",
-                old_content=None,
-                new_content='VERSION = "1.0"\n',
-                rationale="Required by the visible requirements.",
-            )
-        ],
-        syntax_check_targets=["feature.py"],
+    _FakePlanGenerationService.implementation_plan = _implementation_plan(
+        "feature.py",
+        strategy="Create feature.py with a public constant.",
+    )
+    _FakePlanGenerationService.implementation_patch_draft = _implementation_draft(
+        "feature.py",
+        'VERSION = "1.0"\n',
     )
     monkeypatch.setattr(
         "codeagent.cli.executor.PlanGenerationService",
@@ -461,18 +630,13 @@ permissions:
 """.strip(),
         encoding="utf-8",
     )
-    _ManualApprovalPlanGenerationService.implementation_plan = ImplementationPlan(
-        requirements_summary="Add a version constant.",
-        impact_summary="Create feature.py with a public constant.",
-        changes=[
-            ImplementationFileChange(
-                path="feature.py",
-                old_content=None,
-                new_content='VERSION = "1.0"\n',
-                rationale="Required by the visible requirements.",
-            )
-        ],
-        syntax_check_targets=["feature.py"],
+    _ManualApprovalPlanGenerationService.implementation_plan = _implementation_plan(
+        "feature.py",
+        strategy="Create feature.py with a public constant.",
+    )
+    _ManualApprovalPlanGenerationService.implementation_patch_draft = _implementation_draft(
+        "feature.py",
+        'VERSION = "1.0"\n',
     )
     _ScriptedApprovalConsole.decisions = [
         ApprovalDecision(
@@ -533,18 +697,13 @@ permissions:
 """.strip(),
         encoding="utf-8",
     )
-    _ManualApprovalPlanGenerationService.implementation_plan = ImplementationPlan(
-        requirements_summary="Add a version constant.",
-        impact_summary="Create feature.py with a public constant.",
-        changes=[
-            ImplementationFileChange(
-                path="feature.py",
-                old_content=None,
-                new_content='VERSION = "1.0"\n',
-                rationale="Required by the visible requirements.",
-            )
-        ],
-        syntax_check_targets=["feature.py"],
+    _ManualApprovalPlanGenerationService.implementation_plan = _implementation_plan(
+        "feature.py",
+        strategy="Create feature.py with a public constant.",
+    )
+    _ManualApprovalPlanGenerationService.implementation_patch_draft = _implementation_draft(
+        "feature.py",
+        'VERSION = "1.0"\n',
     )
     monkeypatch.setattr(
         "codeagent.cli.executor.PlanGenerationService",
@@ -595,11 +754,12 @@ permissions:
 
     class FeedbackTestingPlanGenerationService:
         calls: list[str | None] = []
+        draft_content: str = "def test_placeholder():\n    assert True\n"
 
         def create_testing_request(self, _context, *, feedback: str | None = None):
             self.calls.append(feedback)
             if feedback:
-                content = (
+                self.draft_content = (
                     "from math_utils import add\n\n"
                     "def test_add_positive_numbers():\n"
                     "    assert add(2, 3) == 5\n\n"
@@ -607,22 +767,11 @@ permissions:
                     "    assert add(0, 4) == 4\n"
                 )
             else:
-                content = "def test_placeholder():\n    assert True\n"
+                self.draft_content = "def test_placeholder():\n    assert True\n"
             return TestingRequest(
-                plan=TestingPlan(
-                    target_summary="Exercise math_utils.add.",
-                    strategy="Generate visible pytest tests.",
-                    acceptance_criteria=["Generated tests must be collected."],
-                    changes=[
-                        TestFileChange(
-                            path="tests/test_math_utils.py",
-                            old_content=None,
-                            new_content=content,
-                            rationale="Visible Agent self-test.",
-                        )
-                    ],
+                plan=_testing_plan(
+                    "tests/test_math_utils.py",
                     command="python -m pytest tests/test_math_utils.py -q",
-                    framework="pytest",
                 ),
                 plan_review=ApprovalDecision(
                     interrupt_id=TEST_PLAN_INTERRUPT_ID,
@@ -639,6 +788,13 @@ permissions:
                     decision_type="approve",
                     auto=False,
                 ),
+            )
+
+        def create_testing_patch_draft(self, _context, _plan, *, feedback: str | None = None):
+            return _testing_draft(
+                "tests/test_math_utils.py",
+                self.draft_content,
+                command="python -m pytest tests/test_math_utils.py -q",
             )
 
     _ScriptedApprovalConsole.decisions = [
@@ -714,18 +870,13 @@ def test_implement_subcommand_classifies_stage_runtime_errors_separately_from_mo
     requirements = tmp_path / "requirements.md"
     requirements.write_text("Add a tiny feature.\n", encoding="utf-8")
     output_dir = tmp_path / "runs"
-    _FakePlanGenerationService.implementation_plan = ImplementationPlan(
-        requirements_summary="Add a version constant.",
-        impact_summary="Create feature.py with a public constant.",
-        changes=[
-            ImplementationFileChange(
-                path="feature.py",
-                old_content=None,
-                new_content='VERSION = "1.0"\n',
-                rationale="Required by the visible requirements.",
-            )
-        ],
-        syntax_check_targets=["feature.py"],
+    _FakePlanGenerationService.implementation_plan = _implementation_plan(
+        "feature.py",
+        strategy="Create feature.py with a public constant.",
+    )
+    _FakePlanGenerationService.implementation_patch_draft = _implementation_draft(
+        "feature.py",
+        'VERSION = "1.0"\n',
     )
     monkeypatch.setattr(
         "codeagent.cli.executor.PlanGenerationService",
@@ -803,28 +954,26 @@ test_command:
 """.strip(),
         encoding="utf-8",
     )
-    _FakePlanGenerationService.repair_plan = RepairPlan(
-        root_cause="Recursive gcd call does not reduce the second argument.",
-        strategy="Use Euclid's recursive step gcd(b, a % b).",
-        changes=[
-            RepairFileChange(
-                path="gcd.py",
-                old_content=(
-                    "def gcd(a, b):\n"
-                    "    if b == 0:\n"
-                    "        return a\n"
-                    "    return gcd(a % b, b)\n"
-                ),
-                new_content=(
-                    "def gcd(a, b):\n"
-                    "    while b:\n"
-                    "        a, b = b, a % b\n"
-                    "    return a\n"
-                ),
-                rationale="Iterative Euclid update makes progress until b is zero.",
-            )
-        ],
-        verification_command="python -m unittest discover -s tests",
+    _FakePlanGenerationService.repair_plan = _repair_plan(
+        "gcd.py",
+        command="python -m unittest discover -s tests",
+        framework="unittest",
+    )
+    _FakePlanGenerationService.repair_patch_draft = _repair_draft(
+        "gcd.py",
+        (
+            "def gcd(a, b):\n"
+            "    while b:\n"
+            "        a, b = b, a % b\n"
+            "    return a\n"
+        ),
+        old_content=(
+            "def gcd(a, b):\n"
+            "    if b == 0:\n"
+            "        return a\n"
+            "    return gcd(a % b, b)\n"
+        ),
+        command="python -m unittest discover -s tests",
         framework="unittest",
     )
     monkeypatch.setattr(

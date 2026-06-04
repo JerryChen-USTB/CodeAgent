@@ -38,7 +38,19 @@ PATCH_INTERRUPT_ID = "implementation_patch"
 
 
 class ImplementationFileChange(BaseModel):
-    """Structured file change intent produced by an implementation agent."""
+    """Pure implementation planning item without file contents."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    change_type: Literal["add", "modify", "delete"] = "modify"
+    rationale: str = Field(min_length=1, max_length=4000)
+    public_interfaces: list[str] = Field(default_factory=list)
+    acceptance_notes: list[str] = Field(default_factory=list)
+
+
+class ImplementationPatchFileChange(BaseModel):
+    """Concrete file content generated only after implementation plan approval."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -48,20 +60,36 @@ class ImplementationFileChange(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)
 
     @model_validator(mode="after")
-    def require_real_change(self) -> "ImplementationFileChange":
+    def require_real_change(self) -> "ImplementationPatchFileChange":
         if self.old_content is None and self.new_content is None:
-            raise ValueError("file change must include old_content or new_content")
+            raise ValueError("patch file change must include old_content or new_content")
         return self
 
 
 class ImplementationPlan(BaseModel):
-    """Validated implementation plan that can be rendered and audited."""
+    """Validated pure implementation plan that can be reviewed before code generation."""
 
     model_config = ConfigDict(extra="forbid")
 
     requirements_summary: str = Field(min_length=1, max_length=8000)
-    impact_summary: str = Field(min_length=1, max_length=8000)
+    implementation_strategy: str = Field(min_length=1, max_length=8000)
     changes: list[ImplementationFileChange] = Field(min_length=1)
+    acceptance_criteria: list[str] = Field(min_length=1)
+    risk_notes: list[str] = Field(default_factory=list)
+
+    @property
+    def impact_summary(self) -> str:
+        """Backward-compatible summary used by existing reporting code."""
+        return self.implementation_strategy
+
+
+class ImplementationPatchDraft(BaseModel):
+    """Concrete implementation patch draft generated after plan approval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_summary: str = Field(min_length=1, max_length=8000)
+    changes: list[ImplementationPatchFileChange] = Field(min_length=1)
     syntax_check_targets: list[Path] = Field(default_factory=list)
 
     @field_validator("syntax_check_targets")
@@ -84,7 +112,9 @@ class ImplementationRequest:
     plan: ImplementationPlan
     approval: ApprovalDecision
     plan_review: ApprovalDecision | None = None
+    patch_draft: ImplementationPatchDraft | None = None
     alternate_plans: list[ImplementationPlan] = field(default_factory=list)
+    alternate_patch_drafts: list[ImplementationPatchDraft] = field(default_factory=list)
     max_patch_attempts: int = 3
     command_timeout_seconds: float | None = None
 
@@ -92,6 +122,7 @@ class ImplementationRequest:
 @dataclass(frozen=True)
 class _PreparedPatch:
     plan: ImplementationPlan
+    draft: ImplementationPatchDraft
     patch: PatchArtifact
     validation: PatchValidationResult
     summary: PatchSummary
@@ -146,11 +177,13 @@ class ImplementationService:
         patch_path = self.stage_dir / "implementation.patch.diff"
         attempts_path = self.stage_dir / "patch_attempts.json"
         approved_plan = self._load_prepared_plan(request.plan)
+        approved_draft = self._load_prepared_patch_draft(request.patch_draft)
         artifacts = self._register_prepared_artifacts(
             plan_path=plan_path,
             patch_path=patch_path,
             attempts_path=attempts_path,
             fallback_plan=approved_plan,
+            fallback_draft=approved_draft,
         )
 
         decision_result = self._handle_patch_decision(approval)
@@ -159,6 +192,7 @@ class ImplementationService:
             return self._finalize_result(
                 decision_result,
                 plan=approved_plan,
+                patch_draft=approved_draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(attempts_path),
             )
@@ -175,6 +209,7 @@ class ImplementationService:
             return self._finalize_result(
                 result,
                 plan=approved_plan,
+                patch_draft=approved_draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(attempts_path),
             )
@@ -191,6 +226,7 @@ class ImplementationService:
             return self._finalize_result(
                 result,
                 plan=approved_plan,
+                patch_draft=approved_draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(attempts_path),
             )
@@ -211,6 +247,7 @@ class ImplementationService:
             return self._finalize_result(
                 result,
                 plan=approved_plan,
+                patch_draft=approved_draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(attempts_path),
             )
@@ -233,6 +270,7 @@ class ImplementationService:
             return self._finalize_result(
                 result,
                 plan=approved_plan,
+                patch_draft=approved_draft,
                 artifact_ids=artifacts,
                 attempts=_read_attempts(attempts_path),
                 patch_summary=summary,
@@ -247,7 +285,7 @@ class ImplementationService:
                 "Implementation changed files",
             )
         )
-        syntax = self._run_syntax_check(approved_plan, applied.changed_files, request)
+        syntax = self._run_syntax_check(approved_draft, applied.changed_files, request)
         artifacts.append(
             self._record_artifact(
                 "implementation_syntax_log",
@@ -277,6 +315,7 @@ class ImplementationService:
         return self._finalize_result(
             result,
             plan=approved_plan,
+            patch_draft=approved_draft,
             artifact_ids=artifacts,
             attempts=_read_attempts(attempts_path),
             patch_summary=summary,
@@ -396,13 +435,41 @@ class ImplementationService:
         """Prepare implementation artifacts and return a LangGraph interrupt payload."""
         started_at = utc_timestamp()
         _mkdir(self.stage_dir)
-        candidates = [request.plan, *request.alternate_plans][
+        if request.patch_draft is None:
+            plan_path = self._write_plan(request.plan)
+            artifacts = [
+                self._record_artifact(
+                    "implementation_plan",
+                    ArtifactKind.REPORT,
+                    plan_path,
+                    "Implementation plan",
+                )
+            ]
+            result = self._build_failed_result(
+                started_at=started_at,
+                summary="Implementation patch draft is missing.",
+                category="model",
+                message="implementation patch generation must run after plan approval",
+                artifact_ids=artifacts,
+                next_suggestion="Generate an ImplementationPatchDraft from the approved plan.",
+            )
+            finalized = self._finalize_result(
+                result,
+                plan=request.plan,
+                patch_draft=None,
+                artifact_ids=artifacts,
+                attempts=[],
+            )
+            return ImplementationApprovalPreview(result=finalized)
+
+        candidates = [request.patch_draft, *request.alternate_patch_drafts][
             : max(1, request.max_patch_attempts)
         ]
-        prepared, attempts = self._prepare_patch_candidates(candidates)
+        prepared, attempts = self._prepare_patch_candidates(request.plan, candidates)
         artifacts: list[str] = []
         if prepared is None:
-            plan_path = self._write_plan(candidates[0])
+            plan_path = self._write_plan(request.plan)
+            draft_json_path = self._write_patch_draft_json(candidates[0])
             attempts_path = self._write_attempts(attempts)
             artifacts.extend(
                 [
@@ -411,6 +478,12 @@ class ImplementationService:
                         ArtifactKind.REPORT,
                         plan_path,
                         "Implementation plan for the first patch candidate",
+                    ),
+                    self._record_artifact(
+                        "implementation_patch_draft_json",
+                        ArtifactKind.JSON,
+                        draft_json_path,
+                        "Structured implementation patch draft",
                     ),
                     self._record_artifact(
                         "implementation_patch_attempts",
@@ -430,7 +503,8 @@ class ImplementationService:
             )
             finalized = self._finalize_result(
                 result,
-                plan=candidates[0],
+                plan=request.plan,
+                patch_draft=candidates[0],
                 artifact_ids=artifacts,
                 attempts=attempts,
             )
@@ -438,6 +512,7 @@ class ImplementationService:
 
         plan_path = self._write_plan(prepared.plan)
         plan_json_path = self._write_plan_json(prepared.plan)
+        draft_json_path = self._write_patch_draft_json(prepared.draft)
         patch_path = self.stage_dir / "implementation.patch.diff"
         _write_text(patch_path, prepared.patch.text)
         attempts_path = self._write_attempts(attempts)
@@ -454,6 +529,12 @@ class ImplementationService:
                     ArtifactKind.JSON,
                     plan_json_path,
                     "Structured implementation plan",
+                ),
+                self._record_artifact(
+                    "implementation_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured implementation patch draft",
                 ),
                 self._record_artifact(
                     "implementation_patch",
@@ -481,6 +562,7 @@ class ImplementationService:
                 "plan_path": "implementation/implementation_plan.md",
                 "plan_json_path": "implementation/implementation_plan.json",
                 "patch_path": "implementation/implementation.patch.diff",
+                "patch_draft_json_path": "implementation/implementation_patch_draft.json",
                 "changed_files": prepared.validation.changed_files,
                 "added_lines": prepared.summary.added_lines,
                 "removed_lines": prepared.summary.removed_lines,
@@ -506,14 +588,31 @@ class ImplementationService:
             return self.run(edited)
 
         _mkdir(self.stage_dir)
-        candidates = [request.plan, *request.alternate_plans][
+        if request.patch_draft is None:
+            result = self._build_failed_result(
+                started_at=started_at,
+                summary="Implementation patch draft is missing.",
+                category="model",
+                message="implementation patch generation must run after plan approval",
+                artifact_ids=[],
+                next_suggestion="Generate an ImplementationPatchDraft from the approved plan.",
+            )
+            return self._finalize_result(
+                result,
+                plan=request.plan,
+                patch_draft=None,
+                artifact_ids=[],
+                attempts=[],
+            )
+        candidates = [request.patch_draft, *request.alternate_patch_drafts][
             : max(1, request.max_patch_attempts)
         ]
-        prepared, attempts = self._prepare_patch_candidates(candidates)
+        prepared, attempts = self._prepare_patch_candidates(request.plan, candidates)
         artifacts: list[str] = []
 
         if prepared is None:
-            plan_path = self._write_plan(candidates[0])
+            plan_path = self._write_plan(request.plan)
+            draft_json_path = self._write_patch_draft_json(candidates[0])
             attempts_path = self._write_attempts(attempts)
             artifacts.extend(
                 [
@@ -522,6 +621,12 @@ class ImplementationService:
                         ArtifactKind.REPORT,
                         plan_path,
                         "Implementation plan for the first patch candidate",
+                    ),
+                    self._record_artifact(
+                        "implementation_patch_draft_json",
+                        ArtifactKind.JSON,
+                        draft_json_path,
+                        "Structured implementation patch draft",
                     ),
                     self._record_artifact(
                         "implementation_patch_attempts",
@@ -541,12 +646,14 @@ class ImplementationService:
             )
             return self._finalize_result(
                 result,
-                plan=prepared.plan if prepared else candidates[0],
+                plan=request.plan,
+                patch_draft=candidates[0],
                 artifact_ids=artifacts,
                 attempts=attempts,
             )
 
         plan_path = self._write_plan(prepared.plan)
+        draft_json_path = self._write_patch_draft_json(prepared.draft)
         patch_path = self.stage_dir / "implementation.patch.diff"
         _write_text(patch_path, prepared.patch.text)
         attempts_path = self._write_attempts(attempts)
@@ -565,6 +672,12 @@ class ImplementationService:
                     "Implementation patch diff",
                 ),
                 self._record_artifact(
+                    "implementation_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured implementation patch draft",
+                ),
+                self._record_artifact(
                     "implementation_patch_attempts",
                     ArtifactKind.JSON,
                     attempts_path,
@@ -579,6 +692,7 @@ class ImplementationService:
             return self._finalize_result(
                 decision_result,
                 plan=prepared.plan,
+                patch_draft=prepared.draft,
                 artifact_ids=artifacts,
                 attempts=attempts,
                 patch_summary=prepared.summary,
@@ -617,7 +731,7 @@ class ImplementationService:
             )
         )
 
-        syntax = self._run_syntax_check(prepared.plan, applied.changed_files, request)
+        syntax = self._run_syntax_check(prepared.draft, applied.changed_files, request)
         artifacts.append(
             self._record_artifact(
                 "implementation_syntax_log",
@@ -648,6 +762,7 @@ class ImplementationService:
         return self._finalize_result(
             result,
             plan=prepared.plan,
+            patch_draft=prepared.draft,
             artifact_ids=artifacts,
             attempts=attempts,
             patch_summary=prepared.summary,
@@ -666,49 +781,53 @@ class ImplementationService:
             return None
         self._record_approval_decision(approval)
         edited_payload = approval.edited_payload or {}
-        raw_plan = edited_payload.get("plan")
-        if not isinstance(raw_plan, dict):
+        raw_draft = edited_payload.get("patch_draft") or edited_payload.get("plan")
+        if not isinstance(raw_draft, dict):
             return self._build_failed_result(
                 started_at=started_at,
-                summary="Implementation patch edit did not include an edited plan.",
+                summary="Implementation patch edit did not include an edited patch draft.",
                 category="hitl",
-                message="edited_payload.plan is required for edit decisions",
+                message="edited_payload.patch_draft is required for edit decisions",
                 artifact_ids=[],
-                next_suggestion="Resume with edited_payload.plan or regenerate the implementation patch.",
+                next_suggestion="Resume with edited_payload.patch_draft or regenerate the implementation patch.",
             )
         try:
-            edited_plan = ImplementationPlan.model_validate(raw_plan)
+            edited_draft = ImplementationPatchDraft.model_validate(raw_draft)
         except ValidationError as exc:
             return self._build_failed_result(
                 started_at=started_at,
-                summary="Implementation patch edit payload failed schema validation.",
+                summary="Implementation patch draft edit payload failed schema validation.",
                 category="hitl",
                 message=str(exc),
                 artifact_ids=[],
-                next_suggestion="Provide an edited implementation plan that matches the ImplementationPlan schema.",
+                next_suggestion="Provide an edited implementation patch draft that matches the schema.",
             )
         return ImplementationRequest(
-            plan=edited_plan,
+            plan=request.plan,
             approval=ApprovalDecision(
                 interrupt_id=approval.interrupt_id,
                 decision_type="approve",
-                comment=approval.comment or "Apply edited implementation plan.",
+                comment=approval.comment or "Apply edited implementation patch draft.",
                 decided_by=approval.decided_by,
                 auto=approval.auto,
             ),
+            plan_review=request.plan_review,
+            patch_draft=edited_draft,
             alternate_plans=[],
+            alternate_patch_drafts=[],
             max_patch_attempts=request.max_patch_attempts,
             command_timeout_seconds=request.command_timeout_seconds,
         )
 
     def _prepare_patch_candidates(
         self,
-        candidates: list[ImplementationPlan],
+        plan: ImplementationPlan,
+        candidates: list[ImplementationPatchDraft],
     ) -> tuple[_PreparedPatch | None, list[dict[str, object]]]:
         attempts: list[dict[str, object]] = []
-        for index, plan in enumerate(candidates, start=1):
+        for index, draft in enumerate(candidates, start=1):
             try:
-                precheck_error = self._precheck_plan_targets(plan)
+                precheck_error = self._precheck_patch_targets(draft)
                 if precheck_error:
                     attempts.append(
                         {
@@ -720,7 +839,7 @@ class ImplementationService:
                     )
                     continue
                 patch = self.patch_service.create_unified_diff(
-                    self._file_changes_for_plan(plan)
+                    self._file_changes_for_patch_draft(draft)
                 )
                 candidate_patch_path = self.stage_dir / f"implementation_attempt_{index}.patch.diff"
                 _write_text(candidate_patch_path, patch.text)
@@ -750,6 +869,7 @@ class ImplementationService:
                 )
                 return _PreparedPatch(
                     plan=plan,
+                    draft=draft,
                     patch=patch,
                     validation=validation,
                     summary=summary,
@@ -765,11 +885,11 @@ class ImplementationService:
                 )
         return None, attempts
 
-    def _precheck_plan_targets(self, plan: ImplementationPlan) -> str:
+    def _precheck_patch_targets(self, draft: ImplementationPatchDraft) -> str:
         root = self.run_context.task_config.project_path.resolve()
         errors: list[str] = []
         sensitive_filter = SensitiveFilter(root)
-        for change in plan.changes:
+        for change in draft.changes:
             normalized = _normalize_plan_path(change.path)
             if normalized is None:
                 errors.append(f"patch path outside project root: {change.path}")
@@ -782,10 +902,10 @@ class ImplementationService:
                 errors.append(f"patch targets sensitive or generated path: {normalized}")
         return "; ".join(errors)
 
-    def _file_changes_for_plan(self, plan: ImplementationPlan) -> list[FileChange]:
+    def _file_changes_for_patch_draft(self, draft: ImplementationPatchDraft) -> list[FileChange]:
         root = self.run_context.task_config.project_path
         changes: list[FileChange] = []
-        for change in plan.changes:
+        for change in draft.changes:
             old_content = change.old_content
             if old_content is None:
                 old_content = self._read_existing_content_if_safe(root, change.path)
@@ -906,12 +1026,12 @@ class ImplementationService:
 
     def _run_syntax_check(
         self,
-        plan: ImplementationPlan,
+        patch_draft: ImplementationPatchDraft | None,
         changed_files: list[str],
         request: ImplementationRequest,
     ) -> _SyntaxCheckOutcome:
         log_path = self.stage_dir / "syntax_check.log"
-        targets = self._syntax_targets(plan, changed_files)
+        targets = self._syntax_targets(patch_draft, changed_files)
         if not targets:
             _write_text(
                 log_path,
@@ -955,10 +1075,14 @@ class ImplementationService:
 
     def _syntax_targets(
         self,
-        plan: ImplementationPlan,
+        patch_draft: ImplementationPatchDraft | None,
         changed_files: list[str],
     ) -> list[str]:
-        raw_targets = plan.syntax_check_targets or [Path(path) for path in changed_files]
+        raw_targets = (
+            patch_draft.syntax_check_targets
+            if patch_draft is not None and patch_draft.syntax_check_targets
+            else [Path(path) for path in changed_files]
+        )
         targets: list[str] = []
         changed_set = {Path(path).as_posix() for path in changed_files}
         for target in raw_targets:
@@ -987,6 +1111,14 @@ class ImplementationService:
         )
         return path
 
+    def _write_patch_draft_json(self, draft: ImplementationPatchDraft) -> Path:
+        path = self.stage_dir / "implementation_patch_draft.json"
+        _write_text(
+            path,
+            json.dumps(draft.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        )
+        return path
+
     def _load_prepared_plan(self, fallback_plan: ImplementationPlan) -> ImplementationPlan:
         path = self.stage_dir / "implementation_plan.json"
         if not fs.exists(path):
@@ -996,6 +1128,19 @@ class ImplementationService:
             return ImplementationPlan.model_validate(data)
         except (OSError, json.JSONDecodeError, ValidationError):
             return fallback_plan
+
+    def _load_prepared_patch_draft(
+        self,
+        fallback_draft: ImplementationPatchDraft | None,
+    ) -> ImplementationPatchDraft | None:
+        path = self.stage_dir / "implementation_patch_draft.json"
+        if not fs.exists(path):
+            return fallback_draft
+        try:
+            data = json.loads(fs.read_text(path))
+            return ImplementationPatchDraft.model_validate(data)
+        except (OSError, json.JSONDecodeError, ValidationError):
+            return fallback_draft
 
     def _write_attempts(self, attempts: list[dict[str, object]]) -> Path:
         path = self.stage_dir / "patch_attempts.json"
@@ -1022,6 +1167,7 @@ class ImplementationService:
         result: StageResult,
         *,
         plan: ImplementationPlan,
+        patch_draft: ImplementationPatchDraft | None = None,
         attempts: list[dict[str, object]],
         patch_summary: PatchSummary | None = None,
         changed_files: list[str] | None = None,
@@ -1044,9 +1190,26 @@ class ImplementationService:
             "",
             plan.impact_summary,
             "",
+            "## Acceptance Criteria",
+            "",
+            *(f"- {item}" for item in plan.acceptance_criteria),
+            "",
             "## Patch Attempts",
             "",
         ]
+        if patch_draft is not None:
+            lines.extend(
+                [
+                    "## Patch Draft",
+                    "",
+                    patch_draft.plan_summary,
+                    "",
+                    "### Draft Files",
+                    "",
+                    *(f"- `{change.path.as_posix()}`: {change.rationale}" for change in patch_draft.changes),
+                    "",
+                ]
+            )
         for attempt in attempts:
             lines.append(
                 f"- Attempt {attempt.get('attempt')}: {attempt.get('status')}"
@@ -1122,6 +1285,7 @@ class ImplementationService:
         result: StageResult,
         *,
         plan: ImplementationPlan,
+        patch_draft: ImplementationPatchDraft | None,
         artifact_ids: list[str],
         attempts: list[dict[str, object]],
         patch_summary: PatchSummary | None = None,
@@ -1131,6 +1295,7 @@ class ImplementationService:
         report_path = self._write_implementation_report(
             result,
             plan=plan,
+            patch_draft=patch_draft,
             attempts=attempts,
             patch_summary=patch_summary,
             changed_files=changed_files,
@@ -1162,6 +1327,7 @@ class ImplementationService:
             attempts=attempts,
             changed_files=changed_files or [],
             syntax_status=syntax.status if syntax is not None else None,
+            patch_draft_present=patch_draft is not None,
             patch_summary=patch_summary.__dict__ if patch_summary is not None else None,
         )
         self.writer.write_stage_report(finalized)
@@ -1193,6 +1359,7 @@ class ImplementationService:
         patch_path: Path,
         attempts_path: Path,
         fallback_plan: ImplementationPlan,
+        fallback_draft: ImplementationPatchDraft | None = None,
     ) -> list[str]:
         if not fs.exists(plan_path):
             plan_path = self._write_plan(fallback_plan)
@@ -1215,6 +1382,19 @@ class ImplementationService:
                 "Structured implementation plan",
             )
         )
+        draft_json_path = self.stage_dir / "implementation_patch_draft.json"
+        if fallback_draft is not None and not fs.exists(draft_json_path):
+            draft_json_path = self._write_patch_draft_json(fallback_draft)
+        if fs.exists(draft_json_path):
+            artifacts.append(
+                self._record_artifact(
+                    "implementation_patch_draft_json",
+                    ArtifactKind.JSON,
+                    draft_json_path,
+                    "Structured implementation patch draft",
+                )
+            )
+        
         if fs.exists(patch_path):
             artifacts.append(
                 self._record_artifact(
@@ -1244,9 +1424,9 @@ def _render_plan(plan: ImplementationPlan) -> str:
         "",
         plan.requirements_summary,
         "",
-        "## Project Impact",
+        "## Implementation Strategy",
         "",
-        plan.impact_summary,
+        plan.implementation_strategy,
         "",
         "## Planned Changes",
         "",
@@ -1255,18 +1435,19 @@ def _render_plan(plan: ImplementationPlan) -> str:
         lines.extend(
             [
                 f"- `{change.path.as_posix()}`",
+                f"  - Change type: {change.change_type}",
                 f"  - Rationale: {change.rationale}",
             ]
         )
-    if plan.syntax_check_targets:
-        lines.extend(
-            [
-                "",
-                "## Syntax Check Targets",
-                "",
-                *(f"- `{target.as_posix()}`" for target in plan.syntax_check_targets),
-            ]
-        )
+        if change.public_interfaces:
+            lines.extend(f"  - Interface: {item}" for item in change.public_interfaces)
+        if change.acceptance_notes:
+            lines.extend(f"  - Acceptance note: {item}" for item in change.acceptance_notes)
+    lines.extend(["", "## Acceptance Criteria", ""])
+    lines.extend(f"- {item}" for item in plan.acceptance_criteria)
+    if plan.risk_notes:
+        lines.extend(["", "## Risks", ""])
+        lines.extend(f"- {item}" for item in plan.risk_notes)
     return "\n".join(lines) + "\n"
 
 

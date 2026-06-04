@@ -16,6 +16,8 @@ from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.repair_service import (
     RepairFileChange,
     RepairPlan,
+    RepairPatchDraft,
+    RepairPatchFileChange,
     RepairRequest,
     RepairService,
 )
@@ -78,20 +80,56 @@ def _write_buggy_project(project_root: Path) -> None:
     )
 
 
+_PLAN_FIXTURES: dict[int, tuple[str, str, str, str]] = {}
+
+
 def _plan(new_content: str, *, path: str = "math_utils.py") -> RepairPlan:
-    return RepairPlan(
+    plan = RepairPlan(
         root_cause="The add helper subtracts instead of adding.",
         strategy="Replace subtraction with addition in the implementation.",
         changes=[
             RepairFileChange(
                 path=Path(path),
-                old_content=None,
-                new_content=new_content,
                 rationale="Minimal implementation repair.",
+                expected_effect="The public add helper returns the arithmetic sum.",
             )
         ],
         verification_command="python -m pytest -q",
         framework="pytest",
+    )
+    _PLAN_FIXTURES[id(plan)] = (path, new_content, plan.verification_command, plan.framework)
+    return plan
+
+
+def _with_verification_command(plan: RepairPlan, command: str) -> RepairPlan:
+    updated = plan.model_copy(update={"verification_command": command})
+    path, content, _old_command, framework = _PLAN_FIXTURES[id(plan)]
+    _PLAN_FIXTURES[id(updated)] = (path, content, command, framework)
+    return updated
+
+
+def _draft_from_plan(plan: RepairPlan) -> RepairPatchDraft:
+    path, content, command, framework = _PLAN_FIXTURES.get(
+        id(plan),
+        (
+            plan.changes[0].path.as_posix(),
+            "def add(left, right):\n    return left + right\n",
+            plan.verification_command,
+            plan.framework,
+        ),
+    )
+    return RepairPatchDraft(
+        plan_summary="Concrete repair patch for the approved repair plan.",
+        changes=[
+            RepairPatchFileChange(
+                path=path,
+                old_content=None,
+                new_content=content,
+                rationale="Minimal implementation repair.",
+            )
+        ],
+        verification_command=command,
+        framework=framework,  # type: ignore[arg-type]
     )
 
 
@@ -106,6 +144,8 @@ def _bad_plan() -> RepairPlan:
 def _request(plan: RepairPlan, **overrides: ApprovalDecision) -> RepairRequest:
     return RepairRequest(
         plan=plan,
+        patch_draft=_draft_from_plan(plan),
+        plan_review=overrides.get("plan_review", _decision("approve", action_id="repair_plan")),
         patch_approval=overrides.get("patch_approval", _decision("approve")),
         command_approval=overrides.get(
             "command_approval",
@@ -239,8 +279,9 @@ def test_repair_service_applies_patch_runs_regression_and_writes_report(tmp_path
     assert test_result["success"] is True
     assert changed_files["changed_files"] == ["math_utils.py"]
     for filename in [
-        "repair_plan.final.md",
-        "repair_plan.final.json",
+        "repair_plan.md",
+        "repair_plan.json",
+        "repair_patch_draft.json",
         "repair.patch.diff",
         "repair_risk.json",
         "changed_files.json",
@@ -269,7 +310,7 @@ def test_repair_service_writes_artifacts_under_long_windows_paths(tmp_path) -> N
 
     readable_stage_dir = _long_readable_path(long_dir)
     assert result.status == "succeeded"
-    assert (readable_stage_dir / "repair_plan.final.md").exists()
+    assert (readable_stage_dir / "repair_plan.md").exists()
     assert (readable_stage_dir / "repair.patch.diff").exists()
     assert (readable_stage_dir / "repair_report.md").exists()
     assert (readable_stage_dir / "stage_result.json").exists()
@@ -306,7 +347,7 @@ def test_repair_service_rejects_hidden_benchmark_regression_command(tmp_path) ->
         project_root = tmp_path / f"project_{index}"
         _write_buggy_project(project_root)
         service, _run_context = _service(tmp_path / f"run_{index}", project_root)
-        plan = _good_plan().model_copy(update={"verification_command": command})
+        plan = _with_verification_command(_good_plan(), command)
         result = service.run(_request(plan))
 
         assert result.status == "failed"
@@ -408,7 +449,12 @@ def test_interrupting_repair_subgraph_approves_patch_and_command(tmp_path) -> No
             selected_stages=["repair"],
         )
         first = subgraph.invoke(state, config=manager.get_thread_config())
-        patch_payload = first["__interrupt__"][0].value
+        plan_payload = first["__interrupt__"][0].value
+        second = subgraph.invoke(
+            Command(resume={"decision_type": "approve", "auto": True}),
+            config=manager.get_thread_config(),
+        )
+        patch_payload = second["__interrupt__"][0].value
         command_review = subgraph.invoke(
             Command(resume={"decision_type": "approve", "auto": True}),
             config=manager.get_thread_config(),
@@ -419,6 +465,8 @@ def test_interrupting_repair_subgraph_approves_patch_and_command(tmp_path) -> No
             config=manager.get_thread_config(),
         )
 
+    assert plan_payload["action"] == "review_repair_plan"
+    assert plan_payload["allowed_decisions"] == ["approve", "respond"]
     assert patch_payload["action"] == "approve_repair_patch"
     assert patch_payload["payload"]["changed_files"] == ["math_utils.py"]
     assert "patch_sha256" in patch_payload["payload"]
@@ -445,6 +493,10 @@ def test_interrupting_repair_subgraph_rejects_tampered_approved_patch(tmp_path) 
             selected_stages=["repair"],
         )
         subgraph.invoke(state, config=manager.get_thread_config())
+        subgraph.invoke(
+            Command(resume={"decision_type": "approve", "auto": True}),
+            config=manager.get_thread_config(),
+        )
         patch_path = run_context.run_dir / "repair" / "repair.patch.diff"
         patch_path.write_text(
             patch_path.read_text(encoding="utf-8") + "\n",
@@ -463,7 +515,7 @@ def test_interrupting_repair_subgraph_accepts_edited_patch_plan(tmp_path) -> Non
     project_root = tmp_path / "project"
     _write_buggy_project(project_root)
     service, run_context = _service(tmp_path, project_root)
-    edited_plan = _good_plan()
+    edited_draft = _draft_from_plan(_good_plan())
     request = _request(_bad_plan())
     manager = CheckpointManager(run_context.run_dir, run_id=run_context.run_id)
 
@@ -479,11 +531,15 @@ def test_interrupting_repair_subgraph_accepts_edited_patch_plan(tmp_path) -> Non
             selected_stages=["repair"],
         )
         subgraph.invoke(state, config=manager.get_thread_config())
+        subgraph.invoke(
+            Command(resume={"decision_type": "approve", "auto": True}),
+            config=manager.get_thread_config(),
+        )
         edited_patch = subgraph.invoke(
             Command(
                 resume={
                     "decision_type": "edit",
-                    "edited_payload": {"plan": edited_plan.model_dump(mode="json")},
+                    "edited_payload": {"patch_draft": edited_draft.model_dump(mode="json")},
                     "auto": True,
                 }
             ),
