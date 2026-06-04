@@ -10,6 +10,7 @@ from codeagent.cli.tui import (
     TuiChoice,
     TuiProgressReporter,
     WizardFormState,
+    _render_form_panel,
 )
 from codeagent.config import defaults
 from codeagent.tools.hitl import ApprovalRequest
@@ -62,6 +63,20 @@ def test_wizard_form_state_moves_toggles_and_updates_values() -> None:
 
     assert state.render_value("model_name") == "openai/gpt-5.5"
     assert "模型" in state.status
+
+
+def test_form_rendering_uses_stable_ascii_layout_without_internal_tagline() -> None:
+    state = WizardFormState.create()
+    rendered = _render_form_panel(state)
+    text = "".join(fragment for _style, fragment in rendered)
+
+    assert "\u25be" not in text
+    assert "\u25b8" not in text
+    assert "\u25b6" not in text
+    assert ("Codex 风格 TUI：" + "像填问卷一样修改字段") not in text
+    assert "\n\n  输入材料" in text
+    assert "    执行阶段:" in text
+    assert "    开始运行 CodeAgent" in text
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:

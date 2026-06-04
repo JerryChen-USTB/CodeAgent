@@ -66,7 +66,7 @@ def wizard_command(backend: WizardFormBackend | None = None) -> None:
         except typer.Exit:
             raise
         except Exception as exc:
-            typer.echo(f"Codex 风格 TUI 启动失败，已降级到行式表单：{exc}")
+            typer.echo(f"交互式任务表单启动失败，已降级到行式表单：{exc}")
 
     backend = backend or _default_backend()
     try:

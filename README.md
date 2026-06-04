@@ -54,12 +54,13 @@ existing plan/patch files to inspect. Project files are listed only when they
 already exist on disk, so clickable terminal paths always point to real files.
 
 `python -m codeagent wizard` opens a Codex-style Chinese TUI instead of a
-one-question-at-a-time prompt. The wizard keeps the terminal scrollback visible
-and presents a questionnaire with collapsible sections: basic settings, input
-materials, runtime policy, model and approval mode, and final confirmation. Use
-arrow keys to move, `Enter` to edit, `Space` to expand/collapse or select
-multiple input materials, and `Ctrl+S` to start after the form is valid. Non-TTY
-or failed TUI startup falls back to the scriptable line form.
+one-question-at-a-time prompt. The wizard presents one fixed questionnaire in the
+terminal and updates it in place while the user edits collapsible sections:
+basic settings, input materials, runtime policy, model and approval mode, and
+final confirmation. Use arrow keys to move, `Enter` to edit, `Space` to
+expand/collapse or select multiple input materials, and `Ctrl+S` to start after
+the form is valid. Non-TTY or failed TUI startup falls back to the scriptable
+line form.
 
 The wizard can choose the OpenRouter model for this run. The default remains
 `anthropic/claude-sonnet-4.6`, with fixed alternatives including Anthropic Opus,
