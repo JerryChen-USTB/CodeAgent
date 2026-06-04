@@ -557,13 +557,11 @@ def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import get_app
     from prompt_toolkit.buffer import Buffer
-    from prompt_toolkit.cursor_shapes import CursorShape
-    from prompt_toolkit.data_structures import Point
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
     from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-    from prompt_toolkit.layout.containers import DynamicContainer, Window
+    from prompt_toolkit.layout.containers import DynamicContainer, HSplit, VSplit, Window
     from codeagent.cli.wizard import (
         _MATERIAL_ACTION_ADD,
         _MATERIAL_ACTION_DONE,
@@ -857,44 +855,59 @@ def _run_wizard_application(state: WizardFormState) -> str:
 
     def active_container():
         if mode in {"text", "material_text"}:
-            return _build_wizard_text_container(
-                state,
-                mode=mode,
-                edit_field=edit_field,
-                edit_control=edit_control,
-            )
-        return Window(form_control)
-
-    def ensure_terminal_cursor_visible(app) -> None:
-        if mode not in {"text", "material_text"}:
-            return
-        try:
-            app.layout.focus(edit_control)
-            target = _wizard_text_cursor_position(
-                state,
-                mode=mode,
-                edit_field=edit_field,
-                text=edit_buffer.text,
-                cursor=edit_buffer.cursor_position,
-            )
-            current = getattr(app.renderer, "_cursor_pos", Point(x=0, y=0))
-            _move_output_cursor(app.output, current, target)
-            app.renderer._cursor_pos = target
-            app.output.show_cursor()
-            app.output.flush()
-        except Exception:
-            pass
+            return text_container
+        return form_window
 
     form_control = FormattedTextControl(render, focusable=True)
+    form_window = Window(form_control)
+    before_control = FormattedTextControl(
+        lambda: FormattedText(_wizard_text_fragments(state, mode, edit_field)[0]),
+        focusable=False,
+    )
+    prefix_control = FormattedTextControl(
+        lambda: FormattedText(_wizard_text_fragments(state, mode, edit_field)[1]),
+        focusable=False,
+    )
+    after_control = FormattedTextControl(
+        lambda: FormattedText(_wizard_text_fragments(state, mode, edit_field)[2]),
+        focusable=False,
+    )
+    text_container = HSplit(
+        [
+            Window(before_control, dont_extend_height=True, wrap_lines=False),
+            VSplit(
+                [
+                    Window(
+                        prefix_control,
+                        width=lambda: _wizard_text_prefix_width(
+                            state,
+                            mode,
+                            edit_field,
+                        ),
+                        height=1,
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                    ),
+                    Window(
+                        edit_control,
+                        height=1,
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                        style="class:input",
+                    ),
+                ]
+            ),
+            Window(after_control, dont_extend_height=True, wrap_lines=False),
+        ]
+    )
     app = Application(
         layout=Layout(DynamicContainer(active_container), focused_element=form_control),
         key_bindings=kb,
         style=_tui_style(),
         full_screen=False,
         mouse_support=False,
-        cursor=CursorShape.BLINKING_BEAM,
-        after_render=ensure_terminal_cursor_visible,
     )
+    _allow_blinking_cursor(app.output)
     return app.run()
 
 
@@ -1002,46 +1015,76 @@ def _build_wizard_text_container(
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.layout.containers import HSplit, VSplit, Window
-    from prompt_toolkit.utils import get_cwidth
 
-    def line(fragments: list[tuple[str, str]] | None = None) -> Window:
-        fragments = fragments or [("", "")]
-        return Window(
-            FormattedTextControl(FormattedText(fragments), focusable=False),
-            height=1,
-            dont_extend_height=True,
-            wrap_lines=False,
-        )
-
-    def input_line(prefix_fragments: list[tuple[str, str]]) -> VSplit:
-        label_text = "".join(fragment for _style, fragment in prefix_fragments)
-        return VSplit(
-            [
-                Window(
-                    FormattedTextControl(
-                        FormattedText(prefix_fragments),
-                        focusable=False,
+    return HSplit(
+        [
+            Window(
+                FormattedTextControl(
+                    lambda: FormattedText(
+                        _wizard_text_fragments(state, mode, edit_field)[0]
                     ),
-                    width=get_cwidth(label_text),
-                    height=1,
-                    dont_extend_height=True,
-                    wrap_lines=False,
+                    focusable=False,
                 ),
-                Window(
-                    edit_control,
-                    height=1,
-                    dont_extend_height=True,
-                    wrap_lines=False,
-                    style="class:input",
+                dont_extend_height=True,
+                wrap_lines=False,
+            ),
+            VSplit(
+                [
+                    Window(
+                        FormattedTextControl(
+                            lambda: FormattedText(
+                                _wizard_text_fragments(state, mode, edit_field)[1]
+                            ),
+                            focusable=False,
+                        ),
+                        width=lambda: _wizard_text_prefix_width(
+                            state,
+                            mode,
+                            edit_field,
+                        ),
+                        height=1,
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                    ),
+                    Window(
+                        edit_control,
+                        height=1,
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                        style="class:input",
+                    ),
+                ]
+            ),
+            Window(
+                FormattedTextControl(
+                    lambda: FormattedText(
+                        _wizard_text_fragments(state, mode, edit_field)[2]
+                    ),
+                    focusable=False,
                 ),
-            ]
-        )
+                dont_extend_height=True,
+                wrap_lines=False,
+            ),
+        ]
+    )
 
-    containers = [
-        line([("class:title", "CodeAgent")]),
-        line([("class:subtitle", "任务表单")]),
-        line(),
+
+def _wizard_text_fragments(
+    state: WizardFormState,
+    mode: str,
+    edit_field: str,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    before: list[tuple[str, str]] = [
+        ("class:title", "CodeAgent\n"),
+        ("class:subtitle", "任务表单\n\n"),
     ]
+    prefix_fragments: list[tuple[str, str]] = []
+    after: list[tuple[str, str]] = []
+    target_found = False
+
+    def append(fragments: list[tuple[str, str]]) -> None:
+        (after if target_found else before).extend(fragments)
+
     rows = state.visible_rows()
     state.cursor = max(0, min(state.cursor, len(rows) - 1))
     current_group: str | None = None
@@ -1050,126 +1093,112 @@ def _build_wizard_text_container(
         group_id = FIELD_GROUPS[row.row_id]
         if group_id != current_group:
             if current_group is not None:
-                containers.append(line())
+                append([("", "\n")])
             current_group = group_id
-            containers.append(line([("class:section", FORM_GROUPS[group_id])]))
-
-        prefix = "> " if selected else "  "
-        label_style = "class:active" if selected else "class:label"
-        value_style = "class:active" if selected else "class:value"
+            append([("class:section", f"{FORM_GROUPS[group_id]}\n")])
 
         if row.kind == "action":
             style = "class:active" if selected else "class:action"
-            containers.append(line([(style, f"{prefix}  {row.label}")]))
+            marker = "> " if selected else "  "
+            append([(style, f"{marker}  {row.label}\n")])
             continue
 
+        marker = "> " if selected else "  "
+        label_style = "class:active" if selected else "class:label"
+        value_style = "class:active" if selected else "class:value"
+
         if row.row_id == "input_materials":
-            containers.append(line([(label_style, f"{prefix}  {row.label}:")]))
-            materials = _material_values(state.values.get("input_materials"))
-            if materials:
-                for material_index, material in enumerate(materials, start=1):
-                    containers.append(
-                        line(
-                            [
-                                (
-                                    "class:value",
-                                    f"      {material_index}. {_material_display(material)}",
-                                )
-                            ]
-                        )
-                    )
-            else:
-                containers.append(line([("class:help", "      <未添加材料>")]))
+            append([(label_style, f"{marker}  {row.label}:\n")])
+            append(_render_material_list(_material_values(state.values.get("input_materials"))))
             if mode == "material_text" and row.row_id == edit_field:
-                containers.append(
-                    input_line([("class:help", "      手动输入路径: ")])
-                )
-                containers.append(line([("class:help", "      Enter 添加，Esc 返回。")]))
+                prefix_fragments = [("class:help", "      手动输入路径: ")]
+                target_found = True
+                append([("class:help", "      Enter 添加，Esc 返回。\n")])
             continue
 
         if mode == "text" and row.row_id == edit_field:
-            containers.append(input_line([(label_style, f"{prefix}  {row.label}: ")]))
-            containers.append(line([("class:help", "      Enter 保存，Esc 放弃修改。")]))
-        else:
-            containers.append(
-                line(
-                    [
-                        (label_style, f"{prefix}  {row.label}: "),
-                        (value_style, row.value),
-                    ]
-                )
-            )
+            prefix_fragments = [(label_style, f"{marker}  {row.label}: ")]
+            target_found = True
+            append([("class:help", "      Enter 保存，Esc 放弃修改。\n")])
+            continue
+
+        append(
+            [
+                (label_style, f"{marker}  {row.label}: "),
+                (value_style, f"{row.value}\n"),
+            ]
+        )
 
     selected = state.selected_row()
-    containers.append(line())
-    containers.append(line([("class:status", state.status)]))
+    append([("", "\n"), ("class:status", f"{state.status}\n")])
     if selected.row_id in FIELD_HELP:
-        containers.append(line([("class:help", FIELD_HELP[selected.row_id])]))
-    return HSplit(containers)
+        append([("class:help", f"{FIELD_HELP[selected.row_id]}\n")])
+    return before, prefix_fragments, after
 
 
-def _wizard_text_cursor_position(
+def _wizard_text_prefix_width(
     state: WizardFormState,
-    *,
     mode: str,
     edit_field: str,
-    text: str,
-    cursor: int,
-):
-    from prompt_toolkit.data_structures import Point
+) -> int:
     from prompt_toolkit.utils import get_cwidth
 
-    cursor = max(0, min(cursor, len(text)))
-    text_width = get_cwidth(text[:cursor])
-    rows = state.visible_rows()
-    state.cursor = max(0, min(state.cursor, len(rows) - 1))
-    current_group: str | None = None
-    y = 3  # CodeAgent, subtitle, blank line.
-    for index, row in enumerate(rows):
-        selected = index == state.cursor
-        group_id = FIELD_GROUPS[row.row_id]
-        if group_id != current_group:
-            if current_group is not None:
-                y += 1
-            current_group = group_id
-            y += 1
+    prefix_fragments = _wizard_text_fragments(state, mode, edit_field)[1]
+    return get_cwidth("".join(fragment for _style, fragment in prefix_fragments))
 
-        prefix = "> " if selected else "  "
 
-        if row.kind == "action":
-            y += 1
+def _allow_blinking_cursor(output) -> None:
+    """Keep prompt_toolkit's output backend from disabling cursor blinking."""
+
+    if getattr(output, "_codeagent_allows_cursor_blink", False):
+        return
+    output_name = output.__class__.__name__
+    if output_name == "Vt100_Output":
+        _patch_vt100_cursor_blink(output)
+    elif output_name == "Windows10_Output":
+        _patch_vt100_cursor_blink(output)
+    elif output_name == "Win32Output":
+        if not _enable_windows_virtual_terminal_processing(output):
+            return
+        _patch_vt100_cursor_blink(output)
+    else:
+        return
+    output._codeagent_allows_cursor_blink = True
+
+
+def _patch_vt100_cursor_blink(output) -> None:
+    def show_cursor() -> None:
+        if getattr(output, "_cursor_visible", None) in (False, None):
+            output._cursor_visible = True
+            output.write_raw("\x1b[?12h\x1b[?25h")
+
+    output.show_cursor = show_cursor
+
+
+def _enable_windows_virtual_terminal_processing(output) -> bool:
+    hconsole = getattr(output, "hconsole", None)
+    if hconsole is None:
+        return False
+    try:
+        import ctypes
+    except Exception:
+        return False
+
+    kernel32 = ctypes.windll.kernel32
+    mode = ctypes.c_ulong()
+    handles = [hconsole]
+    try:
+        handles.append(ctypes.c_void_p(int(hconsole)))
+    except Exception:
+        pass
+    for handle in handles:
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
             continue
-
-        if row.row_id == "input_materials":
-            y += 1
-            materials = _material_values(state.values.get("input_materials"))
-            y += len(materials) if materials else 1
-            if mode == "material_text" and row.row_id == edit_field:
-                label = "      手动输入路径: "
-                return Point(x=get_cwidth(label) + text_width, y=y)
-            continue
-
-        if mode == "text" and row.row_id == edit_field:
-            label = f"{prefix}  {row.label}: "
-            return Point(x=get_cwidth(label) + text_width, y=y)
-
-        y += 1
-
-    return Point(x=text_width, y=y)
-
-
-def _move_output_cursor(output, current, target) -> None:
-    y_delta = target.y - current.y
-    if y_delta < 0:
-        output.cursor_up(-y_delta)
-    elif y_delta > 0:
-        output.cursor_down(y_delta)
-
-    x_delta = target.x - current.x
-    if x_delta < 0:
-        output.cursor_backward(-x_delta)
-    elif x_delta > 0:
-        output.cursor_forward(x_delta)
+        enable_virtual_terminal_processing = 0x0004
+        new_mode = mode.value | enable_virtual_terminal_processing
+        if kernel32.SetConsoleMode(handle, new_mode):
+            return True
+    return False
 
 
 def _render_material_list(materials: list[str]) -> list[tuple[str, str]]:

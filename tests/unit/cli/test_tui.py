@@ -4,16 +4,19 @@ from pathlib import Path
 
 import pytest
 
+import codeagent.cli.tui as tui
 from codeagent.cli.tui import (
     CodexLikeWizardSession,
     TuiApprovalConsole,
     TuiChoice,
     TuiProgressReporter,
     WizardFormState,
+    _allow_blinking_cursor,
     _build_wizard_text_container,
     _render_form_panel,
     _tui_style,
-    _wizard_text_cursor_position,
+    _wizard_text_fragments,
+    _wizard_text_prefix_width,
 )
 from codeagent.config import defaults
 from codeagent.tools.hitl import ApprovalRequest
@@ -137,43 +140,134 @@ def test_text_editing_container_uses_real_buffer_control() -> None:
     assert contains_buffer_control(container)
 
 
-def test_text_cursor_position_matches_inline_field_layout() -> None:
+def test_text_editing_fragments_split_active_field_into_stable_regions() -> None:
+    state = WizardFormState.create()
+    rows = state.visible_rows()
+    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "project_path")
+
+    before, prefix, after = _wizard_text_fragments(
+        state,
+        mode="text",
+        edit_field="project_path",
+    )
+
+    before_text = "".join(fragment for _style, fragment in before)
+    prefix_text = "".join(fragment for _style, fragment in prefix)
+    after_text = "".join(fragment for _style, fragment in after)
+
+    assert before_text.endswith("执行阶段: implement,test,debug,repair\n")
+    assert prefix_text == ">   项目目录: "
+    assert after_text.startswith("      Enter 保存，Esc 放弃修改。\n")
+    assert "输出目录:" in after_text
+
+
+def test_text_prefix_width_uses_terminal_display_width_for_chinese() -> None:
     from prompt_toolkit.utils import get_cwidth
 
     state = WizardFormState.create()
     rows = state.visible_rows()
     state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "project_path")
 
-    position = _wizard_text_cursor_position(
+    width = _wizard_text_prefix_width(
         state,
-        mode="text",
-        edit_field="project_path",
-        text="ffff",
-        cursor=4,
+        "text",
+        "project_path",
     )
 
-    assert position.x == get_cwidth(">   项目目录: ") + get_cwidth("ffff")
-    assert position.y == 5
+    assert width == get_cwidth(">   项目目录: ")
 
 
-def test_material_text_cursor_position_accounts_for_material_list() -> None:
-    from prompt_toolkit.utils import get_cwidth
-
+def test_material_text_fragments_keep_material_list_before_input() -> None:
     state = WizardFormState.create()
     state.values["input_materials"] = ["requirements.md", "api.md"]
     rows = state.visible_rows()
     state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "input_materials")
 
-    position = _wizard_text_cursor_position(
+    before, prefix, after = _wizard_text_fragments(
         state,
         mode="material_text",
         edit_field="input_materials",
-        text="notes.md",
-        cursor=len("notes.md"),
     )
 
-    assert position.x == get_cwidth("      手动输入路径: ") + get_cwidth("notes.md")
-    assert position.y == 11
+    before_text = "".join(fragment for _style, fragment in before)
+    prefix_text = "".join(fragment for _style, fragment in prefix)
+    after_text = "".join(fragment for _style, fragment in after)
+
+    assert "      1. requirements.md (requirements.md)\n" in before_text
+    assert "      2. api.md (api.md)\n" in before_text
+    assert prefix_text == "      手动输入路径: "
+    assert after_text.startswith("      Enter 添加，Esc 返回。\n")
+
+
+def test_vt_output_show_cursor_keeps_blinking_enabled() -> None:
+    Vt100Output = type("Vt100_Output", (), {})
+    output = Vt100Output()
+    output.raw = []
+    output._cursor_visible = None
+
+    def write_raw(value: str) -> None:
+        output.raw.append(value)
+
+    output.write_raw = write_raw
+
+    _allow_blinking_cursor(output)
+    output.show_cursor()
+
+    assert output.raw == ["\x1b[?12h\x1b[?25h"]
+    assert output._cursor_visible is True
+
+
+def test_windows10_output_show_cursor_keeps_blinking_enabled() -> None:
+    Windows10Output = type("Windows10_Output", (), {})
+    output = Windows10Output()
+    output.raw = []
+    output._cursor_visible = None
+
+    def write_raw(value: str) -> None:
+        output.raw.append(value)
+
+    output.write_raw = write_raw
+
+    _allow_blinking_cursor(output)
+    output.show_cursor()
+
+    assert output.raw == ["\x1b[?12h\x1b[?25h"]
+
+
+def test_win32_output_show_cursor_uses_vt_when_available(monkeypatch) -> None:
+    Win32Output = type("Win32Output", (), {})
+    output = Win32Output()
+    output.raw = []
+    output._cursor_visible = None
+
+    def write_raw(value: str) -> None:
+        output.raw.append(value)
+
+    output.write_raw = write_raw
+    monkeypatch.setattr(
+        tui,
+        "_enable_windows_virtual_terminal_processing",
+        lambda candidate: candidate is output,
+    )
+
+    _allow_blinking_cursor(output)
+    output.show_cursor()
+
+    assert output.raw == ["\x1b[?12h\x1b[?25h"]
+    assert not hasattr(output, "set_cursor_shape")
+
+
+def test_non_vt_output_cursor_policy_is_unchanged() -> None:
+    class FakeOutput:
+        def show_cursor(self) -> None:
+            pass
+
+    output = FakeOutput()
+    original = output.show_cursor
+
+    _allow_blinking_cursor(output)
+
+    assert output.show_cursor == original
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:
