@@ -85,10 +85,12 @@ def test_wizard_answers_build_normalized_task_config_and_summary(tmp_path) -> No
     assert config.input_materials[0].material_type == "requirements"
     assert config.input_materials[0].path == requirements.resolve()
     assert config.test_command.command == "python -m pytest tests -q"
+    assert config.model.model_name == "anthropic/claude-sonnet-4.6"
     assert config.permissions.approval_mode == "manual"
     assert "执行阶段：implement, test" in summary
     assert str(project.resolve()) in summary
     assert "python -m pytest tests -q" in summary
+    assert "模型：anthropic/claude-sonnet-4.6" in summary
     assert "Approval mode: manual" in summary
 
 
@@ -104,10 +106,12 @@ def test_wizard_answers_can_disable_manual_approval(tmp_path) -> None:
             output_dir=str(output_dir),
             test_command="pytest -q",
             approval_mode="auto",
+            model_name="openai/gpt-5.5",
         )
     )
 
     assert config.permissions.approval_mode == "auto"
+    assert config.model.model_name == "openai/gpt-5.5"
 
 
 def test_wizard_rejects_file_as_project_path(tmp_path) -> None:
@@ -193,8 +197,9 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
             "",
             str(output_dir),
             "pytest -q",
-            "y",
             "",
+            "",
+            "y",
         ]
     )
 
@@ -215,12 +220,14 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
     assert "手动添加输入材料路径" in result.output
     assert "输出目录" in result.output
     assert "测试命令" in result.output
+    assert "选择模型" in result.output
     assert "任务摘要" in result.output
     assert "正在启动 CodeAgent" in result.output
     run_dirs = [path for path in output_dir.iterdir() if path.is_dir()]
     assert len(run_dirs) == 1
     task_config = (run_dirs[0] / "task_config.yaml").read_text(encoding="utf-8")
     assert "mode: wizard" in task_config
+    assert "model_name: anthropic/claude-sonnet-4.6" in task_config
     assert "test" in task_config
     assert (run_dirs[0] / "final_report.md").exists()
 

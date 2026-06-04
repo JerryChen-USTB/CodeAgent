@@ -53,17 +53,24 @@ approved, a second LLM call produces the concrete patch draft. The CLI prints th
 existing plan/patch files to inspect. Project files are listed only when they
 already exist on disk, so clickable terminal paths always point to real files.
 
-`python -m codeagent wizard` opens a Chinese semi-interactive form. In a real
-terminal, stage selection and input-material selection use arrow-key choices and
-multi-select controls. After the user confirms the form, CodeAgent starts the
-agent run immediately while still saving the normalized `task_config.yaml` for
-audit and reproduction.
+`python -m codeagent wizard` opens a Codex-style Chinese TUI instead of a
+one-question-at-a-time prompt. The wizard keeps the terminal scrollback visible
+and presents a questionnaire with collapsible sections: basic settings, input
+materials, runtime policy, model and approval mode, and final confirmation. Use
+arrow keys to move, `Enter` to edit, `Space` to expand/collapse or select
+multiple input materials, and `Ctrl+S` to start after the form is valid. Non-TTY
+or failed TUI startup falls back to the scriptable line form.
 
-The wizard also lets the user choose the approval mode. The default is manual
-approval, which prompts before applying implementation patches, testing plans,
-testing patches, and test commands. If the user chooses automatic approval, the
-run continues without prompts and records `decision_source=user_configured_auto`.
-Benchmark auto-approval records `decision_source=benchmark_auto`.
+The wizard can choose the OpenRouter model for this run. The default remains
+`anthropic/claude-sonnet-4.6`, with fixed alternatives including Anthropic Opus,
+OpenAI GPT, Gemini, DeepSeek, MiniMax, and Qwen options. The selected model and
+approval mode are saved into the normalized `task_config.yaml` for audit and
+reproduction.
+
+Manual approval remains the default. In wizard runs, approvals are rendered as
+the same Codex-style bottom selector used by the form. Automatic approval skips
+prompts and records `decision_source=user_configured_auto`; benchmark
+auto-approval records `decision_source=benchmark_auto`.
 
 ## Run Outputs
 

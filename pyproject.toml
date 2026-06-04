@@ -19,6 +19,7 @@ dependencies = [
   "langgraph-checkpoint-sqlite>=3.1,<4.0",
   "openai>=2.26,<3.0",
   "pydantic>=2.10,<3.0",
+  "prompt-toolkit>=3.0,<4.0",
   "questionary>=2.0,<3.0",
   "pyyaml>=6.0,<7.0",
   "rich>=13.9,<15.0",

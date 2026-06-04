@@ -2,6 +2,15 @@
 
 DEFAULT_MODEL_PROVIDER = "openai_compatible"
 DEFAULT_MODEL_NAME = "anthropic/claude-sonnet-4.6"
+WIZARD_MODEL_CHOICES = (
+    "anthropic/claude-opus-4.8",
+    "anthropic/claude-sonnet-4.6",
+    "openai/gpt-5.5",
+    "google/gemini-3.5-flash",
+    "deepseek/deepseek-v4-pro",
+    "minimax/minimax-m3",
+    "qwen/qwen3.7-max",
+)
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY"
 DEFAULT_MODEL_MAX_TOKENS = 16384

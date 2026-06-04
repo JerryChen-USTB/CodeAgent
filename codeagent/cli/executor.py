@@ -7,7 +7,7 @@ import os
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from codeagent import filesystem as fs
 from codeagent.adapters.test_result import TestResult
@@ -65,13 +65,19 @@ class DisplayPathRef:
     absolute_path: Path
 
 
+class ApprovalConsoleLike(Protocol):
+    def prompt(self, request: ApprovalRequest) -> ApprovalDecision: ...
+
+
 def execute_task_config(
     task_config: TaskConfig,
     *,
     reporter: ProgressReporter | None = None,
+    approval_console: ApprovalConsoleLike | None = None,
 ) -> CliRunResult:
     """Run a normalized task config through the LangGraph main workflow."""
     progress = reporter or ProgressReporter()
+    approval_console = approval_console or ApprovalConsole()
     context = create_run_context(task_config, output_root=task_config.output_dir)
     manager = CheckpointManager(context.run_dir, run_id=context.run_id)
     initial = create_initial_state(
@@ -83,7 +89,7 @@ def execute_task_config(
 
     with manager.create_sqlite_saver() as saver:
         graph = WorkflowFactory(
-            stage_handlers=_stage_handlers_for_cli(context),
+            stage_handlers=_stage_handlers_for_cli(context, approval_console),
         ).build(checkpointer=saver)
         thread_config = manager.get_thread_config()
         for event in stream_workflow_events(
@@ -120,12 +126,15 @@ def execute_task_config(
     )
 
 
-def _stage_handlers_for_cli(context: RunContext) -> dict[str, StageHandler]:
+def _stage_handlers_for_cli(
+    context: RunContext,
+    approval_console: ApprovalConsoleLike,
+) -> dict[str, StageHandler]:
     return {
-        "implementation": _implementation_handler(context),
-        "testing": _testing_handler(context),
-        "debugging": _debugging_handler(context),
-        "repair": _repair_handler(context),
+        "implementation": _implementation_handler(context, approval_console),
+        "testing": _testing_handler(context, approval_console),
+        "debugging": _debugging_handler(context, approval_console),
+        "repair": _repair_handler(context, approval_console),
     }
 
 
@@ -166,7 +175,11 @@ def _effective_approval(context: RunContext, approval: ApprovalDecision) -> Appr
     )
 
 
-def _prompt_approval(context: RunContext, payload: dict[str, object]) -> ApprovalDecision:
+def _prompt_approval(
+    context: RunContext,
+    payload: dict[str, object],
+    approval_console: ApprovalConsoleLike,
+) -> ApprovalDecision:
     request = _approval_request_from_payload(payload)
     emit_progress(
         "approval_required",
@@ -183,7 +196,7 @@ def _prompt_approval(context: RunContext, payload: dict[str, object]) -> Approva
         payload=request.payload,
     )
     _print_approval_context(context, request)
-    decision = ApprovalConsole().prompt(request)
+    decision = approval_console.prompt(request)
     return ApprovalDecision(
         interrupt_id=decision.interrupt_id,
         decision_type=decision.decision_type,
@@ -698,7 +711,10 @@ def _record_approval_decision(
     )
 
 
-def _implementation_handler(context: RunContext) -> StageHandler:
+def _implementation_handler(
+    context: RunContext,
+    approval_console: ApprovalConsoleLike,
+) -> StageHandler:
     service = ImplementationService(run_context=context)
 
     def run(state: AgentState) -> dict[str, Any]:
@@ -729,7 +745,12 @@ def _implementation_handler(context: RunContext) -> StageHandler:
                 stage="implementation",
                 message="已获得实现计划，等待方案审批；补丁尚未生成",
             )
-            result = _run_implementation_with_approval(context, service, request)
+            result = _run_implementation_with_approval(
+                context,
+                service,
+                request,
+                approval_console,
+            )
         except Exception as exc:
             result = _stage_execution_failed_result(
                 stage="implementation",
@@ -751,6 +772,7 @@ def _run_implementation_with_approval(
     context: RunContext,
     service: ImplementationService,
     request: ImplementationRequest,
+    approval_console: ApprovalConsoleLike,
 ) -> StageResult:
     planner = PlanGenerationService()
     started_at = utc_timestamp()
@@ -762,7 +784,11 @@ def _run_implementation_with_approval(
                 return plan_preview.result
             if plan_preview.payload is None:
                 raise RuntimeError("implementation plan approval payload missing")
-            plan_review = _prompt_approval(context, plan_preview.payload)
+            plan_review = _prompt_approval(
+                context,
+                plan_preview.payload,
+                approval_console,
+            )
         else:
             plan_review = _effective_approval(context, plan_review)
         if plan_review.decision_type == "respond":
@@ -805,7 +831,7 @@ def _run_implementation_with_approval(
             if preview.payload is None:
                 raise RuntimeError("implementation approval payload missing")
             approval = (
-                _prompt_approval(context, preview.payload)
+                _prompt_approval(context, preview.payload, approval_console)
                 if _should_prompt_for_approval(context, request.approval)
                 else _effective_approval(context, request.approval)
             )
@@ -838,7 +864,10 @@ def _run_implementation_with_approval(
     )
 
 
-def _testing_handler(context: RunContext) -> StageHandler:
+def _testing_handler(
+    context: RunContext,
+    approval_console: ApprovalConsoleLike,
+) -> StageHandler:
     service = TestingService(run_context=context)
 
     def run(state: AgentState) -> dict[str, Any]:
@@ -869,7 +898,12 @@ def _testing_handler(context: RunContext) -> StageHandler:
                 stage="testing",
                 message="测试方案已生成，等待方案审批；测试补丁尚未生成",
             )
-            result = _run_testing_with_approval(context, service, request)
+            result = _run_testing_with_approval(
+                context,
+                service,
+                request,
+                approval_console,
+            )
         except Exception as exc:
             result = _stage_execution_failed_result(
                 stage="testing",
@@ -892,6 +926,7 @@ def _run_testing_with_approval(
     context: RunContext,
     service: TestingService,
     request: TestingRequest,
+    approval_console: ApprovalConsoleLike,
 ) -> StageResult:
     planner = PlanGenerationService()
     started_at = utc_timestamp()
@@ -902,7 +937,7 @@ def _run_testing_with_approval(
         if plan_preview.payload is None:
             raise RuntimeError("testing plan approval payload missing")
         plan_review = (
-            _prompt_approval(context, plan_preview.payload)
+            _prompt_approval(context, plan_preview.payload, approval_console)
             if _should_prompt_for_approval(context, request.plan_review)
             else _effective_approval(context, request.plan_review)
         )
@@ -945,7 +980,7 @@ def _run_testing_with_approval(
             if patch_preview.payload is None:
                 raise RuntimeError("testing patch approval payload missing")
             patch_approval = (
-                _prompt_approval(context, patch_preview.payload)
+                _prompt_approval(context, patch_preview.payload, approval_console)
                 if _should_prompt_for_approval(context, request.patch_approval)
                 else _effective_approval(context, request.patch_approval)
             )
@@ -976,7 +1011,7 @@ def _run_testing_with_approval(
             if command_preview.payload is None:
                 raise RuntimeError("testing command approval payload missing")
             command_approval = (
-                _prompt_approval(context, command_preview.payload)
+                _prompt_approval(context, command_preview.payload, approval_console)
                 if _should_prompt_for_approval(context, request.command_approval)
                 else _effective_approval(context, request.command_approval)
             )
@@ -1048,7 +1083,10 @@ def _testing_command_handler(context: RunContext) -> StageHandler:
     return run
 
 
-def _debugging_handler(context: RunContext) -> StageHandler:
+def _debugging_handler(
+    context: RunContext,
+    approval_console: ApprovalConsoleLike,
+) -> StageHandler:
     service = DebuggingService(run_context=context)
 
     def run(state: AgentState) -> dict[str, Any]:
@@ -1063,7 +1101,12 @@ def _debugging_handler(context: RunContext) -> StageHandler:
             stage="debugging",
             message="正在分析失败现象并生成根因定位报告",
         )
-        result = _run_debugging_with_approval(context, service, request)
+        result = _run_debugging_with_approval(
+            context,
+            service,
+            request,
+            approval_console,
+        )
         return _state_update_from_result(state, result)
 
     return run
@@ -1073,6 +1116,7 @@ def _run_debugging_with_approval(
     context: RunContext,
     service: DebuggingService,
     request: DebuggingRequest,
+    approval_console: ApprovalConsoleLike,
 ) -> StageResult:
     if not _should_prompt_for_approval(context, request.command_approval):
         return service.run(
@@ -1086,11 +1130,14 @@ def _run_debugging_with_approval(
         return preview.result
     if preview.payload is None:
         raise RuntimeError("debugging reproduction approval payload missing")
-    command_approval = _prompt_approval(context, preview.payload)
+    command_approval = _prompt_approval(context, preview.payload, approval_console)
     return service.run_after_approval(request, command_approval=command_approval)
 
 
-def _repair_handler(context: RunContext) -> StageHandler:
+def _repair_handler(
+    context: RunContext,
+    approval_console: ApprovalConsoleLike,
+) -> StageHandler:
     service = RepairService(run_context=context)
 
     def run(state: AgentState) -> dict[str, Any]:
@@ -1121,7 +1168,12 @@ def _repair_handler(context: RunContext) -> StageHandler:
                 stage="repair",
                 message="已获得修复计划，等待方案审批；修复补丁尚未生成",
             )
-            result = _run_repair_with_approval(context, service, request)
+            result = _run_repair_with_approval(
+                context,
+                service,
+                request,
+                approval_console,
+            )
         except Exception as exc:
             result = _stage_execution_failed_result(
                 stage="repair",
@@ -1143,6 +1195,7 @@ def _run_repair_with_approval(
     context: RunContext,
     service: RepairService,
     request: RepairRequest,
+    approval_console: ApprovalConsoleLike,
 ) -> StageResult:
     planner = PlanGenerationService()
     started_at = utc_timestamp()
@@ -1161,7 +1214,7 @@ def _run_repair_with_approval(
             presented_to_user=False,
         )
         plan_review = (
-            _prompt_approval(context, plan_preview.payload)
+            _prompt_approval(context, plan_preview.payload, approval_console)
             if _should_prompt_for_approval(context, default_plan_review)
             else _effective_approval(context, default_plan_review)
         )
@@ -1204,7 +1257,7 @@ def _run_repair_with_approval(
             if patch_preview.payload is None:
                 raise RuntimeError("repair patch approval payload missing")
             patch_approval = (
-                _prompt_approval(context, patch_preview.payload)
+                _prompt_approval(context, patch_preview.payload, approval_console)
                 if _should_prompt_for_approval(context, request.patch_approval)
                 else _effective_approval(context, request.patch_approval)
             )
@@ -1235,7 +1288,7 @@ def _run_repair_with_approval(
             if command_preview.payload is None:
                 raise RuntimeError("repair command approval payload missing")
             command_approval = (
-                _prompt_approval(context, command_preview.payload)
+                _prompt_approval(context, command_preview.payload, approval_console)
                 if _should_prompt_for_approval(context, request.command_approval)
                 else _effective_approval(context, request.command_approval)
             )

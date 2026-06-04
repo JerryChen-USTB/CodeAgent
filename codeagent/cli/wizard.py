@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-import sys
 from typing import Protocol
 
 import typer
 
-from codeagent.config.schema import CommandConfig, PermissionsConfig, TaskConfig
+from codeagent.config import defaults
+from codeagent.config.schema import CommandConfig, ModelConfig, PermissionsConfig, TaskConfig
 from codeagent.reports.schemas import StageResult
 from codeagent.reports.writer import ReportWriter
 from codeagent.runtime.run_context import create_run_context
@@ -29,6 +29,7 @@ class WizardPromptAnswers:
     output_dir: str = "codeagent_runs"
     test_command: str = "pytest -q"
     approval_mode: str = "manual"
+    model_name: str = defaults.DEFAULT_MODEL_NAME
 
 
 class WizardFormBackend(Protocol):
@@ -55,6 +56,18 @@ class WizardFormBackend(Protocol):
 
 def wizard_command(backend: WizardFormBackend | None = None) -> None:
     """Start the guided configuration wizard and run the agent directly."""
+    if backend is None:
+        try:
+            from codeagent.cli.tui import tui_available
+
+            if tui_available():
+                _run_tui_wizard()
+                raise typer.Exit()
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            typer.echo(f"Codex 风格 TUI 启动失败，已降级到行式表单：{exc}")
+
     backend = backend or _default_backend()
     try:
         answers = _collect_answers(backend)
@@ -112,6 +125,7 @@ def build_task_config_from_answers(answers: WizardPromptAnswers) -> TaskConfig:
         output_dir=output_dir,
         input_materials=input_materials,
         test_command=CommandConfig(command=test_command),
+        model=ModelConfig(model_name=_parse_model_name(answers.model_name)),
         permissions=PermissionsConfig(
             approval_mode=_parse_approval_mode(answers.approval_mode)
         ),
@@ -135,6 +149,7 @@ def render_task_summary(config: TaskConfig) -> str:
             f"项目目录：{config.project_path}",
             f"输出目录：{config.output_dir}",
             f"测试命令：{config.test_command.command}",
+            f"模型：{config.model.model_name}",
             "输入材料：",
             f"Approval mode: {config.permissions.approval_mode}",
             *material_lines,
@@ -196,6 +211,11 @@ def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
         raise ValueError("已选择手动添加输入材料路径，但没有填写路径")
     output_dir = backend.text("输出目录", default="codeagent_runs")
     test_command = backend.text("测试命令", default="pytest -q")
+    model_name = backend.select(
+        "选择模型",
+        _model_choices(),
+        default=defaults.DEFAULT_MODEL_NAME,
+    )
     approval_mode = backend.select(
         "Approval mode",
         _approval_mode_choices(),
@@ -211,6 +231,7 @@ def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
         output_dir=output_dir,
         test_command=test_command,
         approval_mode=approval_mode,
+        model_name=model_name,
     )
 
 
@@ -244,6 +265,14 @@ def _parse_approval_mode(raw_mode: str) -> str:
     return parsed
 
 
+def _parse_model_name(raw_model_name: str) -> str:
+    model_name = (raw_model_name or defaults.DEFAULT_MODEL_NAME).strip()
+    if model_name not in defaults.WIZARD_MODEL_CHOICES:
+        allowed = ", ".join(defaults.WIZARD_MODEL_CHOICES)
+        raise ValueError(f"invalid wizard model: {raw_model_name}; allowed: {allowed}")
+    return model_name
+
+
 def _resolve_existing_path(
     raw_path: str,
     *,
@@ -263,6 +292,37 @@ def _run_agent_from_wizard(config: TaskConfig):
     from codeagent.cli.progress import ProgressReporter
 
     return execute_task_config(config, reporter=ProgressReporter())
+
+
+def _run_tui_wizard() -> None:
+    from codeagent.cli.executor import execute_task_config
+    from codeagent.cli.tui import (
+        CodexLikeWizardSession,
+        TuiApprovalConsole,
+        TuiProgressReporter,
+    )
+
+    answers = CodexLikeWizardSession().run()
+    if answers is None:
+        typer.echo("运行已取消。")
+        return
+    try:
+        config = build_task_config_from_answers(answers)
+    except ValueError as exc:
+        typer.echo(f"向导输入无效：{exc}")
+        raise typer.Exit(1) from exc
+
+    typer.echo(render_task_summary(config))
+    typer.echo("表单已确认，正在启动 CodeAgent...")
+    result = execute_task_config(
+        config,
+        reporter=TuiProgressReporter(),
+        approval_console=TuiApprovalConsole(),
+    )
+    typer.echo(f"运行已结束：{result.final_status}")
+    typer.echo(f"运行目录：{result.run_dir}")
+    if result.final_status != "succeeded":
+        raise typer.Exit(1)
 
 
 class LineWizardBackend:
@@ -414,11 +474,6 @@ class QuestionaryWizardBackend:
 
 
 def _default_backend() -> WizardFormBackend:
-    if sys.stdin.isatty() and sys.stdout.isatty():
-        try:
-            return QuestionaryWizardBackend()
-        except Exception:
-            return LineWizardBackend()
     return LineWizardBackend()
 
 
@@ -440,6 +495,16 @@ def _approval_mode_choices() -> list[tuple[str, str]]:
     return [
         ("开启人工审批：逐项确认方案、补丁和命令", "manual"),
         ("关闭人工审批：自动批准方案、补丁和命令", "auto"),
+    ]
+
+
+def _model_choices() -> list[tuple[str, str]]:
+    return [
+        (
+            f"{model_name}（默认）" if model_name == defaults.DEFAULT_MODEL_NAME else model_name,
+            model_name,
+        )
+        for model_name in defaults.WIZARD_MODEL_CHOICES
     ]
 
 
