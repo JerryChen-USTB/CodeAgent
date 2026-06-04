@@ -9,12 +9,12 @@
 ## 实现内容
 
 - 新增 `codeagent/cli/tui.py`：
-  - `WizardFormState`：可测试的表单状态模型，支持分组展开/收起、字段移动、任意字段更新。
+  - `WizardFormState`：可测试的表单状态模型，支持字段移动、任意字段更新和字段选项内联展开。
   - `CodexLikeWizardSession`：Codex 风格 wizard 会话，用户可按任意顺序编辑基础设置、输入材料、运行策略、模型与审批模式。
   - `PromptToolkitTuiDriver`：基于 `prompt_toolkit` 的选择、多选和文本输入控件。
   - `TuiApprovalConsole`：复用既有 `ApprovalDecision`，把审批渲染为同一风格的选择面板。
   - `TuiProgressReporter`：消费现有 workflow events，以滚动记录方式展示阶段、工具、测试和最终状态。
-- `codeagent wizard` 默认在 TTY 中启动新 TUI；非 TTY 或 TUI 初始化失败时降级为原来的脚本式行输入。
+- `codeagent wizard` 默认在 TTY 中启动新 TUI；非 TTY 环境使用脚本式行输入，TTY 中的 TUI 初始化错误会直接暴露，避免用降级掩盖环境问题。
 - wizard 新增模型选择字段，固定候选包括：
   - `anthropic/claude-opus-4.8`
   - `anthropic/claude-sonnet-4.6`
@@ -37,9 +37,9 @@
 4. 模型与审批
 5. 最终确认
 
-用户可以使用 `↑/↓` 移动、`Enter` 编辑、`Space` 展开/收起或多选、`Ctrl+S` 开始运行、`Ctrl+C` 取消。确认后仍然直接启动 Agent，不需要再运行 `run --config`。
+用户可以使用 `↑/↓` 移动、`Enter` 编辑、`Space` 展开当前字段选项或多选、`Ctrl+S` 开始运行、`Ctrl+C` 取消。确认后仍然直接启动 Agent，不需要再运行 `run --config`。
 
-配置期间，任务表单固定在终端中原地更新；开始运行后，审批和阶段进度使用同一套 Codex 风格输出。计划/补丁审批仍保持“同意”与“提出修改意见”两个核心选项；命令审批保留必要安全选项。
+配置期间，任务表单以非全屏方式固定在终端中原地更新；字段选项直接在当前字段下方展开，选择后收起。开始运行后，审批和阶段进度使用同一套 Codex 风格输出。计划/补丁审批仍保持“同意”与“提出修改意见”两个核心选项；命令审批保留必要安全选项。
 
 ## 测试与验证
 

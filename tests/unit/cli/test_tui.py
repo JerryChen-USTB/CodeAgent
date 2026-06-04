@@ -47,19 +47,17 @@ class ScriptedDriver:
         return self.texts.pop(0) if self.texts else default
 
 
-def test_wizard_form_state_moves_toggles_and_updates_values() -> None:
+def test_wizard_form_state_moves_between_fields_and_updates_values() -> None:
     state = WizardFormState.create()
 
     assert state.render_value("model_name") == defaults.DEFAULT_MODEL_NAME
     rows = state.visible_rows()
-    assert rows[0].kind == "group"
+    assert rows[0].row_id == "stages"
+    assert all(row.kind != "group" for row in rows)
     assert any(row.row_id == "model_name" for row in rows)
 
     state.move(1)
-    assert state.selected_row().row_id == "stages"
-    state.toggle_group("model")
-    assert all(row.row_id != "model_name" for row in state.visible_rows())
-    state.toggle_group("model")
+    assert state.selected_row().row_id == "project_path"
     state.set_value("model_name", "openai/gpt-5.5")
 
     assert state.render_value("model_name") == "openai/gpt-5.5"
@@ -75,9 +73,31 @@ def test_form_rendering_uses_stable_ascii_layout_without_internal_tagline() -> N
     assert "\u25b8" not in text
     assert "\u25b6" not in text
     assert ("Codex 风格 TUI：" + "像填问卷一样修改字段") not in text
-    assert "\n\n  输入材料" in text
-    assert "    执行阶段:" in text
+    assert "\n\n输入材料" in text
+    assert ">   执行阶段:" in text
     assert "    开始运行 CodeAgent" in text
+
+
+def test_form_rendering_expands_choices_inline_under_the_active_field() -> None:
+    state = WizardFormState.create()
+    rows = state.visible_rows()
+    state.cursor = next(index for index, row in enumerate(rows) if row.row_id == "model_name")
+
+    rendered = _render_form_panel(
+        state,
+        mode="select",
+        edit_field="model_name",
+        choices=[
+            TuiChoice("anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"),
+            TuiChoice("openai/gpt-5.5", "openai/gpt-5.5"),
+        ],
+        focused_choice_index=1,
+    )
+    text = "".join(fragment for _style, fragment in rendered)
+
+    assert "模型与审批\n>   模型: anthropic/claude-sonnet-4.6\n" in text
+    assert "      > 2. openai/gpt-5.5\n" in text
+    assert "    审批模式:" in text
 
 
 def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, monkeypatch) -> None:
@@ -201,3 +221,4 @@ def test_tui_style_uses_prompt_toolkit_supported_color_names() -> None:
     style = _tui_style()
 
     assert style is not None
+    assert ("rev" + "erse") not in str(style.style_rules)

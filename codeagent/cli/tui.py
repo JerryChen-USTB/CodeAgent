@@ -75,7 +75,7 @@ class TuiChoice:
 
 @dataclass(frozen=True)
 class FormRow:
-    kind: Literal["group", "field", "action"]
+    kind: Literal["field", "action"]
     row_id: str
     label: str
     value: str = ""
@@ -86,9 +86,8 @@ class WizardFormState:
     """Small reducer-friendly state model for the task form."""
 
     values: dict[str, object] = field(default_factory=dict)
-    expanded_groups: set[str] = field(default_factory=lambda: set(FORM_GROUPS))
     cursor: int = 0
-    status: str = "方向键移动，Enter 编辑，Space 展开或选择，Ctrl+S 开始运行。"
+    status: str = "方向键移动，Enter 编辑，Space 展开选项或选择，Ctrl+S 开始运行。"
 
     @classmethod
     def create(cls) -> WizardFormState:
@@ -107,25 +106,18 @@ class WizardFormState:
 
     def visible_rows(self) -> list[FormRow]:
         rows: list[FormRow] = []
-        for group_id, group_label in FORM_GROUPS.items():
-            suffix = "" if group_id in self.expanded_groups else " (已收起)"
-            rows.append(FormRow("group", group_id, f"{group_label}{suffix}"))
-            if group_id not in self.expanded_groups:
-                continue
-            for field_id, field_group in FIELD_GROUPS.items():
-                if field_group != group_id:
-                    continue
-                if field_id == "start":
-                    rows.append(FormRow("action", field_id, "开始运行 CodeAgent"))
-                else:
-                    rows.append(
-                        FormRow(
-                            "field",
-                            field_id,
-                            FIELD_LABELS[field_id],
-                            self.render_value(field_id),
-                        )
+        for field_id in FIELD_GROUPS:
+            if field_id == "start":
+                rows.append(FormRow("action", field_id, "开始运行 CodeAgent"))
+            else:
+                rows.append(
+                    FormRow(
+                        "field",
+                        field_id,
+                        FIELD_LABELS[field_id],
+                        self.render_value(field_id),
                     )
+                )
         return rows
 
     def selected_row(self) -> FormRow:
@@ -141,13 +133,6 @@ class WizardFormState:
             self.cursor = 0
             return
         self.cursor = (self.cursor + offset) % len(rows)
-
-    def toggle_group(self, group_id: str) -> None:
-        if group_id in self.expanded_groups:
-            self.expanded_groups.remove(group_id)
-        else:
-            self.expanded_groups.add(group_id)
-        self.cursor = min(self.cursor, max(0, len(self.visible_rows()) - 1))
 
     def set_value(self, field_id: str, value: object) -> None:
         self.values[field_id] = value
@@ -427,20 +412,13 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
     @kb.add(" ")
     def _(event) -> None:
         selected = state.selected_row()
-        if selected.kind == "group":
-            state.toggle_group(selected.row_id)
-            event.app.invalidate()
-            return
         if selected.row_id == "input_materials":
             finish("edit", selected.row_id)
 
     @kb.add("enter")
     def _(event) -> None:
         selected = state.selected_row()
-        if selected.kind == "group":
-            state.toggle_group(selected.row_id)
-            event.app.invalidate()
-        elif selected.kind == "action":
+        if selected.kind == "action":
             finish("start", selected.row_id)
         else:
             finish("edit", selected.row_id)
@@ -468,9 +446,7 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
             selected = index == state.cursor
             prefix = "> " if selected else "  "
             style = "class:selected" if selected else "class:normal"
-            if row.kind == "group":
-                rendered.append((style, f"{prefix}{row.label}\n"))
-            elif row.kind == "action":
+            if row.kind == "action":
                 rendered.append((style, f"{prefix}{row.label}\n"))
             else:
                 rendered.append((style, f"{prefix}{row.label}: {row.value}\n"))
@@ -488,7 +464,7 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
             {
                 "title": "bold",
                 "hint": "ansibrightblack",
-                "selected": "reverse",
+                "selected": "ansibrightblue bold",
                 "status": "ansicyan",
             }
         ),
@@ -667,9 +643,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
     def _(event) -> None:
         if mode == "form":
             row = current_row()
-            if row.kind == "group":
-                state.toggle_group(row.row_id)
-            elif row.row_id == "input_materials":
+            if row.row_id == "input_materials":
                 begin_edit(row.row_id)
         elif mode == "multi" and choices:
             value = choices[choice_index].value
@@ -685,9 +659,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
     def _(event) -> None:
         if mode == "form":
             row = current_row()
-            if row.kind == "group":
-                state.toggle_group(row.row_id)
-            elif row.kind == "action":
+            if row.kind == "action":
                 if validate_form():
                     finish("start")
             else:
@@ -763,69 +735,93 @@ def _run_wizard_application(state: WizardFormState) -> str:
             event.app.invalidate()
 
     def render() -> FormattedText:
-        if mode == "select":
-            return _render_choice_panel(
-                title=f"选择{FIELD_LABELS[edit_field]}",
-                choices=choices,
-                focused_index=choice_index,
-                selected_values={choices[choice_index].value} if choices else set(),
-                multi=False,
-            )
-        if mode == "multi":
-            return _render_choice_panel(
-                title="选择输入材料",
-                choices=choices,
-                focused_index=choice_index,
-                selected_values=multi_selected,
-                multi=True,
-            )
-        if mode == "text":
-            return _render_text_panel(
-                title=f"填写{FIELD_LABELS[edit_field]}",
-                value=text_value,
-                cursor=text_cursor,
-                original=text_original,
-            )
-        return _render_form_panel(state)
+        return _render_form_panel(
+            state,
+            mode=mode,
+            edit_field=edit_field,
+            choices=choices,
+            focused_choice_index=choice_index,
+            selected_values=multi_selected,
+            text_value=text_value,
+            text_cursor=text_cursor,
+        )
 
     app = Application(
         layout=Layout(Window(FormattedTextControl(render, focusable=True))),
         key_bindings=kb,
         style=_tui_style(),
-        full_screen=True,
+        full_screen=False,
         mouse_support=False,
     )
     return app.run()
 
 
-def _render_form_panel(state: WizardFormState) -> FormattedText:
+def _render_form_panel(
+    state: WizardFormState,
+    *,
+    mode: str = "form",
+    edit_field: str = "",
+    choices: list[TuiChoice] | None = None,
+    focused_choice_index: int = 0,
+    selected_values: set[str] | None = None,
+    text_value: str = "",
+    text_cursor: int = 0,
+) -> FormattedText:
     from prompt_toolkit.formatted_text import FormattedText
 
+    choices = choices or []
+    selected_values = selected_values or set()
     rendered: list[tuple[str, str]] = [
         ("class:title", "CodeAgent\n"),
         ("class:subtitle", "任务表单\n\n"),
     ]
     rows = state.visible_rows()
     state.cursor = max(0, min(state.cursor, len(rows) - 1))
+    current_group: str | None = None
     for index, row in enumerate(rows):
         selected = index == state.cursor
-        if row.kind == "group":
-            if index > 0:
+        group_id = FIELD_GROUPS[row.row_id]
+        if group_id != current_group:
+            if current_group is not None:
                 rendered.append(("", "\n"))
-            style = "class:section.selected" if selected else "class:section"
-            prefix = "> " if selected else "  "
-            rendered.append((style, f"{prefix}{row.label}\n"))
-            continue
+            current_group = group_id
+            rendered.append(("class:section", f"{FORM_GROUPS[group_id]}\n"))
+
         if row.kind == "action":
             style = "class:selected" if selected else "class:action"
             prefix = "> " if selected else "  "
             rendered.append((style, f"{prefix}  {row.label}\n"))
             continue
+
         prefix = "> " if selected else "  "
         label_style = "class:selected" if selected else "class:label"
         value_style = "class:selected" if selected else "class:value"
         rendered.append((label_style, f"{prefix}  {row.label}: "))
-        rendered.append((value_style, f"{row.value}\n"))
+        if mode == "text" and row.row_id == edit_field:
+            rendered.append(
+                (
+                    "class:input",
+                    f"{_text_with_cursor(text_value, text_cursor)}\n",
+                )
+            )
+        else:
+            rendered.append((value_style, f"{row.value}\n"))
+
+        if mode in {"select", "multi"} and row.row_id == edit_field:
+            rendered.extend(
+                _render_inline_choices(
+                    choices=choices,
+                    focused_index=focused_choice_index,
+                    selected_values=(
+                        {choices[focused_choice_index].value}
+                        if mode == "select" and choices
+                        else selected_values
+                    ),
+                    multi=(mode == "multi"),
+                )
+            )
+        elif mode == "text" and row.row_id == edit_field:
+            rendered.append(("class:help", "      Enter 保存，Esc 放弃修改。\n"))
 
     selected = state.selected_row()
     rendered.append(("", "\n"))
@@ -833,6 +829,34 @@ def _render_form_panel(state: WizardFormState) -> FormattedText:
     if selected.row_id in FIELD_HELP:
         rendered.append(("class:help", f"{FIELD_HELP[selected.row_id]}\n"))
     return FormattedText(rendered)
+
+
+def _text_with_cursor(value: str, cursor: int) -> str:
+    cursor = max(0, min(cursor, len(value)))
+    return value[:cursor] + "|" + value[cursor:]
+
+
+def _render_inline_choices(
+    *,
+    choices: list[TuiChoice],
+    focused_index: int,
+    selected_values: set[str],
+    multi: bool,
+) -> list[tuple[str, str]]:
+    if not choices:
+        return [("class:warning", "      没有发现可选项。\n")]
+    rendered: list[tuple[str, str]] = []
+    for index, choice in enumerate(choices, start=1):
+        zero_index = index - 1
+        focused = zero_index == focused_index
+        marker = "> " if focused else "  "
+        style = "class:selected" if focused else "class:help"
+        if multi:
+            checked = "[x]" if choice.value in selected_values else "[ ]"
+            rendered.append((style, f"      {marker}{checked} {choice.title}\n"))
+        else:
+            rendered.append((style, f"      {marker}{index}. {choice.title}\n"))
+    return rendered
 
 
 def _render_choice_panel(
