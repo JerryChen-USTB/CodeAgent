@@ -17,9 +17,7 @@ from codeagent.cli.approval_console import (
 )
 from codeagent.cli.progress import ProgressEventFormatter, ProgressReporter
 from codeagent.cli.wizard import (
-    _MANUAL_MATERIAL_SENTINEL,
     _discover_input_material_candidates,
-    QuestionaryWizardBackend,
     WizardPromptAnswers,
     build_task_config_from_answers,
     render_task_summary,
@@ -150,40 +148,9 @@ def test_wizard_discovers_requirements_next_to_clean_workspace_and_filters_secre
 
     assert str(requirements.resolve()) in values
     assert any(title.startswith("requirements.md") for title in titles)
-    assert _MANUAL_MATERIAL_SENTINEL in values
+    assert all("手动添加" not in title for title in titles)
     assert all("Software Engineering Project.txt" not in value for value in values)
     assert all("openrouter_token.txt" not in value for value in values)
-
-
-def test_questionary_checkbox_search_disables_jk_shortcuts() -> None:
-    captured: dict[str, object] = {}
-
-    class FakePrompt:
-        def ask(self):
-            return ["requirements.md"]
-
-    class FakeQuestionary:
-        class Choice:
-            def __init__(self, *, title, value, checked=False):
-                self.title = title
-                self.value = value
-                self.checked = checked
-
-        def checkbox(self, message, choices, **kwargs):
-            captured.update(kwargs)
-            return FakePrompt()
-
-    backend = QuestionaryWizardBackend()
-    backend._questionary = FakeQuestionary()
-
-    selected = backend.checkbox(
-        "选择输入材料",
-        [("requirements.md", "requirements.md")],
-    )
-
-    assert selected == ["requirements.md"]
-    assert captured["use_search_filter"] is True
-    assert captured["use_jk_keys"] is False
 
 
 def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypatch) -> None:
@@ -193,8 +160,10 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
         [
             "implement,test",
             str(project),
+            "add",
+            "candidate",
             str(requirements),
-            "",
+            "done",
             str(output_dir),
             "pytest -q",
             "",
@@ -215,9 +184,10 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
     assert "CodeAgent 中文任务表单" in result.output
     assert "选择要执行的阶段组合" in result.output
     assert "项目目录" in result.output
-    assert "选择输入材料" in result.output
+    assert "输入材料" in result.output
+    assert "添加材料" in result.output
     assert "requirements.md" in result.output
-    assert "手动添加输入材料路径" in result.output
+    assert "手动添加输入材料路径" not in result.output
     assert "输出目录" in result.output
     assert "测试命令" in result.output
     assert "选择模型" in result.output

@@ -16,7 +16,12 @@ from codeagent.reports.writer import ReportWriter
 from codeagent.runtime.run_context import create_run_context
 
 
-_MANUAL_MATERIAL_SENTINEL = "__codeagent_manual_input_material__"
+_MATERIAL_ACTION_ADD = "add"
+_MATERIAL_ACTION_REMOVE = "remove"
+_MATERIAL_ACTION_DONE = "done"
+_MATERIAL_SOURCE_CANDIDATE = "candidate"
+_MATERIAL_SOURCE_MANUAL = "manual"
+_MATERIAL_SOURCE_BACK = "back"
 
 
 @dataclass(frozen=True)
@@ -40,14 +45,6 @@ class WizardFormBackend(Protocol):
         *,
         default: str,
     ) -> str: ...
-
-    def checkbox(
-        self,
-        message: str,
-        choices: list[tuple[str, str]],
-        *,
-        default: list[str] | None = None,
-    ) -> list[str]: ...
 
     def text(self, message: str, *, default: str = "") -> str: ...
 
@@ -183,33 +180,14 @@ def write_wizard_cancellation_report(config: TaskConfig, *, reason: str) -> Path
 
 def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
     typer.echo("CodeAgent 中文任务表单")
-    typer.echo("请按提示选择或填写字段。阶段和输入材料支持选择题/多选题。")
+    typer.echo("请按提示选择或填写字段。阶段支持选择题，输入材料按条添加。")
     stages = backend.select(
         "选择要执行的阶段组合",
         _stage_choices(),
         default="implement,test,debug,repair",
     )
     project_path = backend.text("项目目录", default=".")
-    material_candidates = _discover_input_material_candidates(project_path)
-    selected_materials = backend.checkbox(
-        "选择输入材料（上下键移动，空格勾选，回车确认；找不到时选择“手动添加输入材料路径”）",
-        material_candidates,
-        default=[],
-    )
-    manual_requested = _MANUAL_MATERIAL_SENTINEL in selected_materials
-    selected_materials = [
-        material for material in selected_materials if material != _MANUAL_MATERIAL_SENTINEL
-    ]
-    manual_material = backend.text(
-        (
-            "请填写补充输入材料路径（多个路径用分号分隔）"
-            if manual_requested
-            else "补充输入材料路径（可选，多个路径用分号分隔）"
-        ),
-        default="",
-    )
-    if manual_requested and not manual_material.strip():
-        raise ValueError("已选择手动添加输入材料路径，但没有填写路径")
+    selected_materials = _collect_material_paths(backend, project_path)
     output_dir = backend.text("输出目录", default="codeagent_runs")
     test_command = backend.text("测试命令", default="pytest -q")
     model_name = backend.select(
@@ -227,13 +205,106 @@ def _collect_answers(backend: WizardFormBackend) -> WizardPromptAnswers:
         project_path=project_path,
         input_material_paths=[
             *selected_materials,
-            *_split_manual_paths(manual_material),
         ],
         output_dir=output_dir,
         test_command=test_command,
         approval_mode=approval_mode,
         model_name=model_name,
     )
+
+
+def _collect_material_paths(
+    backend: WizardFormBackend,
+    project_path: str,
+) -> list[str]:
+    selected_materials: list[str] = []
+    while True:
+        if selected_materials:
+            typer.echo("当前输入材料：")
+            for index, material in enumerate(selected_materials, start=1):
+                typer.echo(f"  {index}. {_format_selected_material(material)}")
+        else:
+            typer.echo("当前输入材料：<未添加>")
+
+        action_choices = [
+            ("添加材料", _MATERIAL_ACTION_ADD),
+            ("完成材料选择", _MATERIAL_ACTION_DONE),
+        ]
+        if selected_materials:
+            action_choices.insert(1, ("移除材料", _MATERIAL_ACTION_REMOVE))
+        action = backend.select(
+            "输入材料",
+            action_choices,
+            default=(
+                _MATERIAL_ACTION_DONE
+                if selected_materials
+                else _MATERIAL_ACTION_ADD
+            ),
+        )
+        if action == _MATERIAL_ACTION_DONE:
+            return selected_materials
+        if action == _MATERIAL_ACTION_REMOVE:
+            removed = backend.select(
+                "选择要移除的材料",
+                [
+                    (_format_selected_material(material), material)
+                    for material in selected_materials
+                ],
+                default=selected_materials[0],
+            )
+            selected_materials = [
+                material for material in selected_materials if material != removed
+            ]
+            continue
+        if action != _MATERIAL_ACTION_ADD:
+            continue
+
+        source = backend.select(
+            "添加材料",
+            [
+                ("从候选列表选择一项", _MATERIAL_SOURCE_CANDIDATE),
+                ("手动输入一项材料路径", _MATERIAL_SOURCE_MANUAL),
+                ("返回", _MATERIAL_SOURCE_BACK),
+            ],
+            default=_MATERIAL_SOURCE_CANDIDATE,
+        )
+        if source == _MATERIAL_SOURCE_BACK:
+            continue
+        if source == _MATERIAL_SOURCE_MANUAL:
+            manual_path = backend.text("手动输入一项材料路径", default="").strip()
+            if not manual_path:
+                typer.echo("未填写材料路径，已跳过。")
+                continue
+            selected_materials = _append_material(selected_materials, manual_path)
+            continue
+
+        candidates = [
+            (title, value)
+            for title, value in _discover_input_material_candidates(project_path)
+            if value not in selected_materials
+        ]
+        if not candidates:
+            typer.echo("没有发现新的候选材料，请选择手动输入。")
+            continue
+        selected = backend.select(
+            "从候选列表选择一项材料",
+            candidates,
+            default=candidates[0][1],
+        )
+        selected_materials = _append_material(selected_materials, selected)
+
+
+def _append_material(materials: list[str], material: str) -> list[str]:
+    normalized = material.strip()
+    if not normalized or normalized in materials:
+        return list(materials)
+    return [*materials, normalized]
+
+
+def _format_selected_material(material: str) -> str:
+    path = Path(material)
+    name = path.name or material
+    return f"{name} ({material})"
 
 
 def _parse_stages(raw_stages: str) -> list[str]:
@@ -353,34 +424,6 @@ class LineWizardBackend:
             return raw
         return raw
 
-    def checkbox(
-        self,
-        message: str,
-        choices: list[tuple[str, str]],
-        *,
-        default: list[str] | None = None,
-    ) -> list[str]:
-        typer.echo(message)
-        if not choices:
-            typer.echo("  <未发现可选输入材料，可在下一步手动填写>")
-        for index, (title, value) in enumerate(choices, start=1):
-            typer.echo(f"  {index}. {title} [{value}]")
-        typer.echo("> ", nl=False)
-        raw = input().strip()
-        if not raw:
-            return list(default or [])
-        selected: list[str] = []
-        values = {value for _title, value in choices}
-        for part in _split_manual_paths(raw.replace(",", ";")):
-            if part.isdigit():
-                index = int(part) - 1
-                if 0 <= index < len(choices):
-                    selected.append(choices[index][1])
-                continue
-            if part in values or Path(part).expanduser().exists():
-                selected.append(part)
-        return selected
-
     def text(self, message: str, *, default: str = "") -> str:
         suffix = f" [{default}]" if default else ""
         typer.echo(f"{message}{suffix}")
@@ -428,38 +471,6 @@ class QuestionaryWizardBackend:
         if answer is None:
             raise ValueError("用户取消了阶段选择")
         return str(answer)
-
-    def checkbox(
-        self,
-        message: str,
-        choices: list[tuple[str, str]],
-        *,
-        default: list[str] | None = None,
-    ) -> list[str]:
-        if not choices:
-            return []
-        default_values = set(default or [])
-        q_choices = [
-            self._questionary.Choice(
-                title=title,
-                value=value,
-                checked=value in default_values,
-            )
-            for title, value in choices
-        ]
-        answer = self._questionary.checkbox(
-            message,
-            choices=q_choices,
-            use_search_filter=True,
-            use_jk_keys=False,
-            instruction=(
-                "（上下键移动，空格勾选/取消，输入文字搜索，回车确认；"
-                "手动路径请选列表末尾选项）"
-            ),
-        ).ask()
-        if answer is None:
-            raise ValueError("用户取消了输入材料选择")
-        return [str(item) for item in answer]
 
     def text(self, message: str, *, default: str = "") -> str:
         answer = self._questionary.text(message, default=default).ask()
@@ -530,15 +541,8 @@ def _discover_input_material_candidates(project_path: str) -> list[tuple[str, st
             seen.add(resolved)
             choices.append((_format_material_choice_title(resolved), str(resolved)))
             if len(choices) >= 40:
-                return _with_manual_material_choice(choices)
-    return _with_manual_material_choice(choices)
-
-
-def _with_manual_material_choice(choices: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    return [
-        *choices,
-        ("手动添加输入材料路径（下一步填写）", _MANUAL_MATERIAL_SENTINEL),
-    ]
+                return choices
+    return choices
 
 
 def _format_material_choice_title(path: Path) -> str:
@@ -636,8 +640,3 @@ def _iter_material_candidates(root: Path) -> list[Path]:
             if len(candidates) >= 120:
                 return _sort_material_candidates(candidates)
     return _sort_material_candidates(candidates)
-
-
-def _split_manual_paths(raw: str) -> list[str]:
-    normalized = raw.replace("\n", ";").replace(",", ";")
-    return [part.strip() for part in normalized.split(";") if part.strip()]

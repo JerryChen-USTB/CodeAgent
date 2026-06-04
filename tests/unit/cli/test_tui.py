@@ -23,26 +23,15 @@ class ScriptedDriver:
         self,
         *,
         selects: list[str] | None = None,
-        multi_selects: list[list[str]] | None = None,
         texts: list[str] | None = None,
     ) -> None:
         self.selects = list(selects or [])
-        self.multi_selects = list(multi_selects or [])
         self.texts = list(texts or [])
         self.seen_select_choices: list[list[str]] = []
 
     def select(self, title: str, choices: list[TuiChoice], *, default: str) -> str:
         self.seen_select_choices.append([choice.value for choice in choices])
         return self.selects.pop(0) if self.selects else default
-
-    def multi_select(
-        self,
-        title: str,
-        choices: list[TuiChoice],
-        *,
-        default: list[str],
-    ) -> list[str]:
-        return self.multi_selects.pop(0) if self.multi_selects else default
 
     def text(self, title: str, *, default: str = "") -> str:
         return self.texts.pop(0) if self.texts else default
@@ -101,6 +90,22 @@ def test_form_rendering_expands_choices_inline_under_the_active_field() -> None:
     assert "    审批模式:" in text
 
 
+def test_form_rendering_shows_input_materials_as_vertical_list() -> None:
+    state = WizardFormState.create()
+    state.values["input_materials"] = [
+        r"D:\demo\requirements.md",
+        r"D:\demo\api.md",
+    ]
+
+    rendered = _render_form_panel(state)
+    text = "".join(fragment for _style, fragment in rendered)
+
+    assert "输入材料:\n" in text
+    assert "      1. requirements.md (D:\\demo\\requirements.md)\n" in text
+    assert "      2. api.md (D:\\demo\\api.md)\n" in text
+    assert "requirements.md;api.md" not in text
+
+
 def test_text_editing_uses_prompt_toolkit_cursor_marker() -> None:
     from prompt_toolkit.layout.controls import FormattedTextControl
 
@@ -124,8 +129,14 @@ def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, mo
     requirements = tmp_path / "requirements.md"
     requirements.write_text("# Requirements\n", encoding="utf-8")
     driver = ScriptedDriver(
-        selects=["openai/gpt-5.5", "auto"],
-        multi_selects=[[str(requirements)]],
+        selects=[
+            "openai/gpt-5.5",
+            "auto",
+            "add",
+            "candidate",
+            str(requirements),
+            "done",
+        ],
         texts=[str(project), str(tmp_path / "runs"), "python -m pytest -q"],
     )
     session = CodexLikeWizardSession(driver=driver)
@@ -151,7 +162,34 @@ def test_codex_like_session_builds_answers_after_out_of_order_edits(tmp_path, mo
     assert answers.input_material_paths == [str(requirements)]
     assert answers.output_dir == str(tmp_path / "runs")
     assert answers.test_command == "python -m pytest -q"
-    assert defaults.WIZARD_MODEL_CHOICES == tuple(driver.seen_select_choices[0])
+    assert any(
+        defaults.WIZARD_MODEL_CHOICES == tuple(choices)
+        for choices in driver.seen_select_choices
+    )
+
+
+def test_material_manager_adds_manual_items_and_removes_existing_item(tmp_path) -> None:
+    first = tmp_path / "requirements.md"
+    second = tmp_path / "api.md"
+    first.write_text("# Requirements\n", encoding="utf-8")
+    second.write_text("# API\n", encoding="utf-8")
+    driver = ScriptedDriver(
+        selects=[
+            "add",
+            "manual",
+            "add",
+            "manual",
+            "remove",
+            str(first),
+            "done",
+        ],
+        texts=[str(first), str(second)],
+    )
+    session = CodexLikeWizardSession(driver=driver)
+
+    session._edit_field("input_materials")
+
+    assert session.state.values["input_materials"] == [str(second)]
 
 
 def test_codex_like_session_keeps_user_in_form_on_validation_error(monkeypatch) -> None:

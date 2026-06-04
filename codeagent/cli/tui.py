@@ -32,7 +32,6 @@ FIELD_GROUPS = {
     "stages": "basic",
     "project_path": "basic",
     "input_materials": "materials",
-    "manual_materials": "materials",
     "output_dir": "runtime",
     "test_command": "runtime",
     "model_name": "model",
@@ -44,7 +43,6 @@ FIELD_LABELS = {
     "stages": "执行阶段",
     "project_path": "项目目录",
     "input_materials": "输入材料",
-    "manual_materials": "补充材料路径",
     "output_dir": "输出目录",
     "test_command": "测试命令",
     "model_name": "模型",
@@ -55,8 +53,7 @@ FIELD_LABELS = {
 FIELD_HELP = {
     "stages": "选择 Agent 要执行的阶段组合。",
     "project_path": "Agent 将在这个项目目录中读写代码。",
-    "input_materials": "从自动发现的候选文档中多选需求材料。",
-    "manual_materials": "手动追加候选列表里没有的材料路径，多个路径用分号分隔。",
+    "input_materials": "逐项添加需求材料；可从候选列表选择，也可手动输入，并支持移除。",
     "output_dir": "运行产物、日志和报告会写入这个目录。",
     "test_command": "测试、调试和修复阶段用于验证的命令。",
     "model_name": "本次 wizard 运行使用的 OpenRouter 模型。",
@@ -65,6 +62,13 @@ FIELD_HELP = {
 }
 
 EDITABLE_FIELDS = tuple(field_id for field_id in FIELD_LABELS if field_id != "start")
+_CHOICE_MODES = {
+    "select",
+    "materials",
+    "material_source",
+    "material_candidate",
+    "material_remove",
+}
 
 
 @dataclass(frozen=True)
@@ -96,7 +100,6 @@ class WizardFormState:
                 "stages": "implement,test,debug,repair",
                 "project_path": ".",
                 "input_materials": [],
-                "manual_materials": "",
                 "output_dir": defaults.DEFAULT_OUTPUT_DIR,
                 "test_command": defaults.DEFAULT_TEST_COMMAND,
                 "model_name": defaults.DEFAULT_MODEL_NAME,
@@ -141,23 +144,56 @@ class WizardFormState:
     def render_value(self, field_id: str) -> str:
         value = self.values.get(field_id)
         if field_id == "input_materials":
-            items = [Path(str(item)).name for item in value or []]  # type: ignore[union-attr]
-            return "，".join(items) if items else "<未选择>"
+            items = _material_values(value)
+            return f"{len(items)} 项材料" if items else "<未添加>"
         if field_id == "approval_mode":
             return "开启人工审批" if value == "manual" else "关闭人工审批，自动批准"
         return str(value or "<空>")
 
 
+def _material_values(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        material = str(item).strip()
+        if material and material not in result:
+            result.append(material)
+    return result
+
+
+def _append_material(materials: list[str], material: str) -> list[str]:
+    normalized = material.strip()
+    if not normalized or normalized in materials:
+        return list(materials)
+    return [*materials, normalized]
+
+
+def _material_display(material: str) -> str:
+    path = Path(material)
+    name = path.name or material
+    return f"{name} ({material})"
+
+
+def _add_material_to_state(state: WizardFormState, material: str) -> None:
+    materials = _append_material(
+        _material_values(state.values.get("input_materials")),
+        material,
+    )
+    state.set_value("input_materials", materials)
+
+
+def _remove_material_from_state(state: WizardFormState, material: str) -> None:
+    materials = [
+        item
+        for item in _material_values(state.values.get("input_materials"))
+        if item != material
+    ]
+    state.set_value("input_materials", materials)
+
+
 class TuiPromptDriver(Protocol):
     def select(self, title: str, choices: list[TuiChoice], *, default: str) -> str: ...
-
-    def multi_select(
-        self,
-        title: str,
-        choices: list[TuiChoice],
-        *,
-        default: list[str],
-    ) -> list[str]: ...
 
     def text(self, title: str, *, default: str = "") -> str: ...
 
@@ -167,15 +203,6 @@ class PromptToolkitTuiDriver:
 
     def select(self, title: str, choices: list[TuiChoice], *, default: str) -> str:
         return _run_select_prompt(title, choices, default=default)
-
-    def multi_select(
-        self,
-        title: str,
-        choices: list[TuiChoice],
-        *,
-        default: list[str],
-    ) -> list[str]:
-        return _run_multi_select_prompt(title, choices, default=default)
 
     def text(self, title: str, *, default: str = "") -> str:
         from prompt_toolkit import PromptSession
@@ -224,9 +251,15 @@ class CodexLikeWizardSession:
 
     def _edit_field(self, field_id: str) -> None:
         from codeagent.cli.wizard import (
-            _MANUAL_MATERIAL_SENTINEL,
+            _MATERIAL_ACTION_ADD,
+            _MATERIAL_ACTION_DONE,
+            _MATERIAL_ACTION_REMOVE,
+            _MATERIAL_SOURCE_BACK,
+            _MATERIAL_SOURCE_CANDIDATE,
+            _MATERIAL_SOURCE_MANUAL,
             _approval_mode_choices,
             _discover_input_material_candidates,
+            _format_selected_material,
             _model_choices,
             _stage_choices,
         )
@@ -241,21 +274,70 @@ class CodexLikeWizardSession:
             self.state.set_value(field_id, value)
             return
         if field_id == "input_materials":
+            materials = _material_values(self.state.values.get(field_id))
             project_path = str(self.state.values.get("project_path") or ".")
-            choices = [
-                TuiChoice(title, value)
-                for title, value in _discover_input_material_candidates(project_path)
-            ]
-            current = [str(item) for item in self.state.values.get(field_id, [])]
-            selected = self.driver.multi_select(
-                "选择输入材料",
-                choices,
-                default=current,
-            )
-            if _MANUAL_MATERIAL_SENTINEL in selected:
-                selected = [item for item in selected if item != _MANUAL_MATERIAL_SENTINEL]
-                self.state.status = "已选择手动添加，请填写“补充材料路径”。"
-            self.state.set_value(field_id, selected)
+            while True:
+                action_choices = [
+                    TuiChoice("添加材料", _MATERIAL_ACTION_ADD),
+                    TuiChoice("完成材料选择", _MATERIAL_ACTION_DONE),
+                ]
+                if materials:
+                    action_choices.insert(
+                        1,
+                        TuiChoice("移除材料", _MATERIAL_ACTION_REMOVE),
+                    )
+                action = self.driver.select(
+                    "输入材料",
+                    action_choices,
+                    default=(
+                        _MATERIAL_ACTION_DONE
+                        if materials
+                        else _MATERIAL_ACTION_ADD
+                    ),
+                )
+                if action == _MATERIAL_ACTION_DONE:
+                    self.state.set_value(field_id, materials)
+                    return
+                if action == _MATERIAL_ACTION_REMOVE:
+                    removed = self.driver.select(
+                        "选择要移除的材料",
+                        [
+                            TuiChoice(_format_selected_material(material), material)
+                            for material in materials
+                        ],
+                        default=materials[0],
+                    )
+                    materials = [material for material in materials if material != removed]
+                    continue
+                source = self.driver.select(
+                    "添加材料",
+                    [
+                        TuiChoice("从候选列表选择一项", _MATERIAL_SOURCE_CANDIDATE),
+                        TuiChoice("手动输入一项材料路径", _MATERIAL_SOURCE_MANUAL),
+                        TuiChoice("返回", _MATERIAL_SOURCE_BACK),
+                    ],
+                    default=_MATERIAL_SOURCE_CANDIDATE,
+                )
+                if source == _MATERIAL_SOURCE_BACK:
+                    continue
+                if source == _MATERIAL_SOURCE_MANUAL:
+                    manual = self.driver.text("手动输入一项材料路径", default="").strip()
+                    materials = _append_material(materials, manual)
+                    continue
+                candidates = [
+                    TuiChoice(title, value)
+                    for title, value in _discover_input_material_candidates(project_path)
+                    if value not in materials
+                ]
+                if not candidates:
+                    self.state.status = "没有发现新的候选材料，请手动输入路径。"
+                    continue
+                selected = self.driver.select(
+                    "从候选列表选择一项材料",
+                    candidates,
+                    default=candidates[0].value,
+                )
+                materials = _append_material(materials, selected)
             return
         if field_id == "model_name":
             choices = [TuiChoice(title, value) for title, value in _model_choices()]
@@ -283,11 +365,8 @@ class CodexLikeWizardSession:
         self.state.set_value(field_id, value)
 
     def _build_answers(self, answer_type):
-        from codeagent.cli.wizard import _split_manual_paths
-
         values = self.state.values
-        selected = [str(item) for item in values.get("input_materials", [])]
-        manual = _split_manual_paths(str(values.get("manual_materials") or ""))
+        selected = _material_values(values.get("input_materials"))
         if not str(values.get("project_path") or "").strip():
             raise ValueError("项目目录不能为空")
         if not str(values.get("output_dir") or "").strip():
@@ -297,7 +376,7 @@ class CodexLikeWizardSession:
         return answer_type(
             stages=str(values["stages"]),
             project_path=str(values["project_path"]),
-            input_material_paths=[*selected, *manual],
+            input_material_paths=selected,
             output_dir=str(values["output_dir"]),
             test_command=str(values["test_command"]),
             approval_mode=str(values["approval_mode"]),
@@ -484,14 +563,18 @@ def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.layout.containers import Window
     from codeagent.cli.wizard import (
-        _MANUAL_MATERIAL_SENTINEL,
+        _MATERIAL_ACTION_ADD,
+        _MATERIAL_ACTION_DONE,
+        _MATERIAL_ACTION_REMOVE,
+        _MATERIAL_SOURCE_BACK,
+        _MATERIAL_SOURCE_CANDIDATE,
+        _MATERIAL_SOURCE_MANUAL,
         _approval_mode_choices,
         _discover_input_material_candidates,
         _model_choices,
         _parse_approval_mode,
         _parse_model_name,
         _parse_stages,
-        _split_manual_paths,
         _stage_choices,
     )
 
@@ -499,7 +582,6 @@ def _run_wizard_application(state: WizardFormState) -> str:
     edit_field = ""
     choices: list[TuiChoice] = []
     choice_index = 0
-    multi_selected: set[str] = set()
     text_value = ""
     text_cursor = 0
     text_original = ""
@@ -525,20 +607,66 @@ def _run_wizard_application(state: WizardFormState) -> str:
         choice_index = choice_default_index(str(state.values.get(field_id) or ""))
         state.status = f"正在选择：{title}"
 
-    def enter_multi_select() -> None:
-        nonlocal mode, edit_field, choices, choice_index, multi_selected
-        mode = "multi"
+    def enter_material_menu() -> None:
+        nonlocal mode, edit_field, choices, choice_index
+        mode = "materials"
         edit_field = "input_materials"
+        materials = _material_values(state.values.get("input_materials"))
+        choices = [
+            TuiChoice("添加材料", _MATERIAL_ACTION_ADD),
+            TuiChoice("完成材料选择", _MATERIAL_ACTION_DONE),
+        ]
+        if materials:
+            choices.insert(1, TuiChoice("移除材料", _MATERIAL_ACTION_REMOVE))
+        choice_index = 0
+        state.status = "正在管理输入材料"
+
+    def enter_material_source() -> None:
+        nonlocal mode, choices, choice_index
+        mode = "material_source"
+        choices = [
+            TuiChoice("从候选列表选择一项", _MATERIAL_SOURCE_CANDIDATE),
+            TuiChoice("手动输入一项材料路径", _MATERIAL_SOURCE_MANUAL),
+            TuiChoice("返回", _MATERIAL_SOURCE_BACK),
+        ]
+        choice_index = 0
+        state.status = "请选择添加材料的方式"
+
+    def enter_material_candidate() -> None:
+        nonlocal mode, choices, choice_index
+        mode = "material_candidate"
+        selected = set(_material_values(state.values.get("input_materials")))
         project_path = str(state.values.get("project_path") or ".")
         choices = [
             TuiChoice(title, value)
             for title, value in _discover_input_material_candidates(project_path)
+            if value not in selected
         ]
+        if not choices:
+            choices = [TuiChoice("没有发现新的候选材料，返回", _MATERIAL_SOURCE_BACK)]
         choice_index = 0
-        multi_selected = {
-            str(item) for item in state.values.get("input_materials", [])
-        }
-        state.status = "正在选择输入材料"
+        state.status = "从候选列表添加一项材料"
+
+    def enter_material_remove() -> None:
+        nonlocal mode, choices, choice_index
+        materials = _material_values(state.values.get("input_materials"))
+        if not materials:
+            state.status = "当前没有可移除的输入材料"
+            enter_material_menu()
+            return
+        mode = "material_remove"
+        choices = [TuiChoice(_material_display(material), material) for material in materials]
+        choice_index = 0
+        state.status = "选择要移除的输入材料"
+
+    def enter_material_text() -> None:
+        nonlocal mode, edit_field, text_value, text_cursor, text_original
+        mode = "material_text"
+        edit_field = "input_materials"
+        text_value = ""
+        text_cursor = 0
+        text_original = ""
+        state.status = "手动输入一项材料路径"
 
     def enter_text(field_id: str) -> None:
         nonlocal mode, edit_field, text_value, text_cursor, text_original
@@ -553,7 +681,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
         if field_id == "stages":
             enter_select(field_id, "执行阶段", _stage_choices())
         elif field_id == "input_materials":
-            enter_multi_select()
+            enter_material_menu()
         elif field_id == "model_name":
             enter_select(field_id, "模型", _model_choices())
         elif field_id == "approval_mode":
@@ -572,7 +700,6 @@ def _run_wizard_application(state: WizardFormState) -> str:
                 raise ValueError("输出目录不能为空")
             if not str(state.values.get("test_command") or "").strip():
                 raise ValueError("测试命令不能为空")
-            _split_manual_paths(str(state.values.get("manual_materials") or ""))
         except ValueError as exc:
             state.status = f"表单校验失败：{exc}"
             return False
@@ -596,23 +723,52 @@ def _run_wizard_application(state: WizardFormState) -> str:
         state.set_value(edit_field, choices[choice_index].value)
         mode = "form"
 
-    def commit_multi() -> None:
+    def commit_material_choice() -> None:
         nonlocal mode
-        manual_requested = _MANUAL_MATERIAL_SENTINEL in multi_selected
-        selected = [choice.value for choice in choices if choice.value in multi_selected]
-        if manual_requested:
-            selected = [item for item in selected if item != _MANUAL_MATERIAL_SENTINEL]
-        state.set_value("input_materials", selected)
-        if manual_requested:
-            state.status = "已选择手动添加，请填写“补充材料路径”。"
-        mode = "form"
+        if not choices:
+            enter_material_menu()
+            return
+        value = choices[choice_index].value
+        if mode == "materials":
+            if value == _MATERIAL_ACTION_ADD:
+                enter_material_source()
+            elif value == _MATERIAL_ACTION_REMOVE:
+                enter_material_remove()
+            elif value == _MATERIAL_ACTION_DONE:
+                mode = "form"
+                state.status = "已返回任务表单。"
+            return
+        if mode == "material_source":
+            if value == _MATERIAL_SOURCE_CANDIDATE:
+                enter_material_candidate()
+            elif value == _MATERIAL_SOURCE_MANUAL:
+                enter_material_text()
+            else:
+                enter_material_menu()
+            return
+        if mode == "material_candidate":
+            if value != _MATERIAL_SOURCE_BACK:
+                _add_material_to_state(state, value)
+            enter_material_menu()
+            return
+        if mode == "material_remove":
+            _remove_material_from_state(state, value)
+            enter_material_remove()
+
+    def commit_material_text() -> None:
+        raw_path = text_value.strip()
+        if raw_path:
+            _add_material_to_state(state, raw_path)
+        else:
+            state.status = "未填写材料路径，未添加。"
+        enter_material_menu()
 
     @kb.add("up")
     def _(event) -> None:
         nonlocal choice_index
         if mode == "form":
             state.move(-1)
-        elif mode in {"select", "multi"} and choices:
+        elif mode in _CHOICE_MODES and choices:
             choice_index = (choice_index - 1) % len(choices)
         event.app.invalidate()
 
@@ -621,21 +777,21 @@ def _run_wizard_application(state: WizardFormState) -> str:
         nonlocal choice_index
         if mode == "form":
             state.move(1)
-        elif mode in {"select", "multi"} and choices:
+        elif mode in _CHOICE_MODES and choices:
             choice_index = (choice_index + 1) % len(choices)
         event.app.invalidate()
 
     @kb.add("left")
     def _(event) -> None:
         nonlocal text_cursor
-        if mode == "text":
+        if mode in {"text", "material_text"}:
             text_cursor = max(0, text_cursor - 1)
         event.app.invalidate()
 
     @kb.add("right")
     def _(event) -> None:
         nonlocal text_cursor
-        if mode == "text":
+        if mode in {"text", "material_text"}:
             text_cursor = min(len(text_value), text_cursor + 1)
         event.app.invalidate()
 
@@ -645,13 +801,11 @@ def _run_wizard_application(state: WizardFormState) -> str:
             row = current_row()
             if row.row_id == "input_materials":
                 begin_edit(row.row_id)
-        elif mode == "multi" and choices:
-            value = choices[choice_index].value
-            if value in multi_selected:
-                multi_selected.remove(value)
-            else:
-                multi_selected.add(value)
+        elif mode in _CHOICE_MODES:
+            commit_material_choice() if mode != "select" else commit_choice()
         elif mode == "text":
+            insert_text(" ")
+        elif mode == "material_text":
             insert_text(" ")
         event.app.invalidate()
 
@@ -666,10 +820,12 @@ def _run_wizard_application(state: WizardFormState) -> str:
                 begin_edit(row.row_id)
         elif mode == "select":
             commit_choice()
-        elif mode == "multi":
-            commit_multi()
+        elif mode in _CHOICE_MODES:
+            commit_material_choice()
         elif mode == "text":
             commit_text()
+        elif mode == "material_text":
+            commit_material_text()
         event.app.invalidate()
 
     @kb.add("c-s")
@@ -687,6 +843,8 @@ def _run_wizard_application(state: WizardFormState) -> str:
     def _(event) -> None:
         if mode == "form":
             state.status = "仍在任务表单中。"
+        elif mode in {"material_source", "material_candidate", "material_remove", "material_text"}:
+            enter_material_menu()
         else:
             cancel_edit()
         event.app.invalidate()
@@ -694,7 +852,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
     @kb.add("backspace")
     def _(event) -> None:
         nonlocal text_value, text_cursor
-        if mode == "text" and text_cursor > 0:
+        if mode in {"text", "material_text"} and text_cursor > 0:
             text_value = text_value[: text_cursor - 1] + text_value[text_cursor:]
             text_cursor -= 1
         event.app.invalidate()
@@ -702,21 +860,21 @@ def _run_wizard_application(state: WizardFormState) -> str:
     @kb.add("delete")
     def _(event) -> None:
         nonlocal text_value
-        if mode == "text" and text_cursor < len(text_value):
+        if mode in {"text", "material_text"} and text_cursor < len(text_value):
             text_value = text_value[:text_cursor] + text_value[text_cursor + 1 :]
         event.app.invalidate()
 
     @kb.add("home")
     def _(event) -> None:
         nonlocal text_cursor
-        if mode == "text":
+        if mode in {"text", "material_text"}:
             text_cursor = 0
         event.app.invalidate()
 
     @kb.add("end")
     def _(event) -> None:
         nonlocal text_cursor
-        if mode == "text":
+        if mode in {"text", "material_text"}:
             text_cursor = len(text_value)
         event.app.invalidate()
 
@@ -727,7 +885,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
 
     @kb.add(Keys.Any)
     def _(event) -> None:
-        if mode != "text":
+        if mode not in {"text", "material_text"}:
             return
         data = event.data
         if data and data.isprintable():
@@ -741,7 +899,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
             edit_field=edit_field,
             choices=choices,
             focused_choice_index=choice_index,
-            selected_values=multi_selected,
+            selected_values=set(),
             text_value=text_value,
             text_cursor=text_cursor,
         )
@@ -803,6 +961,29 @@ def _render_form_panel(
         prefix = "> " if selected else "  "
         label_style = "class:active" if selected else "class:label"
         value_style = "class:active" if selected else "class:value"
+        if row.row_id == "input_materials":
+            rendered.append((label_style, f"{prefix}  {row.label}:\n"))
+            rendered.extend(
+                _render_material_list(
+                    _material_values(state.values.get("input_materials"))
+                )
+            )
+            if mode in _CHOICE_MODES - {"select"} and row.row_id == edit_field:
+                rendered.extend(
+                    _render_inline_choices(
+                        choices=choices,
+                        focused_index=focused_choice_index,
+                        selected_values=set(),
+                        multi=False,
+                    )
+                )
+            elif mode == "material_text" and row.row_id == edit_field:
+                rendered.append(("class:help", "      手动输入路径: "))
+                rendered.extend(_text_with_cursor_fragments(text_value, text_cursor))
+                rendered.append(("", "\n"))
+                rendered.append(("class:help", "      Enter 添加，Esc 返回。\n"))
+            continue
+
         rendered.append((label_style, f"{prefix}  {row.label}: "))
         if mode == "text" and row.row_id == edit_field:
             rendered.extend(_text_with_cursor_fragments(text_value, text_cursor))
@@ -810,7 +991,7 @@ def _render_form_panel(
         else:
             rendered.append((value_style, f"{row.value}\n"))
 
-        if mode in {"select", "multi"} and row.row_id == edit_field:
+        if mode == "select" and row.row_id == edit_field:
             rendered.extend(
                 _render_inline_choices(
                     choices=choices,
@@ -820,7 +1001,7 @@ def _render_form_panel(
                         if mode == "select" and choices
                         else selected_values
                     ),
-                    multi=(mode == "multi"),
+                    multi=False,
                 )
             )
         elif mode == "text" and row.row_id == edit_field:
@@ -841,6 +1022,15 @@ def _text_with_cursor_fragments(value: str, cursor: int) -> list[tuple[str, str]
         ("[SetCursorPosition]", ""),
         ("class:input", value[cursor:]),
     ]
+
+
+def _render_material_list(materials: list[str]) -> list[tuple[str, str]]:
+    if not materials:
+        return [("class:help", "      <未添加材料>\n")]
+    rendered: list[tuple[str, str]] = []
+    for index, material in enumerate(materials, start=1):
+        rendered.append(("class:value", f"      {index}. {_material_display(material)}\n"))
+    return rendered
 
 
 def _render_inline_choices(
@@ -864,40 +1054,6 @@ def _render_inline_choices(
         else:
             rendered.append((style, f"      {marker}{index}. {choice.title}\n"))
     return rendered
-
-
-def _render_choice_panel(
-    *,
-    title: str,
-    choices: list[TuiChoice],
-    focused_index: int,
-    selected_values: set[str],
-    multi: bool,
-) -> FormattedText:
-    from prompt_toolkit.formatted_text import FormattedText
-
-    rendered: list[tuple[str, str]] = [
-        ("class:title", "CodeAgent\n"),
-        ("class:subtitle", f"{title}\n"),
-        (
-            "class:help",
-            "上下键移动，Space 勾选，Enter 确认，Esc 返回。\n\n"
-            if multi
-            else "上下键移动，Enter 确认，Esc 返回。\n\n",
-        ),
-    ]
-    if not choices:
-        rendered.append(("class:warning", "没有发现可选项，请返回后手动填写路径。\n"))
-        return FormattedText(rendered)
-    for index, choice in enumerate(choices, start=1):
-        zero_index = index - 1
-        focused = zero_index == focused_index
-        checked = "[x]" if choice.value in selected_values else "[ ]"
-        marker = "> " if focused else "  "
-        style = "class:active" if focused else "class:value"
-        prefix = f"{marker}{checked} " if multi else f"{marker}{index}. "
-        rendered.append((style, f"{prefix}{choice.title}\n"))
-    return FormattedText(rendered)
 
 
 def _render_text_panel(
@@ -1002,84 +1158,6 @@ def _run_select_prompt(
             marker = "> " if selected else "  "
             style = "class:active" if selected else "class:normal"
             rendered.append((style, f"{marker}{choice.title}\n"))
-        return FormattedText(rendered)
-
-    app = Application(
-        layout=Layout(Window(FormattedTextControl(render, focusable=True))),
-        key_bindings=kb,
-        style=_tui_style(),
-        full_screen=False,
-        mouse_support=False,
-    )
-    return app.run()
-
-
-def _run_multi_select_prompt(
-    title: str,
-    choices: list[TuiChoice],
-    *,
-    default: list[str],
-) -> list[str]:
-    if not choices:
-        return []
-    index = 0
-    selected = set(default)
-
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.application.current import get_app
-    from prompt_toolkit.formatted_text import FormattedText
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.layout.containers import Window
-    from prompt_toolkit.styles import Style
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    def _(event) -> None:
-        nonlocal index
-        index = (index - 1) % len(choices)
-        event.app.invalidate()
-
-    @kb.add("down")
-    def _(event) -> None:
-        nonlocal index
-        index = (index + 1) % len(choices)
-        event.app.invalidate()
-
-    @kb.add(" ")
-    def _(event) -> None:
-        value = choices[index].value
-        if value in selected:
-            selected.remove(value)
-        else:
-            selected.add(value)
-        event.app.invalidate()
-
-    @kb.add("enter")
-    def _(event) -> None:
-        get_app().exit(result=[choice.value for choice in choices if choice.value in selected])
-
-    @kb.add("c-c")
-    def _(event) -> None:
-        get_app().exit(result=list(default))
-
-    @kb.add("escape")
-    def _(event) -> None:
-        get_app().exit(result=list(default))
-
-    def render() -> FormattedText:
-        rendered: list[tuple[str, str]] = [
-            ("class:title", f"{title}\n"),
-            ("class:hint", "上下键移动，空格勾选/取消，回车确认。\n\n"),
-        ]
-        for item_index, choice in enumerate(choices):
-            focused = item_index == index
-            checked = "[x]" if choice.value in selected else "[ ]"
-            marker = "> " if focused else "  "
-            style = "class:active" if focused else "class:normal"
-            rendered.append((style, f"{marker}{checked} {choice.title}\n"))
         return FormattedText(rendered)
 
     app = Application(

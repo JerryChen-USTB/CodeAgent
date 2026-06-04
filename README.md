@@ -58,7 +58,10 @@ one-question-at-a-time prompt. The wizard presents one fixed questionnaire in th
 terminal and updates it in place. Section headings are static; selectable fields
 open their choices inline underneath the active field and collapse after a
 selection. Use arrow keys to move, `Enter` to edit, `Space` to open choices or
-select multiple input materials, and `Ctrl+S` to start after the form is valid.
+select the current inline option, and `Ctrl+S` to start after the form is valid.
+Input materials are managed as a vertical list: choose `添加材料`, add one item
+from discovered candidates or by manual path input, and remove existing items
+from the same field.
 Non-TTY sessions fall back to the scriptable line form.
 
 The wizard can choose the OpenRouter model for this run. The default remains
