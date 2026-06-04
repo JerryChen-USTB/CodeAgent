@@ -11,6 +11,7 @@ from codeagent.cli.tui import (
     TuiProgressReporter,
     WizardFormState,
     _render_form_panel,
+    _tui_style,
 )
 from codeagent.config import defaults
 from codeagent.tools.hitl import ApprovalRequest
@@ -194,3 +195,9 @@ def test_model_choices_are_fixed_for_wizard() -> None:
         "minimax/minimax-m3",
         "qwen/qwen3.7-max",
     )
+
+
+def test_tui_style_uses_prompt_toolkit_supported_color_names() -> None:
+    style = _tui_style()
+
+    assert style is not None

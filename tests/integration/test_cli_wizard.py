@@ -232,6 +232,21 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
     assert (run_dirs[0] / "final_report.md").exists()
 
 
+def test_wizard_tui_startup_failure_does_not_fallback_to_line_form(monkeypatch) -> None:
+    monkeypatch.setattr("codeagent.cli.tui.tui_available", lambda: True)
+
+    def fail_tui():
+        raise RuntimeError("bad tui style")
+
+    monkeypatch.setattr("codeagent.cli.wizard._run_tui_wizard", fail_tui)
+
+    result = runner.invoke(app, ["wizard"])
+
+    assert result.exit_code == 1
+    assert "交互式任务表单启动失败：bad tui style" in result.output
+    assert "选择要执行的阶段组合" not in result.output
+
+
 def test_wizard_cancellation_writes_final_report_without_touching_project(tmp_path) -> None:
     project, requirements = _project(tmp_path)
     source_file = project / "calculator.py"

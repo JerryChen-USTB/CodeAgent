@@ -57,16 +57,17 @@ class WizardFormBackend(Protocol):
 def wizard_command(backend: WizardFormBackend | None = None) -> None:
     """Start the guided configuration wizard and run the agent directly."""
     if backend is None:
-        try:
-            from codeagent.cli.tui import tui_available
+        from codeagent.cli.tui import tui_available
 
-            if tui_available():
+        if tui_available():
+            try:
                 _run_tui_wizard()
-                raise typer.Exit()
-        except typer.Exit:
-            raise
-        except Exception as exc:
-            typer.echo(f"交互式任务表单启动失败，已降级到行式表单：{exc}")
+            except typer.Exit:
+                raise
+            except Exception as exc:
+                typer.echo(f"交互式任务表单启动失败：{exc}")
+                raise typer.Exit(1) from exc
+            raise typer.Exit()
 
     backend = backend or _default_backend()
     try:

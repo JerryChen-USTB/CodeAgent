@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 from typing import Literal, Protocol
 
-from prompt_toolkit.formatted_text import FormattedText
 from rich.console import Console
 
 from codeagent.cli.approval_console import (
@@ -800,6 +799,8 @@ def _run_wizard_application(state: WizardFormState) -> str:
 
 
 def _render_form_panel(state: WizardFormState) -> FormattedText:
+    from prompt_toolkit.formatted_text import FormattedText
+
     rendered: list[tuple[str, str]] = [
         ("class:title", "CodeAgent\n"),
         ("class:subtitle", "任务表单\n\n"),
@@ -842,6 +843,8 @@ def _render_choice_panel(
     selected_values: set[str],
     multi: bool,
 ) -> FormattedText:
+    from prompt_toolkit.formatted_text import FormattedText
+
     rendered: list[tuple[str, str]] = [
         ("class:title", "CodeAgent\n"),
         ("class:subtitle", f"{title}\n"),
@@ -873,6 +876,8 @@ def _render_text_panel(
     cursor: int,
     original: str,
 ) -> FormattedText:
+    from prompt_toolkit.formatted_text import FormattedText
+
     cursor = max(0, min(cursor, len(value)))
     display = value[:cursor] + "|" + value[cursor:]
     rendered: list[tuple[str, str]] = [
@@ -892,18 +897,18 @@ def _tui_style() -> Style:
 
     return Style.from_dict(
         {
-            "title": "bold ansibrightwhite",
-            "subtitle": "ansibrightwhite",
+            "title": "bold ansiwhite",
+            "subtitle": "ansiwhite",
             "section": "ansicyan bold",
             "section.selected": "ansibrightblue bold",
             "label": "ansiwhite",
-            "value": "ansibrightwhite",
-            "action": "ansibrightwhite bold",
+            "value": "ansiwhite",
+            "action": "ansiwhite bold",
             "selected": "ansibrightblue bold",
             "status": "ansibrightblue bold",
             "help": "ansibrightblack",
             "warning": "ansiyellow",
-            "input": "ansibrightwhite",
+            "input": "ansiwhite",
         }
     )
 
