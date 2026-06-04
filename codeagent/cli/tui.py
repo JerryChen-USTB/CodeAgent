@@ -557,6 +557,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.current import get_app
     from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.cursor_shapes import CursorShape
     from prompt_toolkit.data_structures import Point
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.key_binding import KeyBindings
@@ -891,6 +892,7 @@ def _run_wizard_application(state: WizardFormState) -> str:
         style=_tui_style(),
         full_screen=False,
         mouse_support=False,
+        cursor=CursorShape.BLINKING_BEAM,
         after_render=ensure_terminal_cursor_visible,
     )
     return app.run()
