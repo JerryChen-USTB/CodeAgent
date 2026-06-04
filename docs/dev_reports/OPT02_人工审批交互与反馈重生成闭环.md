@@ -72,6 +72,8 @@ testing 阶段计划审批选择“提出修改意见”后：
 python -m compileall -q codeagent
 python -m pytest tests/integration/test_cli_wizard.py tests/integration/test_cli_run.py tests/integration/test_implementation_stage.py tests/integration/test_testing_stage.py -q
 python -m pytest tests/integration/test_cli_wizard.py tests/integration/test_cli_run.py tests/integration/test_implementation_stage.py tests/integration/test_testing_stage.py tests/integration/test_repair_stage.py tests/integration/test_benchmark_runner.py -q
+python -m pytest tests/unit/docs/test_active_docs.py -q
+python -m pytest -q
 ```
 
 结果：
@@ -81,9 +83,32 @@ python -m pytest tests/integration/test_cli_wizard.py tests/integration/test_cli
 - 已覆盖“测试计划选择 respond 后重新生成测试方案且不进入 debug/repair”的回归场景。
 - 已覆盖“实现计划审批 payload 只允许 approve/respond”的回归场景。
 - 已覆盖“测试计划审批 payload 只允许 approve/respond”的回归场景。
+- 全量测试通过：`315 passed`。
+
+### 4.1 真实 LLM 场景验证
+
+在上述自动化测试后，补充运行了一个真实 OpenRouter LLM Todo Manager 场景：
+
+- 模型：`anthropic/claude-sonnet-4.6`。
+- 任务：从空 `workspace/` 根据 Todo Manager 需求实现完整 CLI 软件。
+- 阶段：`implement, test, debug, repair`。
+- 审批模式：`manual`。
+- 验证重点：第一次 `ImplementationPlan` 审批选择“提出修改意见”，要求 implementation 阶段只生成业务代码，不生成测试文件。
+
+真实运行结果：
+
+- 运行目录：`codeagent_runs/real_validation/opt02_todo_e2e/runs/2026-06-04_043511_616949_implement-test-debug-repair_9072b6`。
+- `decision_trace.jsonl` 记录了 `implementation_plan -> respond`，随后记录 `implementation_plan -> approve`，证明反馈重生成链路真实发生。
+- 最终 `implementation_plan.json` 只包含 `todo_manager/__init__.py`、`models.py`、`storage.py`、`commands.py`、`__main__.py`，没有测试文件。
+- testing 阶段独立生成 `tests/test_models.py`、`tests/test_storage.py`、`tests/test_commands.py`、`tests/test_cli.py`。
+- Agent 自测结果：`79 passed, 0 failed, 0 errors, 0 skipped`。
+- 最终状态：`succeeded`，测试成功后按路由跳过 debug/repair。
+- 手动体验生成的软件通过：`list`、`add`、`done`、`delete` 命令均按需求输出。
+
+本次真实验证还发现一个后续可优化边界：使用 PowerShell 管道向非 TTY line fallback 注入中文反馈时，`decision_trace.jsonl` 中该中文 comment 可能因管道编码显示为问号。交互式 questionary 审批不走该路径，审批语义和状态转移不受影响；后续若要支持脚本化中文输入，可单独加固 Windows stdin 编码处理。
 
 ## 5. 仍需注意
 
 - 旧 run 目录不会被迁移。历史 run 中的审批记录和当前版本语义可能不同。
 - 真实 LLM 的反馈重生成质量仍取决于提示词和模型输出，系统现在会保留完整 workflow 日志，便于继续迭代 prompt。
-- 为控制 token 成本，本次没有重新跑全量自建 benchmark；需要真实 LLM 验证时建议只跑 Todo Manager 或 Meeting Room 单 case。
+- 为控制 token 成本，本次只跑了 Todo Manager 单 case 真实 LLM 验证，没有重新跑全量自建 benchmark；后续真实验收建议继续按 1-2 个 case 控制成本。
