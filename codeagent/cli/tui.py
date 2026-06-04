@@ -445,7 +445,7 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
         for index, row in enumerate(current_rows):
             selected = index == state.cursor
             prefix = "> " if selected else "  "
-            style = "class:selected" if selected else "class:normal"
+            style = "class:active" if selected else "class:normal"
             if row.kind == "action":
                 rendered.append((style, f"{prefix}{row.label}\n"))
             else:
@@ -464,7 +464,7 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
             {
                 "title": "bold",
                 "hint": "ansibrightblack",
-                "selected": "ansibrightblue bold",
+                "active": "ansibrightblue bold",
                 "status": "ansicyan",
             }
         ),
@@ -788,14 +788,14 @@ def _render_form_panel(
             rendered.append(("class:section", f"{FORM_GROUPS[group_id]}\n"))
 
         if row.kind == "action":
-            style = "class:selected" if selected else "class:action"
+            style = "class:active" if selected else "class:action"
             prefix = "> " if selected else "  "
             rendered.append((style, f"{prefix}  {row.label}\n"))
             continue
 
         prefix = "> " if selected else "  "
-        label_style = "class:selected" if selected else "class:label"
-        value_style = "class:selected" if selected else "class:value"
+        label_style = "class:active" if selected else "class:label"
+        value_style = "class:active" if selected else "class:value"
         rendered.append((label_style, f"{prefix}  {row.label}: "))
         if mode == "text" and row.row_id == edit_field:
             rendered.append(
@@ -850,7 +850,7 @@ def _render_inline_choices(
         zero_index = index - 1
         focused = zero_index == focused_index
         marker = "> " if focused else "  "
-        style = "class:selected" if focused else "class:help"
+        style = "class:active" if focused else "class:help"
         if multi:
             checked = "[x]" if choice.value in selected_values else "[ ]"
             rendered.append((style, f"      {marker}{checked} {choice.title}\n"))
@@ -887,7 +887,7 @@ def _render_choice_panel(
         focused = zero_index == focused_index
         checked = "[x]" if choice.value in selected_values else "[ ]"
         marker = "> " if focused else "  "
-        style = "class:selected" if focused else "class:value"
+        style = "class:active" if focused else "class:value"
         prefix = f"{marker}{checked} " if multi else f"{marker}{index}. "
         rendered.append((style, f"{prefix}{choice.title}\n"))
     return FormattedText(rendered)
@@ -924,11 +924,10 @@ def _tui_style() -> Style:
             "title": "bold ansiwhite",
             "subtitle": "ansiwhite",
             "section": "ansicyan bold",
-            "section.selected": "ansibrightblue bold",
             "label": "ansiwhite",
             "value": "ansiwhite",
             "action": "ansiwhite bold",
-            "selected": "ansibrightblue bold",
+            "active": "ansibrightblue bold",
             "status": "ansibrightblue bold",
             "help": "ansibrightblack",
             "warning": "ansiyellow",
@@ -994,7 +993,7 @@ def _run_select_prompt(
         for item_index, choice in enumerate(choices):
             selected = item_index == index
             marker = "> " if selected else "  "
-            style = "class:selected" if selected else "class:normal"
+            style = "class:active" if selected else "class:normal"
             rendered.append((style, f"{marker}{choice.title}\n"))
         return FormattedText(rendered)
 
@@ -1072,7 +1071,7 @@ def _run_multi_select_prompt(
             focused = item_index == index
             checked = "[x]" if choice.value in selected else "[ ]"
             marker = "> " if focused else "  "
-            style = "class:selected" if focused else "class:normal"
+            style = "class:active" if focused else "class:normal"
             rendered.append((style, f"{marker}{checked} {choice.title}\n"))
         return FormattedText(rendered)
 

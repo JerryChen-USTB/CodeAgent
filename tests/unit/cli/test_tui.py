@@ -222,3 +222,5 @@ def test_tui_style_uses_prompt_toolkit_supported_color_names() -> None:
 
     assert style is not None
     assert ("rev" + "erse") not in str(style.style_rules)
+    assert "selected" not in str(style.style_rules)
+    assert "active" in str(style.style_rules)
