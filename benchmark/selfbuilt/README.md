@@ -1,36 +1,26 @@
-# Self-Built Python Benchmark
+# 自建 Python Benchmark
 
-This directory contains course-specific benchmark cases for the software
-engineering agent. The cases are managed separately from public-dataset cases
-under `benchmark/cases`.
+本目录存放面向课程项目设计的 benchmark 案例，用于评估软件工程智能体。这里的案例与 `benchmark/cases` 下基于公开数据集整理的案例分开管理。
 
-## Output Directory
+## 输出目录
 
-Self-built benchmark source material remains in `benchmark/selfbuilt/`. New
-self-built benchmark run artifacts are written to the centralized repository
-output root:
+自建 benchmark 的源材料保留在 `benchmark/selfbuilt/` 下。新的自建 benchmark 运行产物会写入仓库统一的输出根目录：
 
 ```text
 codeagent_runs/benchmarks/selfbuilt/
 ```
 
-Older ignored validation artifacts may still exist under
-`benchmark/selfbuilt/codeagent_runs/`, but new runs should use the `output_dir`
-declared in `selfbuilt_benchmark.yaml` and `meeting_room_demo_benchmark.yaml`.
+早期验证运行留下的历史忽略产物可能仍然存在于 `benchmark/selfbuilt/codeagent_runs/` 下，但新的运行应使用 `selfbuilt_benchmark.yaml` 和 `meeting_room_demo_benchmark.yaml` 中声明的 `output_dir`。
 
-## Design Principles
+## 设计原则
 
-- Each case starts from an empty `workspace/`.
-- The agent must implement the project from the input materials.
-- The `input/` directory is the primary task context. Each current self-built
-  case keeps exactly four simplified-Chinese materials: PRD, user stories,
-  design model, and acceptance criteria.
-- The `oracle_tests/` directory is hidden from the agent and is used only by
-  the benchmark runner.
-- No case uses `expected_result.json`; success criteria are declared in
-  `case.yaml` and verified by hidden tests.
+- 每个案例都从空的 `workspace/` 开始。
+- 智能体必须根据输入材料从零实现项目。
+- `input/` 目录是主要任务上下文。当前每个自建案例都恰好包含四份简体中文材料：PRD、用户故事、设计模型和验收标准。
+- `oracle_tests/` 目录对智能体隐藏，只能由 benchmark runner 使用。
+- 所有案例都不使用 `expected_result.json`；成功标准声明在 `case.yaml` 中，并由隐藏测试验证。
 
-## Layout
+## 目录结构
 
 ```text
 benchmark/selfbuilt/
@@ -44,7 +34,7 @@ benchmark/selfbuilt/
     05_meeting_room_booking/
 ```
 
-Each current case uses:
+当前每个案例都采用如下结构：
 
 ```text
 case/
@@ -58,48 +48,35 @@ case/
   oracle_tests/
 ```
 
-`workspace/` should remain empty in the original benchmark copy. A runner must
-copy the entire case to a clean temporary run directory before letting the agent
-write code or before running oracle tests. The agent and test command operate
-only on the copied workspace; the original case remains reusable for later
-benchmark runs.
+原始 benchmark 副本中的 `workspace/` 应保持为空。runner 必须先把完整案例复制到干净的临时运行目录，然后才能让智能体写代码或运行 oracle 测试。智能体和测试命令只应在复制后的 `workspace/` 中操作；原始案例则保持可复用，供后续 benchmark 运行继续使用。
 
-The first three cases require simple line-oriented TUI interaction that hidden
-oracle tests can drive through stdin/stdout. The fourth case requires a local
-browser-accessible Web UI implemented with the Python standard library. The
-fifth case is the Flask upgrade: it must provide both a browser Web UI and a
-stable JSON API.
+前三个案例要求实现简单的、按行交互的 TUI，隐藏 oracle 测试可以通过 stdin/stdout 驱动程序。第四个案例要求使用 Python 标准库实现一个可通过本地浏览器访问的 Web UI。第五个案例是 Flask 升级版：它必须同时提供浏览器 Web UI 和稳定的 JSON API。
 
-## Case Summary
+## 案例概览
 
-| Case | Difficulty | Type | Persistence |
+| 案例 | 难度 | 类型 | 持久化方式 |
 | --- | --- | --- | --- |
-| `01_todo_manager` | Introductory | TUI | JSON |
-| `02_personal_ledger` | Easy | TUI | JSON |
-| `03_student_gradebook` | Medium | TUI | JSON |
-| `04_library_lending` | Medium-high | Standard-library Web UI | SQLite |
-| `05_meeting_room_booking` | High | Flask Web UI + JSON API | SQLite |
+| `01_todo_manager` | 入门 | TUI | JSON |
+| `02_personal_ledger` | 简单 | TUI | JSON |
+| `03_student_gradebook` | 中等 | TUI | JSON |
+| `04_library_lending` | 中高 | 标准库 Web UI | SQLite |
+| `05_meeting_room_booking` | 高 | Flask Web UI + JSON API | SQLite |
 
-## Manual Initial Check
+## 手动初始检查
 
-The initial workspaces are empty, so oracle tests should fail before the agent
-implements each project. Run this check on a copied case, not on the reusable
-original benchmark case:
+初始 `workspace/` 是空的，因此在智能体实现每个项目之前，oracle 测试理应失败。请在复制后的案例目录上执行这个检查，不要在可复用的原始 benchmark 案例上执行：
 
 ```powershell
 cd <copied_case_dir>
 python -m unittest discover -s oracle_tests
 ```
 
-Only the benchmark runner/evaluator should run this command, and only inside the
-copied case directory. The expected initial failure is a missing entry module or
-missing package. After the agent implements the case in the copied workspace, the
-same command is the final verification step.
+只有 benchmark runner/evaluator 应运行这条命令，并且只能在复制后的案例目录中运行。初始状态下，预期失败原因通常是缺少入口模块或缺少包。智能体在复制后的 `workspace/` 中完成案例实现后，同一条命令就是最终验证步骤。
 
-## Change Log
+## 变更记录
 
-| Date | Change | Reason |
+| 日期 | 变更 | 原因 |
 |---|---|---|
-| 2026-06-03 | Strengthened copy-to-clean-run-directory rule for self-built cases. | Keep original empty workspaces and hidden oracle tests reusable across repeated benchmark runs. |
-| 2026-06-05 | Upgraded `01_todo_manager` to four richer Chinese materials and TUI-based hidden oracle tests. | Make the first self-built case require realistic interactive software behavior instead of one-command-at-a-time usage. |
-| 2026-06-06 | Synchronized all five cases to four Chinese input materials; upgraded cases 02 and 03 to TUI, case 04 to standard-library Web UI, and case 05 to Flask Web UI + JSON API. | Keep the benchmark documentation aligned with the current case materials, case configs, and hidden oracle expectations. |
+| 2026-06-03 | 强化自建案例必须复制到干净运行目录的规则。 | 保持原始空 `workspace/` 和隐藏 oracle 测试在多次 benchmark 运行之间可复用。 |
+| 2026-06-05 | 将 `01_todo_manager` 升级为四份更丰富的中文材料，并加入基于 TUI 的隐藏 oracle 测试。 | 让第一个自建案例要求更真实的交互式软件行为，而不是一次一个命令的简单用法。 |
+| 2026-06-06 | 将全部五个案例同步为四份中文输入材料；将案例 02 和 03 升级为 TUI，将案例 04 升级为标准库 Web UI，将案例 05 升级为 Flask Web UI + JSON API。 | 保持 benchmark 文档与当前案例材料、案例配置和隐藏 oracle 预期一致。 |

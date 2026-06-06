@@ -1,11 +1,10 @@
 # CodeAgent Benchmark
 
-This directory contains benchmark inputs derived from `dataset/` and reshaped for the software-engineering agent described in the SRS. The main config is `benchmark.yaml`.
+本目录存放从 `dataset/` 派生并重新整理后的 benchmark 输入，用于评估需求规格说明书中描述的软件工程智能体。主配置文件是 `benchmark.yaml`。
 
-## Output Directory Convention
+## 输出目录约定
 
-Benchmark source material stays under `benchmark/`; generated run artifacts now
-go under the repository-level `codeagent_runs/benchmarks/` directory:
+benchmark 的源材料保留在 `benchmark/` 下；实际运行生成的产物统一写入仓库根目录下的 `codeagent_runs/benchmarks/`：
 
 ```text
 codeagent_runs/
@@ -21,35 +20,25 @@ codeagent_runs/
       <timestamp>_<benchmark_id>_<hash>/
 ```
 
-Do not put new benchmark outputs under `benchmark/codeagent_runs/` or
-`benchmark/selfbuilt/codeagent_runs/`. Those locations may still exist as
-historical ignored artifacts from earlier validation runs, but new runs should
-use the centralized output roots configured in the benchmark YAML files.
+不要再把新的 benchmark 输出写到 `benchmark/codeagent_runs/` 或 `benchmark/selfbuilt/codeagent_runs/` 下。上述位置可能仍然保留早期验证运行留下的历史忽略产物，但新的运行应使用 benchmark YAML 文件中配置的集中式输出根目录。
 
-## Case Layout
+## 案例目录结构
 
-Each case directory contains:
+每个案例目录包含：
 
-- `task_config.yaml`: case-level task configuration.
-- `input/`: visible requirements, bug reports, failing-test notes, or logs.
-- `workspace/`: the project skeleton or buggy project that the agent may edit.
-- `evaluation/`: oracle tests used by a benchmark runner. Function-level implementation cases should hide this directory from the agent.
-- `expected_result.json`: success criteria and answer-isolation notes.
+- `task_config.yaml`：案例级任务配置。
+- `input/`：对智能体可见的需求、缺陷报告、失败测试说明或日志。
+- `workspace/`：智能体可以编辑的项目骨架或带缺陷项目。
+- `evaluation/`：benchmark runner 使用的 oracle 测试。函数级实现案例应对智能体隐藏该目录。
+- `expected_result.json`：成功标准和答案隔离说明。
 
-## Case Reuse Rule
+## 案例复用规则
 
-Benchmark runs must not edit the original case directories. A runner should copy
-the entire selected case to a clean per-run workspace first, then allow the agent
-and test command to operate only on that copy. Hidden paths such as `evaluation/`
-and `expected_result.json` remain hidden from the agent in the copy and are used
-only by the runner for scoring. This keeps the source cases reusable across
-repeated benchmark runs.
+benchmark 运行过程不得直接修改原始案例目录。runner 应先把被选中的完整案例复制到一个干净的单次运行工作区，然后只允许智能体和测试命令在这份副本上操作。`evaluation/`、`expected_result.json` 等隐藏路径在副本中仍然需要对智能体隐藏，只能由 runner 用于评分。这样可以保证源案例在多次 benchmark 运行之间保持可复用。
 
-If a `task_config.yaml` command needs the case directory, use the
-`{{CASE_DIR}}` placeholder. The benchmark runner must replace it with the clean
-copied case directory before execution.
+如果 `task_config.yaml` 中的命令需要引用案例目录，请使用 `{{CASE_DIR}}` 占位符。benchmark runner 必须在执行前把它替换为干净复制后的案例目录路径。
 
-## Enabled Cases
+## 默认启用案例
 
 - `humaneval_000_has_close_elements`
 - `humaneval_001_separate_paren_groups`
@@ -58,14 +47,14 @@ copied case directory before execution.
 - `quixbugs_gcd`
 - `quixbugs_find_in_sorted`
 
-## Optional Cases
+## 可选案例
 
-- `bugsinpy_black_001`: disabled by default because it needs WSL and the `codeagent-bugsinpy-py383` conda environment. To run it, first copy the original case to a clean `<copied_case_dir>`, then run the prepare/test wrappers with `-CaseDir <copied_case_dir>`. The prepare/test steps call the official BugsInPy `bugsinpy-checkout`, `bugsinpy-compile`, and `bugsinpy-test` scripts against the copied case.
+- `bugsinpy_black_001`：默认禁用，因为它需要 WSL 和 `codeagent-bugsinpy-py383` conda 环境。若要运行它，请先把原始案例复制到一个干净的 `<copied_case_dir>`，再使用 `-CaseDir <copied_case_dir>` 运行 prepare/test 包装脚本。prepare/test 步骤会在复制后的案例上调用官方 BugsInPy 的 `bugsinpy-checkout`、`bugsinpy-compile` 和 `bugsinpy-test` 脚本。
 
-SWE-bench Lite is not converted yet because it needs a dedicated harness, repository checkout, and Docker-style evaluation environment.
+SWE-bench Lite 尚未转换，因为它需要专门的 harness、仓库检出流程和类似 Docker 的评估环境。
 
-## Change Log
+## 变更记录
 
-| Date | Change | Reason |
+| 日期 | 变更 | 原因 |
 |---|---|---|
-| 2026-06-03 | Added case reuse rule requiring clean per-run copies and `{{CASE_DIR}}` command substitution. | Keep original benchmark cases reusable and prevent accidental pollution. |
+| 2026-06-03 | 新增案例复用规则，要求每次运行前复制到干净目录，并支持 `{{CASE_DIR}}` 命令替换。 | 保持原始 benchmark 案例可复用，防止意外污染。 |
