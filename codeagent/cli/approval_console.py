@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from codeagent.tools.hitl import ApprovalDecision, ApprovalRequest, DecisionType
 
 
+PATCH_AUTO_APPROVE_REMAINING_KEY = "auto_approve_remaining_stage"
+_PATCH_AUTO_APPROVE_REMAINING_VALUE = "__patch_auto_approve_remaining_stage__"
+
+
 class ApprovalInputError(ValueError):
     """Raised when a CLI approval input cannot be converted to a decision."""
 
@@ -131,10 +135,10 @@ class ApprovalConsole:
 
         choices = [
             questionary.Choice(
-                title=_choice_label(request, decision),
-                value=decision,
+                title=label,
+                value=value,
             )
-            for decision in _ordered_allowed_decisions(request)
+            for value, label in _approval_choice_options(request)
         ]
         answer = questionary.select(
             request.title,
@@ -161,7 +165,7 @@ class ApprovalConsole:
             ).ask()
             if edited_payload_text is None:
                 decision_type = "cancel"
-        return parse_approval_decision(
+        return _approval_decision_from_choice(
             decision_type,
             request=request,
             edited_payload_text=edited_payload_text,
@@ -188,10 +192,10 @@ class ApprovalConsole:
         return None
 
     def _prompt_line(self, request: ApprovalRequest) -> ApprovalDecision:
-        allowed = _ordered_allowed_decisions(request)
-        print(_render_line_prompt(request, allowed))
+        options = _approval_choice_options(request)
+        print(_render_line_prompt(request, options))
         raw = self.input_func("> ")
-        decision_type = _decision_from_line_input(raw, allowed)
+        decision_type = _choice_value_from_line_input(raw, options)
         edited_payload_text = None
         comment = None
         if decision_type == "respond":
@@ -202,7 +206,7 @@ class ApprovalConsole:
             edited_payload_text = self.input_func("请粘贴修改后的 JSON 对象：")
         elif decision_type in {"reject", "cancel"}:
             comment = self.input_func("可选：请输入原因（可直接回车跳过）：")
-        return parse_approval_decision(
+        return _approval_decision_from_choice(
             decision_type,
             request=request,
             edited_payload_text=edited_payload_text,
@@ -216,6 +220,31 @@ def _ordered_allowed_decisions(request: ApprovalRequest) -> list[DecisionType]:
     return [decision for decision in priority if decision in allowed]
 
 
+def _approval_choice_options(request: ApprovalRequest) -> list[tuple[str, str]]:
+    if _is_patch_feedback_request(request):
+        return [
+            ("approve", "是，应用此补丁"),
+            (
+                _PATCH_AUTO_APPROVE_REMAINING_VALUE,
+                "是，应用此补丁，本阶段不再提示",
+            ),
+            ("respond", "否，告知 CodeAgent 如何调整"),
+        ]
+    return [
+        (decision, _choice_label(request, decision))
+        for decision in _ordered_allowed_decisions(request)
+    ]
+
+
+def _is_patch_feedback_request(request: ApprovalRequest) -> bool:
+    allowed = set(request.allowed_decisions)
+    return (
+        request.action in _PATCH_ACTIONS
+        and "approve" in allowed
+        and "respond" in allowed
+    )
+
+
 def _decision_from_line_input(raw: str, allowed: list[DecisionType]) -> DecisionType:
     normalized = raw.strip()
     if normalized.isdigit():
@@ -225,13 +254,31 @@ def _decision_from_line_input(raw: str, allowed: list[DecisionType]) -> Decision
     return _normalize_decision(raw)
 
 
+def _choice_value_from_line_input(raw: str, options: list[tuple[str, str]]) -> str:
+    normalized = raw.strip()
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        if 0 <= index < len(options):
+            return options[index][0]
+    if normalized.lower() in {
+        "auto",
+        "auto-approve",
+        "approve-all",
+        "approve-rest",
+        "本阶段不再提示",
+        "自动通过",
+    }:
+        return _PATCH_AUTO_APPROVE_REMAINING_VALUE
+    return _normalize_decision(raw)
+
+
 def _render_line_prompt(
     request: ApprovalRequest,
-    allowed: list[DecisionType],
+    options: list[tuple[str, str]],
 ) -> str:
     lines = [request.title]
-    for index, decision in enumerate(allowed, start=1):
-        lines.append(f"  {index}. {_choice_label(request, decision)}")
+    for index, (_value, label) in enumerate(options, start=1):
+        lines.append(f"  {index}. {label}")
     return "\n".join(line for line in lines if line)
 
 
@@ -264,6 +311,34 @@ def _normalize_decision(raw: str) -> DecisionType:
     if decision_type is None:
         raise ApprovalInputError(f"未知审批决策：{raw!r}")
     return decision_type
+
+
+def _approval_decision_from_choice(
+    choice: str,
+    *,
+    request: ApprovalRequest,
+    edited_payload_text: str | None = None,
+    comment: str | None = None,
+) -> ApprovalDecision:
+    if choice == _PATCH_AUTO_APPROVE_REMAINING_VALUE:
+        if not _is_patch_feedback_request(request):
+            raise ApprovalInputError("本阶段自动通过仅适用于补丁审批")
+        return ApprovalDecision(
+            interrupt_id=request.interrupt_id,
+            decision_type="approve",
+            edited_payload={PATCH_AUTO_APPROVE_REMAINING_KEY: True},
+            comment="应用此补丁，并在本阶段本轮自动通过后续补丁。",
+            decided_by="user",
+            auto=False,
+            decision_source="user_stage_patch_auto_approve",
+            presented_to_user=True,
+        )
+    return parse_approval_decision(
+        choice,
+        request=request,
+        edited_payload_text=edited_payload_text,
+        comment=comment,
+    )
 
 
 def _parse_edited_payload(edited_payload_text: str | None) -> dict:

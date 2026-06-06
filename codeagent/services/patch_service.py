@@ -325,10 +325,15 @@ class PatchService:
                         severity="high",
                     )
                 )
+            test_assertion_replaced = _is_test_path(path) and any(
+                line.kind == "add" and _looks_like_assertion(line.text)
+                for hunk in file_patch.hunks
+                for line in hunk.lines
+            )
             for hunk in file_patch.hunks:
                 for line in hunk.lines:
                     if line.kind == "remove" and _is_test_path(path):
-                        if _looks_like_assertion(line.text):
+                        if _looks_like_assertion(line.text) and not test_assertion_replaced:
                             findings.append(
                                 PatchRiskFinding(
                                     kind="test_assertion_removal",
@@ -357,12 +362,16 @@ class PatchService:
                                 )
                             )
                         if HARDCODE_RE.search(line.text):
+                            severity: RiskLevel = "high" if _is_test_path(path) else "low"
                             findings.append(
                                 PatchRiskFinding(
                                     kind="hardcoded_case",
                                     path=path,
-                                    message="patch appears to hardcode a specific case",
-                                    severity="high",
+                                    message=(
+                                        "patch adds a literal equality branch; review for "
+                                        "test-specific hardcoding"
+                                    ),
+                                    severity=severity,
                                 )
                             )
         level: RiskLevel = "low"

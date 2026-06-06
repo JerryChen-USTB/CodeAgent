@@ -2,6 +2,7 @@ schema_version: 1
 name: codeagent_meeting_room_demo_benchmark
 benchmark_id: codeagent_meeting_room_demo_benchmark
 description: Cost-controlled single-case demo benchmark for the meeting-room booking Flask API.
+output_dir: ../../codeagent_runs/benchmarks/selfbuilt
 case_root: cases
 default_agent_visible_paths:
   - input

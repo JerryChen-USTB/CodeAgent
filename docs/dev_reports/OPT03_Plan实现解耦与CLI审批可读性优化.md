@@ -103,7 +103,7 @@ codeagent_runs/real_validation/opt03_todo_manager/runs/2026-06-04_065643_303727_
 
 验证方式：
 
-- 从 `benchmark/selfbuilt/cases/01_todo_manager/input/requirements.md` 复制公开需求到干净目录。
+- 从 `benchmark/selfbuilt/cases/01_todo_manager/input/` 复制 Todo Manager 的公开输入材料到干净目录。当前新版材料为 `PRD.md`、`user_stories.md`、`design_model.md`、`acceptance_criteria.md`。
 - `workspace` 初始为空。
 - 使用脚本模拟人工审批：第一次 `review_implementation_plan` 选择 `respond`，要求重新生成计划；第二次实现计划及后续补丁、测试计划、测试补丁、测试命令均批准。
 - 不读取隐藏 oracle，不运行全量 benchmark。

@@ -80,6 +80,23 @@ def run(
         "--test-cmd",
         help="testing/debugging/repair 阶段使用的测试命令。",
     ),
+    requirements: list[str] | None = typer.Option(
+        None,
+        "--requirements",
+        "-r",
+        help="可重复传入的需求/设计/验收材料路径；未提供配置文件时用于构造输入材料。",
+    ),
+    model_name: str | None = typer.Option(
+        None,
+        "--model",
+        "--model-name",
+        help="本次 run 使用的模型名称，例如 google/gemini-3.5-flash。",
+    ),
+    auto_approve: bool = typer.Option(
+        False,
+        "--auto-approve",
+        help="自动通过计划、补丁和命令审批，用于无人值守 run。",
+    ),
 ) -> None:
     """从配置文件或 CLI 参数运行任务。
 
@@ -94,6 +111,9 @@ def run(
             stages=stages,
             output_dir=output_dir,
             test_cmd=test_cmd,
+            requirements=requirements,
+            model_name=model_name,
+            auto_approve=auto_approve,
         )
     )
     _execute_or_exit(task_config)

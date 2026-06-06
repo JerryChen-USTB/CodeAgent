@@ -23,6 +23,7 @@ def test_prepare_script_allows_clean_case_workspaces_and_rejects_outside_repo() 
     assert "case_workspaces" in prepare
     assert "Refusing to prepare path outside allowed benchmark workspaces" in prepare
     assert 'benchmark/codeagent_runs/*/case_workspaces/*' in prepare
+    assert 'codeagent_runs/benchmarks/*/case_workspaces/*' in prepare
 
 
 def test_bugsinpy_scripts_timeout_wsl_path_conversion() -> None:

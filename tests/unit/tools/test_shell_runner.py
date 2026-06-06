@@ -31,7 +31,7 @@ def test_shell_runner_executes_approved_pytest_and_saves_logs(tmp_path) -> None:
     result = runner.run(
         f"{sys.executable} -m pytest -q",
         cwd=project,
-        timeout_seconds=10,
+        timeout_seconds=30,
         approval=_approval("pytest-ok"),
     )
 

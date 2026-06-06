@@ -190,7 +190,7 @@ def test_load_benchmark_config_resolves_case_configs(tmp_path) -> None:
     benchmark_path.write_text(
         """
 name: demo_benchmark
-default_output_dir: codeagent_runs/benchmark
+default_output_dir: codeagent_runs/benchmarks
 cases:
   - case_id: demo
     config: cases/demo/task_config.yaml

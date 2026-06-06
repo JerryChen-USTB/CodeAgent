@@ -6,10 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from codeagent.agents.plan_generation import PlanGenerationError, PlanGenerationService
+from codeagent.agents.plan_generation import (
+    PlanGenerationError,
+    PlanGenerationService,
+    _is_retryable_model_error,
+    _reduced_max_tokens_for_model_error,
+)
 from codeagent.config.schema import InputMaterial, Stage, TaskConfig
 from codeagent.runtime.run_context import RunContext, create_run_context
 from codeagent.stages.implementation_service import PATCH_INTERRUPT_ID
+from codeagent.stages.debugging_service import FaultLocalization
 from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
     REPAIR_PATCH_INTERRUPT_ID,
@@ -38,7 +44,27 @@ class _FakeModel:
         return _Response("```json\n" + json.dumps(_normalize_fixture_response(self.response)) + "\n```")
 
 
+def test_reduces_max_tokens_from_openrouter_affordability_error() -> None:
+    error = RuntimeError(
+        "Error code: 402 - {'error': {'message': 'This request requires more "
+        "credits, or fewer max_tokens. You requested up to 16384 tokens, but "
+        "can only afford 2924.'}}"
+    )
+
+    reduced = _reduced_max_tokens_for_model_error(error, current_max_tokens=16384)
+
+    assert reduced == 2631
+
+
+def test_insufficient_credits_model_error_is_not_retryable() -> None:
+    error = RuntimeError("Error code: 402 - Insufficient credits.")
+
+    assert _is_retryable_model_error(error) is False
+
+
 def _normalize_fixture_response(response: dict) -> dict:
+    if "failure_origin" in response and "repair_strategy" in response:
+        return response
     if "requirements_summary" in response and "impact_summary" in response:
         return {
             "requirements_summary": response["requirements_summary"],
@@ -73,7 +99,7 @@ def _normalize_fixture_response(response: dict) -> dict:
             "framework": response.get("framework", "pytest"),
         }
     if "root_cause" in response:
-        return {
+        normalized = {
             "root_cause": response["root_cause"],
             "strategy": response["strategy"],
             "changes": [
@@ -88,6 +114,13 @@ def _normalize_fixture_response(response: dict) -> dict:
             "verification_command": response["verification_command"],
             "framework": response.get("framework", "pytest"),
         }
+        if "failure_origin" in response:
+            normalized["failure_origin"] = response["failure_origin"]
+        if "test_repair_allowed" in response:
+            normalized["test_repair_allowed"] = response["test_repair_allowed"]
+        if "test_repair_rationale" in response:
+            normalized["test_repair_rationale"] = response["test_repair_rationale"]
+        return normalized
     return response
 
 
@@ -195,9 +228,86 @@ def test_plan_generation_builds_implementation_request_without_hidden_context(tm
     assert "solution.py" in prompt
     assert "SECRET_ORACLE" not in prompt
     assert "test_secret.py" not in prompt
+    assert "Simplified Chinese" in prompt
+    assert "简体中文" in prompt
+    assert "do not translate identifiers or source code" in prompt
     assert request.plan.changes[0].path.as_posix() == "solution.py"
     assert request.approval.interrupt_id == PATCH_INTERRUPT_ID
     assert request.approval.decision_type == "approve"
+
+
+def test_plan_generation_writes_llm_call_bundle_and_trace_indexes(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    (context.task_config.project_path / "solution.py").write_text(
+        "def add(left, right):\n    pass\n",
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "requirements_summary": "Implement add.",
+            "impact_summary": "Fill in solution.py.",
+            "changes": [
+                {
+                    "path": "solution.py",
+                    "old_content": "def add(left, right):\n    pass\n",
+                    "new_content": "def add(left, right):\n    return left + right\n",
+                    "rationale": "Satisfy visible requirements.",
+                }
+            ],
+            "syntax_check_targets": ["solution.py"],
+        }
+    )
+
+    PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+        context
+    )
+
+    call_dirs = sorted((context.stage_dirs[Stage.IMPLEMENT] / "llm_calls").iterdir())
+    assert len(call_dirs) == 1
+    call_dir = call_dirs[0]
+    assert (call_dir / "request.json").exists()
+    assert (call_dir / "prompt.full.txt").exists()
+    assert (call_dir / "prompt.manifest.json").exists()
+    assert (call_dir / "call_summary.md").exists()
+    assert (call_dir / "attempt_01" / "prompt.full.txt").exists()
+    assert (call_dir / "attempt_01" / "prompt.manifest.json").exists()
+    assert (call_dir / "attempt_01" / "response.raw.txt").exists()
+    assert (call_dir / "attempt_01" / "response.parsed.json").exists()
+    assert (call_dir / "attempt_01" / "validation.json").exists()
+
+    request = json.loads((call_dir / "request.json").read_text(encoding="utf-8"))
+    assert request["schema"] == "ImplementationPlan"
+    assert request["generation_kind"] == "plan_generation"
+    validation = json.loads(
+        (call_dir / "attempt_01" / "validation.json").read_text(encoding="utf-8")
+    )
+    assert validation["status"] == "valid"
+
+    events = [
+        json.loads(line)
+        for line in (context.run_dir / "workflow_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    prompt_event = next(event for event in events if event["event_type"] == "llm_prompt")
+    response_event = next(
+        event for event in events if event["event_type"] == "llm_response"
+    )
+    output_event = next(
+        event for event in events if event["event_type"] == "llm_structured_output"
+    )
+    assert prompt_event["call_id"] == call_dir.name
+    assert "prompt" not in prompt_event
+    assert (context.run_dir / prompt_event["prompt_path"]).exists()
+    assert (context.run_dir / prompt_event["prompt_manifest_path"]).exists()
+    assert "response" not in response_event
+    assert (context.run_dir / response_event["response_path"]).exists()
+    assert "output" not in output_event
+    assert (context.run_dir / output_event["output_path"]).exists()
+    assert (context.run_dir / output_event["validation_path"]).exists()
+
+    legacy_audit = context.stage_dirs[Stage.IMPLEMENT] / "plan_generation_attempts.json"
+    assert legacy_audit.exists()
 
 
 def test_plan_generation_rejects_implementation_test_artifacts(tmp_path) -> None:
@@ -315,6 +425,248 @@ def test_plan_generation_normalizes_testing_command_wrapper_prefix(tmp_path) -> 
     assert request.plan.command == "python -m pytest tests/test_generated.py -v"
 
 
+def test_plan_generation_rejects_oversized_testing_plan(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    model = _FakeModel(
+        {
+            "target_summary": "Verify too many files.",
+            "strategy": "Incorrectly plans a broad generated suite.",
+            "acceptance_criteria": ["Generated tests stay readable."],
+            "changes": [
+                {
+                    "path": f"tests/test_generated_{index}.py",
+                    "rationale": "Too many generated files.",
+                }
+                for index in range(7)
+            ],
+            "command": "python -m pytest tests -q",
+            "framework": "pytest",
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="testing plan is too large"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_request(
+            context
+        )
+
+
+def test_plan_generation_allows_two_testing_files_with_split_rationale(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    model = _FakeModel(
+        {
+            "target_summary": "Verify CLI and unit behavior.",
+            "strategy": "Split subprocess CLI tests from compact unit tests for readability.",
+            "acceptance_criteria": ["Generated tests stay readable."],
+            "changes": [
+                {
+                    "path": "tests/test_app.py",
+                    "rationale": "Unit tests cover public behavior.",
+                },
+                {
+                    "path": "tests/test_cli.py",
+                    "rationale": "Separate subprocess CLI tests from unit tests.",
+                },
+            ],
+            "command": "python -m pytest tests -q",
+            "framework": "pytest",
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_request(
+        context
+    )
+
+    assert [change.path.as_posix() for change in request.plan.changes] == [
+        "tests/test_app.py",
+        "tests/test_cli.py",
+    ]
+
+
+def test_plan_generation_rejects_two_testing_files_without_split_rationale(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    model = _FakeModel(
+        {
+            "target_summary": "Verify behavior.",
+            "strategy": "Generate visible tests.",
+            "acceptance_criteria": ["Generated tests stay readable."],
+            "changes": [
+                {
+                    "path": "tests/test_app.py",
+                    "rationale": "Cover app behavior.",
+                },
+                {
+                    "path": "tests/test_cli.py",
+                    "rationale": "Cover CLI behavior.",
+                },
+            ],
+            "command": "python -m pytest tests -q",
+            "framework": "pytest",
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="does not explain why"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_request(
+            context
+        )
+
+
+def test_plan_generation_rejects_multi_file_testing_plan_narrow_command(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    model = _FakeModel(
+        {
+            "target_summary": "Verify CLI and unit behavior.",
+            "strategy": "Split subprocess CLI tests from compact unit tests.",
+            "acceptance_criteria": ["Generated tests stay readable."],
+            "changes": [
+                {
+                    "path": "tests/test_app.py",
+                    "rationale": "Unit tests cover public behavior.",
+                },
+                {
+                    "path": "tests/test_cli.py",
+                    "rationale": "Separate subprocess CLI tests from unit tests.",
+                },
+            ],
+            "command": "python -m pytest tests/test_app.py -q",
+            "framework": "pytest",
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="too narrow"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_request(
+            context
+        )
+
+
+def test_plan_generation_rejects_oversized_testing_patch(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    plan = TestingPlan(
+        target_summary="Verify generated behavior.",
+        strategy="Generate a compact test file.",
+        acceptance_criteria=["Generated tests are readable."],
+        changes=[
+            TestFileChange(
+                path="tests/test_generated.py",
+                test_focus="Representative behavior.",
+                rationale="Keep generated tests compact.",
+            )
+        ],
+        command="python -m pytest tests/test_generated.py -q",
+        framework="pytest",
+    )
+    too_many_tests = "\n\n".join(
+        f"def test_case_{index}():\n    assert True" for index in range(81)
+    )
+    model = _FakeModel(
+        {
+            "plan_summary": "Too many tests.",
+            "changes": [
+                {
+                    "path": "tests/test_generated.py",
+                    "old_content": None,
+                    "new_content": too_many_tests,
+                    "rationale": "This should be rejected as too large.",
+                }
+            ],
+            "command": "python -m pytest tests/test_generated.py -q",
+            "framework": "pytest",
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="testing patch"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_patch_draft(
+            context,
+            plan,
+        )
+
+
+def test_plan_generation_allows_more_than_fifteen_tests_in_one_file(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    plan = TestingPlan(
+        target_summary="Verify generated behavior.",
+        strategy="Generate one readable test file with representative coverage.",
+        acceptance_criteria=["Generated tests stay within the total suite budget."],
+        changes=[
+            TestFileChange(
+                path="tests/test_generated.py",
+                test_focus="Representative behavior.",
+                rationale="One file is still readable for this suite.",
+            )
+        ],
+        command="python -m pytest -q",
+        framework="pytest",
+    )
+    nineteen_tests = "\n\n".join(
+        f"def test_case_{index}():\n    assert True" for index in range(19)
+    )
+    model = _FakeModel(
+        {
+            "plan_summary": "Nineteen tests in one visible test file.",
+            "changes": [
+                {
+                    "path": "tests/test_generated.py",
+                    "old_content": None,
+                    "new_content": nineteen_tests,
+                    "rationale": "This should be accepted because the per-file cap was removed.",
+                }
+            ],
+            "command": "python -m pytest -q",
+            "framework": "pytest",
+        }
+    )
+
+    draft = PlanGenerationService(
+        model_factory=_FakeFactory(model)
+    ).create_testing_patch_draft(context, plan)
+
+    assert len(draft.changes) == 1
+    assert draft.changes[0].new_content.count("def test_case_") == 19
+
+
+def test_plan_generation_rejects_testing_patch_with_too_many_files(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    plan = TestingPlan(
+        target_summary="Verify generated behavior.",
+        strategy="Generate a compact test suite.",
+        acceptance_criteria=["Generated tests are readable."],
+        changes=[
+            TestFileChange(
+                path="tests/test_generated.py",
+                test_focus="Representative behavior.",
+                rationale="Keep generated tests compact.",
+            )
+        ],
+        command="python -m pytest tests -q",
+        framework="pytest",
+    )
+    model = _FakeModel(
+        {
+            "plan_summary": "Too many test files.",
+            "changes": [
+                {
+                    "path": f"tests/test_generated_{index}.py",
+                    "old_content": None,
+                    "new_content": "def test_generated():\n    assert True\n",
+                    "rationale": "This should be rejected as too many files.",
+                }
+                for index in range(3)
+            ],
+            "command": "python -m pytest tests -q",
+            "framework": "pytest",
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="too many files"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_testing_patch_draft(
+            context,
+            plan,
+        )
+
+
 def test_plan_generation_testing_patch_prompt_forbids_nested_project_cwd(
     tmp_path,
 ) -> None:
@@ -358,6 +710,8 @@ def test_plan_generation_testing_patch_prompt_forbids_nested_project_cwd(
     assert "cwd must be an existing directory" in prompt
     assert "parent.parent / 'project'" in prompt
     assert "parents[1] / 'workspace'" in prompt
+    assert "Simplified Chinese" in prompt
+    assert "简体中文" in prompt
     assert draft.changes[0].path.as_posix() == "tests/test_cli.py"
 
 
@@ -730,6 +1084,221 @@ def test_plan_generation_repair_prompt_discovers_shortened_shell_logs(tmp_path) 
     assert "RecursionError: maximum recursion depth exceeded" in model.prompts[0]
 
 
+def test_plan_generation_repair_context_prioritizes_failure_and_current_source(
+    tmp_path,
+) -> None:
+    case_dir = tmp_path / "case"
+    input_dir = case_dir / "input"
+    project = case_dir / "workspace"
+    input_dir.mkdir(parents=True)
+    project.mkdir()
+    requirements = input_dir / "requirements.md"
+    requirements.write_text(
+        "Initial requirement says workspace starts empty.\n"
+        + ("A" * 8000)
+        + "\nHUGE_INPUT_TRAILER\n",
+        encoding="utf-8",
+    )
+    (project / "todo_manager.py").write_text(
+        "CURRENT_SOURCE_MARKER = True\n",
+        encoding="utf-8",
+    )
+    config = TaskConfig(
+        stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR],
+        project_path=project,
+        output_dir=tmp_path / "runs",
+        mode="benchmark",
+        input_materials=[
+            InputMaterial(
+                material_type="requirements",
+                path=requirements,
+                required=True,
+            )
+        ],
+        agent_visibility={
+            "visible_paths": [input_dir, project],
+            "hidden_paths": [],
+        },
+        auto_approve_in_benchmark=True,
+    )
+    context = create_run_context(config, output_root=tmp_path / "runs")
+    debugging_dir = context.stage_dirs[Stage.DEBUG]
+    debugging_dir.mkdir(parents=True, exist_ok=True)
+    (debugging_dir / "root_cause.md").write_text(
+        "REAL_FAILURE_MARKER: stdout decode failed on Windows.\n",
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "root_cause": "The current source has an encoding issue.",
+            "strategy": "Modify the current product file only.",
+            "changes": [
+                {
+                    "path": "todo_manager.py",
+                    "rationale": "Repair the visible current source file.",
+                }
+            ],
+            "verification_command": "python -m pytest -q",
+            "framework": "pytest",
+        }
+    )
+
+    PlanGenerationService(
+        model_factory=_FakeFactory(model),
+        max_context_chars=2200,
+    ).create_repair_request(context)
+
+    prompt = model.prompts[0]
+    assert "REAL_FAILURE_MARKER" in prompt
+    assert "CURRENT_SOURCE_MARKER" in prompt
+    assert "HUGE_INPUT_TRAILER" not in prompt
+    assert "Do not say the workspace is empty" in prompt
+
+
+def test_plan_generation_debugging_analysis_prioritizes_latest_repair_failure(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR])
+    (context.task_config.project_path / "app.py").write_text(
+        "def main():\n    return None\n",
+        encoding="utf-8",
+    )
+    repair_dir = context.stage_dirs[Stage.REPAIR]
+    repair_dir.mkdir(parents=True, exist_ok=True)
+    (repair_dir / "after_test.log").write_text(
+        "NEW_REPAIR_FAILURE: NameError: name 'null' is not defined\n",
+        encoding="utf-8",
+    )
+    testing_dir = context.stage_dirs[Stage.TEST]
+    testing_dir.mkdir(parents=True, exist_ok=True)
+    (testing_dir / "test_report.md").write_text(
+        "OLD_TESTING_FAILURE: initial assertion failure\n",
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "failure_origin": "generated_test_code",
+            "confidence": "high",
+            "candidates": [
+                {
+                    "path": "tests/test_app.py",
+                    "kind": "test_code",
+                    "confidence": "high",
+                    "evidence": ["null appears in visible generated test code"],
+                    "rationale": "The latest repair failure is a generated test bug.",
+                }
+            ],
+            "evidence": ["NEW_REPAIR_FAILURE mentions null"],
+            "root_cause": "生成测试中误用了 Python 不存在的 null。",
+            "repair_strategy": "把可见测试中的 null 修成 None 或正确断言值。",
+            "test_repair_allowed": True,
+            "test_repair_rationale": "错误位于可见生成测试代码。",
+            "recommended_verification_command": "python -m pytest -q",
+            "framework": "pytest",
+        }
+    )
+
+    PlanGenerationService(
+        model_factory=_FakeFactory(model),
+        max_context_chars=3000,
+    ).create_debugging_analysis(
+        context,
+        failure_summary="Latest failure summary.",
+        static_localization=FaultLocalization(
+            failing_tests=["tests/test_app.py::test_app"],
+            candidates=[],
+            confidence="low",
+            reproduction_status="reproduced",
+        ),
+    )
+
+    prompt = model.prompts[0]
+    assert "DebuggingAnalysis" in prompt
+    assert "NEW_REPAIR_FAILURE" in prompt
+    if "OLD_TESTING_FAILURE" in prompt:
+        assert prompt.index("NEW_REPAIR_FAILURE") < prompt.index("OLD_TESTING_FAILURE")
+
+
+def test_plan_generation_repair_plan_can_authorize_visible_test_repair(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR])
+    tests_dir = context.task_config.project_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_generated.py").write_text(
+        "def test_bad_literal():\n    assert null is None\n",
+        encoding="utf-8",
+    )
+    debugging_dir = context.stage_dirs[Stage.DEBUG]
+    debugging_dir.mkdir(parents=True, exist_ok=True)
+    (debugging_dir / "llm_debug_analysis.json").write_text(
+        json.dumps(
+            {
+                "failure_origin": "generated_test_code",
+                "test_repair_allowed": True,
+                "test_repair_rationale": "NameError null is in visible generated tests.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "root_cause": "生成测试使用了 Python 中不存在的 null。",
+            "strategy": "只修复可见生成测试中的错误字面量。",
+            "changes": [
+                {
+                    "path": "tests/test_generated.py",
+                    "rationale": "修复可见生成测试自身错误。",
+                }
+            ],
+            "verification_command": "python -m pytest -q",
+            "framework": "pytest",
+            "failure_origin": "generated_test_code",
+            "test_repair_allowed": True,
+            "test_repair_rationale": "NameError null is in visible generated tests.",
+        }
+    )
+
+    request = PlanGenerationService(model_factory=_FakeFactory(model)).create_repair_request(
+        context
+    )
+
+    assert request.plan.failure_origin == "generated_test_code"
+    assert request.plan.test_repair_allowed is True
+    assert request.plan.changes[0].path.as_posix() == "tests/test_generated.py"
+    assert "test_repair_allowed=true" in model.prompts[0]
+
+
+def test_plan_generation_rejects_overbroad_repair_plan_when_source_exists(
+    tmp_path,
+) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST, Stage.DEBUG, Stage.REPAIR])
+    (context.task_config.project_path / "app.py").write_text(
+        "def main():\n    return 0\n",
+        encoding="utf-8",
+    )
+    model = _FakeModel(
+        {
+            "root_cause": "A single failure was treated like a full rewrite.",
+            "strategy": "Incorrectly list every product file.",
+            "changes": [
+                {
+                    "path": f"pkg/file_{index}.py",
+                    "rationale": "Overbroad repair target.",
+                }
+                for index in range(5)
+            ],
+            "verification_command": "python -m pytest -q",
+            "framework": "pytest",
+        }
+    )
+
+    with pytest.raises(PlanGenerationError, match="repair plan is too broad"):
+        PlanGenerationService(model_factory=_FakeFactory(model)).create_repair_request(
+            context
+        )
+
+
 def test_plan_generation_repair_uses_latest_agent_self_test_command(
     tmp_path,
 ) -> None:
@@ -825,6 +1394,50 @@ def test_plan_generation_writes_redacted_attempt_audit_for_malformed_responses(
     assert "sk-or-should-not-leak" not in audit_text
     assert "<redacted>" in audit_text
     assert "prompt_sha256" in audit
+
+
+def test_plan_generation_records_schema_retry_reason(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    model = _SequenceModel(
+        [
+            "not json",
+            json.dumps(
+                {
+                    "requirements_summary": "Implement visible behavior.",
+                    "implementation_strategy": "Create solution.py.",
+                    "changes": [
+                        {
+                            "path": "solution.py",
+                            "change_type": "add",
+                            "rationale": "Add the requested implementation.",
+                            "public_interfaces": [],
+                            "acceptance_notes": [],
+                        }
+                    ],
+                    "acceptance_criteria": ["solution.py is planned."],
+                    "risk_notes": [],
+                }
+            ),
+        ]
+    )
+
+    PlanGenerationService(model_factory=_FakeFactory(model)).create_implementation_request(
+        context
+    )
+
+    events = [
+        json.loads(line)
+        for line in (context.run_dir / "workflow_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    retry_events = [
+        event for event in events if event["event_type"] == "llm_retry_scheduled"
+    ]
+    assert retry_events
+    assert retry_events[0]["schema"] == "ImplementationPlan"
+    assert "model response did not contain a JSON object" in retry_events[0]["reason"]
 
 
 def test_plan_generation_redacts_provider_account_links_from_model_errors(

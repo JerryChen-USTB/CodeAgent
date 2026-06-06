@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from codeagent import filesystem as fs
 from codeagent.config import defaults
 from codeagent.benchmark.case_loader import CaseLoader
 from codeagent.benchmark.environment import EnvironmentStatus
@@ -781,6 +782,46 @@ def test_evaluator_requires_final_report_artifact(tmp_path) -> None:
 
     assert evaluation.success is False
     assert "final_report.md" in evaluation.failure_reason
+
+
+def test_evaluator_reads_required_artifacts_under_long_windows_paths(tmp_path) -> None:
+    _write_unittest_case(tmp_path / "cases", "case_long_eval")
+    config_path = _benchmark_config(tmp_path, "case_long_eval")
+    loaded = CaseLoader().load(config_path)
+    context = BenchmarkRunner().prepare_case_workspace(
+        loaded.enabled_cases[0],
+        benchmark_run_dir=tmp_path / "runs" / "benchmark_run",
+        benchmark_config=loaded.config,
+    )
+    run_dir = tmp_path / "runs"
+    while len(str(run_dir / "repair" / "repair_test_result.json")) < 285:
+        run_dir = run_dir / "deep_segment_for_windows_path_limit"
+    fs.mkdir(run_dir / "repair")
+    fs.write_text(run_dir / "final_report.md", "# Final\n")
+    fs.write_text(run_dir / "artifacts_index.json", "[]\n")
+    fs.write_text(
+        run_dir / "repair" / "repair_test_result.json",
+        json.dumps(
+            {
+                "success": True,
+                "passed": 3,
+                "failed": 0,
+                "errors": 0,
+                "skipped": 0,
+                "total": 3,
+            }
+        ),
+    )
+
+    evaluation = CaseEvaluator().evaluate(
+        context=context,
+        run_dir=run_dir,
+        final_status="succeeded",
+    )
+
+    assert "missing required artifact" not in evaluation.failure_reason
+    assert evaluation.agent_test_success is True
+    assert evaluation.agent_test_total == 3
 
 
 def test_benchmark_cli_runs_config_and_prints_summary(tmp_path) -> None:

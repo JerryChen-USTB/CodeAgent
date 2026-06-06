@@ -8,6 +8,7 @@ from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,9 @@ class ProgressEventFormatter:
             stage = event.get("stage")
             prefix = f"[{_stage_label(stage)}] " if stage else "[Agent] "
             message = str(event.get("message") or "正在工作")
+            link = _message_link(event)
+            if link is not None:
+                message += link["label"]
             return f"{prefix}{message}"
         if event_type == "tool_started":
             tool_name = event.get("tool_name") or event.get("name") or "<unknown>"
@@ -108,6 +112,31 @@ class ProgressEventFormatter:
             return f"[审批] {action} {_status_label(decision)}"
         return f"[事件] {event_type}"
 
+    def renderable_for_event(self, event: dict[str, Any]) -> str | Text:
+        event_type = str(event.get("type") or "event")
+        if event_type == "agent_status":
+            link = _message_link(event)
+            if link is None:
+                return self.format_event(event)
+            stage = event.get("stage")
+            prefix = f"[{_stage_label(stage)}] " if stage else "[Agent] "
+            message = str(event.get("message") or "正在工作")
+            text = Text(prefix + message)
+            _append_link(text, link)
+            return text
+        if event_type == "key_files_summary":
+            links = _file_links(event)
+            if not links:
+                return self.format_event(event)
+            text = Text("[关键文件]\n")
+            for index, link in enumerate(links):
+                if index:
+                    text.append("\n")
+                text.append("- ")
+                _append_link(text, link)
+            return text
+        return self.format_event(event)
+
 
 class ProgressReporter:
     """Render concise status panels for command skeletons."""
@@ -131,7 +160,7 @@ class ProgressReporter:
 
     def render_event(self, event: dict[str, Any]) -> str:
         line = self._formatter.format_event(event)
-        self._console.print(line, markup=False)
+        self._console.print(self._formatter.renderable_for_event(event), markup=False)
         try:
             self._console.file.flush()
         except Exception:
@@ -193,6 +222,44 @@ _ACTION_LABELS = {
     "approve_repair_patch": "审批修复补丁",
     "approve_regression_command": "审批回归验证命令",
 }
+
+
+def _message_link(event: dict[str, Any]) -> dict[str, str] | None:
+    link = event.get("message_link")
+    if not isinstance(link, dict):
+        return None
+    label = str(link.get("label") or "")
+    if not label:
+        return None
+    return {"label": label, "uri": str(link.get("uri") or "")}
+
+
+def _file_links(event: dict[str, Any]) -> list[dict[str, str]]:
+    raw_links = event.get("file_links")
+    links: list[dict[str, str]] = []
+    if isinstance(raw_links, list):
+        for item in raw_links:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "")
+            if not label:
+                continue
+            links.append({"label": label, "uri": str(item.get("uri") or "")})
+    if links:
+        return links
+    files = event.get("files")
+    if not isinstance(files, list):
+        return []
+    return [{"label": str(item), "uri": ""} for item in files if str(item)]
+
+
+def _append_link(text: Text, link: dict[str, str]) -> None:
+    label = link.get("label") or ""
+    uri = link.get("uri") or ""
+    if uri:
+        text.append(label, style=f"link {uri}")
+    else:
+        text.append(label)
 
 
 def _stage_label(value: Any) -> str:

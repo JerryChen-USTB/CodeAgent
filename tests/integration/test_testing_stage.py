@@ -717,10 +717,7 @@ def test_interrupting_testing_subgraph_accepts_edited_patch_plan(tmp_path) -> No
             config=manager.get_thread_config(),
         )
         command_payload = command_review["__interrupt__"][0].value
-        assert (
-            command_payload["payload"]["command"]
-            == "python -m pytest tests/test_edited_patch.py -q"
-        )
+        assert command_payload["payload"]["command"] == "python -m pytest -q"
         final = subgraph.invoke(
             Command(resume={"decision_type": "approve", "auto": True}),
             config=manager.get_thread_config(),

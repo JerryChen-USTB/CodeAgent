@@ -13,77 +13,135 @@ WORKSPACE = Path(__file__).resolve().parents[1] / "workspace"
 PYTHON_CMD = [shutil.which("py"), "-3"] if os.name == "nt" and shutil.which("py") else [sys.executable]
 
 
-def run_todo(args: list[str], store: Path) -> subprocess.CompletedProcess[str]:
+def run_todo_session(script: str, store: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(WORKSPACE)
     return subprocess.run(
-        PYTHON_CMD + ["-m", "todo_manager", "--file", str(store)] + args,
+        PYTHON_CMD + ["-m", "todo_manager", "--file", str(store)],
         cwd=WORKSPACE,
         env=env,
+        input=script,
         text=True,
         capture_output=True,
         check=False,
+        timeout=20,
     )
 
 
-class TodoManagerOracleTests(unittest.TestCase):
-    def test_full_task_lifecycle_and_filtering(self) -> None:
+class TodoManagerTuiOracleTests(unittest.TestCase):
+    def test_interactive_lifecycle_persistence_and_filtering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "tasks.json"
+            session = run_todo_session(
+                "\n".join(
+                    [
+                        "1",
+                        "Write report",
+                        "2026-06-10",
+                        "high",
+                        "1",
+                        "Buy milk",
+                        "",
+                        "",
+                        "2",
+                        "open",
+                        "3",
+                        "1",
+                        "2",
+                        "done",
+                        "4",
+                        "2",
+                        "2",
+                        "all",
+                        "5",
+                        "",
+                    ]
+                ),
+                store,
+            )
 
-            first = run_todo(["add", "--title", "Write report", "--due", "2026-06-10", "--priority", "high"], store)
-            self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertIn("created task #1: Write report", first.stdout)
-
-            second = run_todo(["add", "--title", "Buy milk"], store)
-            self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertIn("created task #2: Buy milk", second.stdout)
-
-            listed = run_todo(["list", "--status", "open"], store)
-            self.assertEqual(listed.returncode, 0, listed.stderr)
-            self.assertIn("#1 [open] high Write report due 2026-06-10", listed.stdout)
-            self.assertIn("#2 [open] normal Buy milk due none", listed.stdout)
-
-            done = run_todo(["done", "1"], store)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn("completed task #1: Write report", done.stdout)
-
-            done_list = run_todo(["list", "--status", "done"], store)
-            self.assertEqual(done_list.returncode, 0, done_list.stderr)
-            self.assertIn("#1 [done] high Write report due 2026-06-10", done_list.stdout)
-            self.assertNotIn("#2", done_list.stdout)
-
-            deleted = run_todo(["delete", "2"], store)
-            self.assertEqual(deleted.returncode, 0, deleted.stderr)
-            self.assertIn("deleted task #2: Buy milk", deleted.stdout)
+            self.assertEqual(session.returncode, 0, session.stderr)
+            self.assertIn("Todo Manager", session.stdout)
+            self.assertIn("created task #1: Write report", session.stdout)
+            self.assertIn("created task #2: Buy milk", session.stdout)
+            self.assertIn("#1 [open] high Write report due 2026-06-10", session.stdout)
+            self.assertIn("#2 [open] normal Buy milk due none", session.stdout)
+            self.assertIn("completed task #1: Write report", session.stdout)
+            self.assertIn("#1 [done] high Write report due 2026-06-10", session.stdout)
+            self.assertIn("deleted task #2: Buy milk", session.stdout)
 
             data = json.loads(store.read_text(encoding="utf-8"))
-            self.assertEqual(data, [{"id": 1, "title": "Write report", "status": "done", "priority": "high", "due": "2026-06-10"}])
+            self.assertEqual(
+                data,
+                [
+                    {
+                        "id": 1,
+                        "title": "Write report",
+                        "status": "done",
+                        "priority": "high",
+                        "due": "2026-06-10",
+                    }
+                ],
+            )
 
-    def test_empty_list_and_validation_errors(self) -> None:
+            reopen = run_todo_session("2\ndone\n5\n", store)
+            self.assertEqual(reopen.returncode, 0, reopen.stderr)
+            self.assertIn("#1 [done] high Write report due 2026-06-10", reopen.stdout)
+
+    def test_empty_list_validation_errors_and_session_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "tasks.json"
+            session = run_todo_session(
+                "\n".join(
+                    [
+                        "2",
+                        "all",
+                        "1",
+                        "   ",
+                        "1",
+                        "Bad date",
+                        "2026/06/10",
+                        "normal",
+                        "1",
+                        "Bad priority",
+                        "",
+                        "urgent",
+                        "2",
+                        "blocked",
+                        "9",
+                        "3",
+                        "99",
+                        "4",
+                        "99",
+                        "5",
+                        "",
+                    ]
+                ),
+                store,
+            )
 
-            empty = run_todo(["list"], store)
-            self.assertEqual(empty.returncode, 0, empty.stderr)
-            self.assertEqual(empty.stdout.strip(), "no tasks")
+            self.assertEqual(session.returncode, 0, session.stderr)
+            self.assertIn("no tasks", session.stdout)
+            self.assertIn("title is required", session.stdout)
+            self.assertIn("invalid due date", session.stdout)
+            self.assertIn("invalid priority", session.stdout)
+            self.assertIn("invalid status", session.stdout)
+            self.assertIn("unknown option", session.stdout)
+            self.assertIn("task not found", session.stdout)
+            if store.exists():
+                self.assertEqual(json.loads(store.read_text(encoding="utf-8")), [])
 
-            bad_title = run_todo(["add", "--title", "   "], store)
-            self.assertNotEqual(bad_title.returncode, 0)
-            self.assertIn("title is required", bad_title.stderr)
-
-            bad_date = run_todo(["add", "--title", "Bad date", "--due", "2026/06/10"], store)
-            self.assertNotEqual(bad_date.returncode, 0)
-            self.assertIn("invalid due date", bad_date.stderr)
-
-            missing = run_todo(["done", "99"], store)
-            self.assertNotEqual(missing.returncode, 0)
-            self.assertIn("task not found", missing.stderr)
-
+    def test_invalid_task_file_fails_before_menu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "tasks.json"
             store.write_text("{not-json", encoding="utf-8")
-            invalid_file = run_todo(["list"], store)
-            self.assertNotEqual(invalid_file.returncode, 0)
-            self.assertIn("invalid task file", invalid_file.stderr)
+
+            session = run_todo_session("5\n", store)
+
+            self.assertNotEqual(session.returncode, 0)
+            self.assertIn("invalid task file", session.stderr)
+            self.assertNotIn("Choose an option", session.stdout)
+            self.assertEqual(store.read_text(encoding="utf-8"), "{not-json")
 
 
 if __name__ == "__main__":

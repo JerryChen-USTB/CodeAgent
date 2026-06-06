@@ -32,7 +32,7 @@ benchmark/selfbuilt/
     05_meeting_room_booking/
 ```
 
-每个案例结构固定为：
+多数案例结构为：
 
 ```text
 case/
@@ -41,6 +41,20 @@ case/
     requirements.md
     prd.md
     user_stories.yaml
+    design_model.md
+    acceptance_criteria.md
+  workspace/
+  oracle_tests/
+```
+
+其中 `01_todo_manager` 已作为首个交互体验增强案例升级为四份中文输入材料：
+
+```text
+case/
+  case.yaml
+  input/
+    PRD.md
+    user_stories.md
     design_model.md
     acceptance_criteria.md
   workspace/
@@ -61,9 +75,9 @@ case/
 | SRS 输入材料 | 新版自建案例做法 |
 | --- | --- |
 | 项目骨架 | `workspace/` 作为空项目目录 |
-| 自然语言需求 | `input/requirements.md` |
-| PRD | `input/prd.md` |
-| 用户故事 | `input/user_stories.yaml` |
+| 自然语言需求 | 旧版案例使用 `input/requirements.md`；`01_todo_manager` 已合并进 `input/PRD.md` |
+| PRD | `input/prd.md`；`01_todo_manager` 使用更完整的 `input/PRD.md` |
+| 用户故事 | `input/user_stories.yaml`；`01_todo_manager` 使用自然语言版 `input/user_stories.md` |
 | 设计模型 | `input/design_model.md`，包含 Mermaid 类图、活动图、状态图或时序图 |
 | 验收条件 | `input/acceptance_criteria.md` |
 
@@ -73,7 +87,7 @@ case/
 
 | case_id | 难度 | 项目形态 | 主要能力 |
 | --- | --- | --- | --- |
-| `01_todo_manager` | 入门 | CLI + JSON | 任务增删改查、状态过滤、文件持久化 |
+| `01_todo_manager` | 入门 | TUI + JSON | 会话式任务增删改查、状态过滤、文件持久化 |
 | `02_personal_ledger` | 简单 | CLI + JSON/CSV | 记账、月度汇总、分类统计、CSV 导出 |
 | `03_student_gradebook` | 中等 | CLI + CSV | 成绩导入、总评计算、等级转换、班级统计 |
 | `04_library_lending` | 中高 | CLI + SQLite | 图书入库、读者注册、借书、还书、逾期查询 |
@@ -118,3 +132,4 @@ python -m unittest discover -s oracle_tests
 | 日期 | 变更 | 原因 | 影响 |
 |---|---|---|---|
 | 2026-06-03 | 明确自建 benchmark 必须复制整个原始 case 到干净副本后运行，原始空 `workspace/` 和 `oracle_tests/` 保持不变。 | 保证自建案例可重复利用并维持隐藏测试隔离。 | 不改变案例验收标准；后续 runner 需在副本中执行 Agent 和 oracle tests。 |
+| 2026-06-05 | 优化 `01_todo_manager`：输入材料收敛为 PRD、用户故事、设计模型、验收标准四份中文材料，并将隐藏测试改为 stdin 驱动的 TUI 验收。 | 增强自建 benchmark 的输入充分性和交互真实感，避免只奖励一次一个命令的 CLI 实现。 | Todo Manager 的 Agent 可见输入和 oracle 约束发生变化；其他四个自建案例暂不调整。 |

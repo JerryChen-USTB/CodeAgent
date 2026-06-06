@@ -55,6 +55,8 @@ _COMMON_RULES = (
     "Respect hidden oracle isolation: do not read evaluation, oracle_tests, expected_result, or hidden benchmark answers. "
     "Do not access, print, summarize, or store secret material such as API keys, .env files, tokens, or certificates. "
     "Use only the allowed tools for the role and call read_file or search_code instead of guessing file contents. "
+    "Write all user-facing natural-language summaries, plans, rationales, risks, reports, and recommendations in Simplified Chinese (简体中文). "
+    "Preserve code identifiers, file paths, commands, API names, dependency names, log excerpts, and error messages exactly as technical tokens. "
     "Return output that matches the requested schema and include concise audit summaries, not hidden reasoning."
 )
 

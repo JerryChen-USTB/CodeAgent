@@ -9,9 +9,9 @@ import shlex
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from codeagent import filesystem as fs
 from codeagent.config.schema import Stage
@@ -31,6 +31,13 @@ from codeagent.workflow.progress_events import emit_progress
 
 DEBUGGING_STAGE = "debugging"
 REPRODUCTION_COMMAND_INTERRUPT_ID = "debugging_reproduction_command"
+FailureOrigin = Literal[
+    "product_code",
+    "generated_test_code",
+    "mixed",
+    "test_harness",
+    "inconclusive",
+]
 
 
 class FaultCandidate(BaseModel):
@@ -46,6 +53,77 @@ class FaultCandidate(BaseModel):
     evidence: list[str] = Field(min_length=1)
     rationale: str = Field(min_length=1, max_length=4000)
 
+    @field_serializer("file_path")
+    def serialize_file_path(self, value: Path) -> str:
+        return value.as_posix()
+
+
+class DebuggingAnalysisCandidate(BaseModel):
+    """LLM-selected candidate location with explicit ownership kind."""
+
+    __test__: ClassVar[bool] = False
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    kind: Literal["product_code", "test_code", "config", "harness", "unknown"] = "unknown"
+    line_number: int | None = Field(default=None, ge=1)
+    confidence: Literal["high", "medium", "low"]
+    evidence: list[str] = Field(default_factory=list)
+    rationale: str = Field(min_length=1, max_length=4000)
+
+    @field_serializer("path")
+    def serialize_path(self, value: Path) -> str:
+        return value.as_posix()
+
+
+class DebuggingAnalysis(BaseModel):
+    """Structured LLM debugging analysis persisted for repair planning."""
+
+    __test__: ClassVar[bool] = False
+    model_config = ConfigDict(extra="forbid")
+
+    failure_origin: FailureOrigin
+    confidence: Literal["high", "medium", "low"]
+    candidates: list[DebuggingAnalysisCandidate] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    root_cause: str = Field(min_length=1, max_length=8000)
+    repair_strategy: str = Field(min_length=1, max_length=8000)
+    test_repair_allowed: bool = False
+    test_repair_rationale: str | None = Field(default=None, max_length=4000)
+    recommended_verification_command: str = Field(
+        default="python -m pytest -q",
+        min_length=1,
+        max_length=1000,
+    )
+    framework: Literal["pytest", "unittest"] = "pytest"
+
+    def model_post_init(self, __context: object) -> None:
+        if self.test_repair_allowed and self.failure_origin not in {
+            "generated_test_code",
+            "mixed",
+            "test_harness",
+        }:
+            raise ValueError(
+                "test_repair_allowed requires failure_origin generated_test_code, "
+                "mixed, or test_harness"
+            )
+        if self.test_repair_allowed and not (self.test_repair_rationale or "").strip():
+            raise ValueError("test_repair_rationale is required when test repair is allowed")
+
+
+class DebuggingAnalysisProvider(Protocol):
+    """Provider capable of producing LLM debugging analysis."""
+
+    def create_debugging_analysis(
+        self,
+        context: RunContext,
+        *,
+        failure_summary: str,
+        static_localization: "FaultLocalization",
+        feedback: str | None = None,
+    ) -> DebuggingAnalysis:
+        ...
+
 
 class FaultLocalization(BaseModel):
     """Persisted fault-localization payload."""
@@ -59,6 +137,11 @@ class FaultLocalization(BaseModel):
     reproduction_status: Literal["reproduced", "not_reproduced", "not_executed"]
     root_cause: str = Field(default="", max_length=8000)
     repair_plan: str = Field(default="", max_length=8000)
+    failure_origin: FailureOrigin = "inconclusive"
+    test_repair_allowed: bool = False
+    test_repair_rationale: str | None = Field(default=None, max_length=4000)
+    recommended_verification_command: str | None = Field(default=None, max_length=1000)
+    llm_analysis_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,8 +200,10 @@ class DebuggingService:
         *,
         run_context: RunContext,
         shell_runner: ShellRunner | None = None,
+        analysis_provider: DebuggingAnalysisProvider | None = None,
     ) -> None:
         self.run_context = run_context
+        self.analysis_provider = analysis_provider
         self.stage_dir = run_context.stage_dirs[Stage.DEBUG]
         self.shell_runner = shell_runner or ShellRunner(
             logs_dir=self.stage_dir / "logs",
@@ -243,6 +328,9 @@ class DebuggingService:
             confidence: Literal["high", "medium", "low"] = "low"
             root_cause = test_harness_failure.root_cause
             repair_plan = test_harness_failure.repair_plan
+            failure_origin: FailureOrigin = "test_harness"
+            test_repair_allowed = True
+            test_repair_rationale: str | None = test_harness_failure.message
         else:
             confidence = _overall_confidence(
                 reproduction_status=evidence.reproduction_status,
@@ -259,6 +347,9 @@ class DebuggingService:
                 confidence=confidence,
                 expected_behavior=request.expected_behavior,
             )
+            failure_origin = _static_failure_origin(candidates)
+            test_repair_allowed = False
+            test_repair_rationale = None
         localization = FaultLocalization(
             failing_tests=failing_tests,
             candidates=candidates,
@@ -266,20 +357,41 @@ class DebuggingService:
             reproduction_status=evidence.reproduction_status,
             root_cause=root_cause,
             repair_plan=repair_plan,
+            failure_origin=failure_origin,
+            test_repair_allowed=test_repair_allowed,
+            test_repair_rationale=test_repair_rationale,
         )
+        llm_analysis = self._generate_llm_analysis(
+            failure_summary=failure_summary,
+            static_localization=localization,
+            attempt_index=attempt_index,
+        )
+        if llm_analysis is not None:
+            localization = self._apply_llm_analysis(localization, llm_analysis)
+            confidence = localization.confidence
+            candidates = localization.candidates
+            root_cause = localization.root_cause
+            repair_plan = localization.repair_plan
 
         fault_path = self._write_fault_localization(localization)
         root_cause_path = self._write_root_cause(root_cause)
         repair_plan_path = self._write_repair_plan(repair_plan)
+        llm_analysis_path: Path | None = None
+        llm_analysis_report_path: Path | None = None
+        if llm_analysis is not None:
+            llm_analysis_path = self._write_llm_debug_analysis(llm_analysis)
+            llm_analysis_report_path = self._write_llm_debug_analysis_report(llm_analysis)
         debug_trace_path = self._write_debug_trace(
             request=request,
             evidence=evidence,
             localization=localization,
+            llm_analysis=llm_analysis,
         )
         debug_report_path = self._write_debug_report(
             evidence=evidence,
             failure_summary=failure_summary,
             localization=localization,
+            llm_analysis=llm_analysis,
         )
         self.run_context.workflow_trace.record(
             "debugging_attempt_finished",
@@ -290,6 +402,8 @@ class DebuggingService:
             top_suspect=(
                 candidates[0].file_path.as_posix() if candidates else None
             ),
+            failure_origin=localization.failure_origin,
+            test_repair_allowed=localization.test_repair_allowed,
             debug_report_path=_run_relative_path(
                 debug_report_path,
                 run_dir=self.run_context.run_dir,
@@ -304,6 +418,7 @@ class DebuggingService:
                 attempt=attempt_index,
                 failing_tests=failing_tests,
                 message=test_harness_failure.message,
+                repair_allowed=localization.test_repair_allowed,
                 debug_report_path=_run_relative_path(
                     debug_report_path,
                     run_dir=self.run_context.run_dir,
@@ -364,17 +479,25 @@ class DebuggingService:
                 ),
             ]
         )
-        if test_harness_failure is not None:
-            result = self._failed_result(
-                started_at=started_at,
-                summary=test_harness_failure.summary,
-                category="validation",
-                message=test_harness_failure.message,
-                artifact_ids=artifacts,
-                next_suggestion=test_harness_failure.next_suggestion,
+        if llm_analysis_path is not None:
+            artifacts.append(
+                self._record_artifact(
+                    "debugging_llm_analysis",
+                    ArtifactKind.JSON,
+                    llm_analysis_path,
+                    "Structured LLM debugging analysis",
+                )
             )
-            return self._finalize_result(result, artifact_ids=artifacts)
-        summary = _result_summary(confidence=confidence, candidates=candidates)
+        if llm_analysis_report_path is not None:
+            artifacts.append(
+                self._record_artifact(
+                    "debugging_llm_analysis_report",
+                    ArtifactKind.REPORT,
+                    llm_analysis_report_path,
+                    "LLM debugging analysis report",
+                )
+            )
+        summary = _result_summary(localization)
         result = StageResult(
             stage=DEBUGGING_STAGE,
             status="succeeded",
@@ -627,6 +750,84 @@ class DebuggingService:
         ]
         return sorted(candidates, key=_candidate_sort_key)[:5]
 
+    def _generate_llm_analysis(
+        self,
+        *,
+        failure_summary: str,
+        static_localization: FaultLocalization,
+        attempt_index: int,
+    ) -> DebuggingAnalysis | None:
+        if self.analysis_provider is None:
+            self.run_context.workflow_trace.record(
+                "debugging_llm_analysis_skipped",
+                stage=DEBUGGING_STAGE,
+                attempt=attempt_index,
+                reason="analysis_provider_not_configured",
+            )
+            return None
+        try:
+            emit_progress(
+                "agent_status",
+                stage=DEBUGGING_STAGE,
+                message="正在调用 LLM 分析失败根因、归因和修复建议",
+            )
+            analysis = self.analysis_provider.create_debugging_analysis(
+                self.run_context,
+                failure_summary=failure_summary,
+                static_localization=static_localization,
+            )
+        except Exception as exc:
+            self.run_context.workflow_trace.record(
+                "debugging_llm_analysis_failed",
+                stage=DEBUGGING_STAGE,
+                attempt=attempt_index,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            emit_progress(
+                "agent_status",
+                stage=DEBUGGING_STAGE,
+                message=(
+                    "LLM 调试分析未生成，已回退到静态定位结果："
+                    f"{type(exc).__name__}: {_truncate_message(str(exc), limit=160)}"
+                ),
+            )
+            return None
+        self.run_context.workflow_trace.record(
+            "debugging_llm_analysis_succeeded",
+            stage=DEBUGGING_STAGE,
+            attempt=attempt_index,
+            failure_origin=analysis.failure_origin,
+            confidence=analysis.confidence,
+            candidate_count=len(analysis.candidates),
+            test_repair_allowed=analysis.test_repair_allowed,
+        )
+        return analysis
+
+    def _apply_llm_analysis(
+        self,
+        localization: FaultLocalization,
+        analysis: DebuggingAnalysis,
+    ) -> FaultLocalization:
+        candidates = _merge_llm_candidates(
+            localization.candidates,
+            analysis,
+            project_root=self.run_context.task_config.project_path.resolve(),
+        )
+        return localization.model_copy(
+            update={
+                "candidates": candidates,
+                "confidence": analysis.confidence,
+                "root_cause": analysis.root_cause,
+                "repair_plan": analysis.repair_strategy,
+                "failure_origin": analysis.failure_origin,
+                "test_repair_allowed": analysis.test_repair_allowed,
+                "test_repair_rationale": analysis.test_repair_rationale,
+                "recommended_verification_command": analysis.recommended_verification_command,
+                "llm_analysis_available": True,
+            }
+        )
+
     def _candidates_from_source_search(
         self,
         text: str,
@@ -782,12 +983,58 @@ class DebuggingService:
         fs.write_text(path, f"# Repair Plan\n\n{repair_plan}\n")
         return path
 
+    def _write_llm_debug_analysis(self, analysis: DebuggingAnalysis) -> Path:
+        path = self.stage_dir / "llm_debug_analysis.json"
+        fs.write_text(
+            path,
+            json.dumps(analysis.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        )
+        return path
+
+    def _write_llm_debug_analysis_report(self, analysis: DebuggingAnalysis) -> Path:
+        path = self.stage_dir / "llm_debug_analysis.md"
+        lines = [
+            "# LLM Debug Analysis",
+            "",
+            f"- Failure origin: `{analysis.failure_origin}`",
+            f"- Confidence: `{analysis.confidence}`",
+            f"- Test repair allowed: `{analysis.test_repair_allowed}`",
+            f"- Verification command: `{analysis.recommended_verification_command}`",
+        ]
+        if analysis.test_repair_rationale:
+            lines.append(f"- Test repair rationale: {analysis.test_repair_rationale}")
+        if analysis.evidence:
+            lines.extend(["", "## Evidence", ""])
+            lines.extend(f"- {item}" for item in analysis.evidence)
+        if analysis.candidates:
+            lines.extend(["", "## Candidates", ""])
+            for index, candidate in enumerate(analysis.candidates, start=1):
+                lines.append(
+                    f"- {index}. `{candidate.path.as_posix()}` "
+                    f"({candidate.kind}, {candidate.confidence}): {candidate.rationale}"
+                )
+        lines.extend(
+            [
+                "",
+                "## Root Cause",
+                "",
+                analysis.root_cause,
+                "",
+                "## Repair Strategy",
+                "",
+                analysis.repair_strategy,
+            ]
+        )
+        fs.write_text(path, "\n".join(lines) + "\n")
+        return path
+
     def _write_debug_trace(
         self,
         *,
         request: DebuggingRequest,
         evidence: _EvidenceBundle,
         localization: FaultLocalization,
+        llm_analysis: DebuggingAnalysis | None,
     ) -> Path:
         path = self.stage_dir / "debug_trace.jsonl"
         events = [
@@ -806,6 +1053,18 @@ class DebuggingService:
                 "type": "fault_localization",
                 "candidate_count": len(localization.candidates),
                 "confidence": localization.confidence,
+                "failure_origin": localization.failure_origin,
+                "test_repair_allowed": localization.test_repair_allowed,
+            },
+            {
+                "type": "llm_debug_analysis",
+                "available": llm_analysis is not None,
+                "failure_origin": (
+                    llm_analysis.failure_origin if llm_analysis is not None else None
+                ),
+                "candidate_count": (
+                    len(llm_analysis.candidates) if llm_analysis is not None else 0
+                ),
             },
         ]
         fs.write_text(
@@ -820,6 +1079,7 @@ class DebuggingService:
         evidence: _EvidenceBundle,
         failure_summary: str,
         localization: FaultLocalization,
+        llm_analysis: DebuggingAnalysis | None,
     ) -> Path:
         path = self.stage_dir / "debug_report.md"
         lines = [
@@ -837,7 +1097,16 @@ class DebuggingService:
             "## Fault Localization",
             "",
             f"- Confidence: {localization.confidence}",
+            f"- Failure origin: {localization.failure_origin}",
+            f"- Test repair allowed: {localization.test_repair_allowed}",
         ]
+        if localization.test_repair_rationale:
+            lines.append(f"- Test repair rationale: {localization.test_repair_rationale}")
+        if localization.recommended_verification_command:
+            lines.append(
+                "- Recommended verification command: "
+                f"`{localization.recommended_verification_command}`"
+            )
         if localization.candidates:
             for index, candidate in enumerate(localization.candidates, start=1):
                 lines.append(
@@ -858,6 +1127,17 @@ class DebuggingService:
                 localization.repair_plan,
             ]
         )
+        if llm_analysis is not None:
+            lines.extend(
+                [
+                    "",
+                    "## LLM Debug Analysis",
+                    "",
+                    f"- Origin: `{llm_analysis.failure_origin}`",
+                    f"- Confidence: `{llm_analysis.confidence}`",
+                    f"- Test repair allowed: `{llm_analysis.test_repair_allowed}`",
+                ]
+            )
         fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
@@ -1028,7 +1308,7 @@ def _debugging_harness_failure_message(
     report = _run_relative_path(debug_report_path, run_dir=run_dir)
     return (
         f"第 {attempt_index} 次调试发现自测脚手架问题：失败来自生成测试的运行目录，"
-        f"不进入修复阶段；报告 {report}。{diagnosis.next_suggestion}"
+        f"已允许后续修复可见测试脚手架；报告 {report}。{diagnosis.next_suggestion}"
     )
 
 
@@ -1071,17 +1351,17 @@ def _detect_generated_test_harness_failure(
         f"{cwd_detail}"
     )
     repair_plan = (
-        "Do not repair product code from this evidence. Regenerate the testing "
-        "stage patch so subprocess tests run from the real configured project root "
-        "and avoid hard-coded project/workspace cwd suffixes."
+        "Do not repair product code from this evidence. Repair the visible generated "
+        "tests under tests/ so subprocess calls run from the real configured project "
+        "root and avoid hard-coded project/workspace cwd suffixes."
     )
     return _TestHarnessFailureDiagnosis(
-        summary="Debugging stopped because the generated self-test harness is invalid.",
+        summary="Debugging identified an invalid generated self-test harness.",
         message=message,
         root_cause=root_cause,
         repair_plan=repair_plan,
         next_suggestion=(
-            "请重新生成测试补丁，让 CLI/subprocess 测试从真实项目根目录运行。"
+            "请进入修复阶段，优先修正可见测试脚手架中的 cwd / subprocess 配置。"
         ),
     )
 
@@ -1305,18 +1585,86 @@ def _build_repair_plan(
     )
 
 
-def _result_summary(
-    *,
-    confidence: str,
-    candidates: list[FaultCandidate],
-) -> str:
+def _static_failure_origin(candidates: list[FaultCandidate]) -> FailureOrigin:
     if not candidates:
-        return "Debugging completed with low confidence and no concrete source candidate."
-    top = candidates[0]
+        return "inconclusive"
+    if all(_is_test_path(candidate.file_path.as_posix()) for candidate in candidates):
+        return "generated_test_code"
+    if any(_is_test_path(candidate.file_path.as_posix()) for candidate in candidates):
+        return "mixed"
+    return "product_code"
+
+
+def _merge_llm_candidates(
+    existing: list[FaultCandidate],
+    analysis: DebuggingAnalysis,
+    *,
+    project_root: Path,
+) -> list[FaultCandidate]:
+    merged: dict[str, FaultCandidate] = {
+        candidate.file_path.as_posix(): candidate for candidate in existing
+    }
+    for candidate in analysis.candidates:
+        normalized = _normalize_debug_candidate_path(candidate.path, project_root)
+        if normalized is None:
+            continue
+        evidence = candidate.evidence or [
+            f"LLM debugging analysis selected {normalized.as_posix()}"
+        ]
+        merged[normalized.as_posix()] = FaultCandidate(
+            file_path=normalized,
+            line_number=candidate.line_number,
+            confidence=candidate.confidence,
+            evidence=evidence,
+            rationale=(
+                f"{candidate.rationale} "
+                f"(LLM candidate kind: {candidate.kind})"
+            ),
+        )
+    return sorted(merged.values(), key=_candidate_sort_key)[:5]
+
+
+def _normalize_debug_candidate_path(raw_path: Path, root: Path) -> Path | None:
+    raw = str(raw_path).replace("\\", "/")
+    posix = PurePosixPath(raw)
+    if (
+        not raw
+        or posix.is_absolute()
+        or any(part in {"", ".."} for part in posix.parts)
+        or (posix.parts and ":" in posix.parts[0])
+    ):
+        return None
+    target = (root / Path(posix.as_posix())).resolve()
+    try:
+        relative = target.relative_to(root).as_posix()
+    except ValueError:
+        return None
+    if _is_hidden_benchmark_path(relative):
+        return None
+    if SensitiveFilter(root).is_denied(target):
+        return None
+    return Path(relative)
+
+
+def _result_summary(localization: FaultLocalization) -> str:
+    if not localization.candidates:
+        return (
+            "Debugging completed with low confidence and no concrete source candidate; "
+            f"failure origin is {localization.failure_origin}."
+        )
+    top = localization.candidates[0]
     return (
-        f"Debugging completed with {confidence} confidence; top suspect "
+        f"Debugging completed with {localization.confidence} confidence; "
+        f"failure origin is {localization.failure_origin}; top suspect "
         f"`{top.file_path.as_posix()}`."
     )
+
+
+def _truncate_message(text: str, *, limit: int) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + "..."
 
 
 def _candidate_sort_key(candidate: FaultCandidate) -> tuple[int, int, str]:

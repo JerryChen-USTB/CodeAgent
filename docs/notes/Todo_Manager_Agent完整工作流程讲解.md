@@ -15,7 +15,7 @@ codeagent_runs\interactive_demo\todo_manager\runs\2026-06-03_164411_134073_imple
 
 ## 1. 先看整体结论
 
-这次任务的输入是 `requirements.md`，要求 Agent 从空 `workspace/` 生成一个命令行待办事项管理软件。最终结果是成功：
+这次历史任务的输入曾是 `requirements.md`，要求 Agent 从空 `workspace/` 生成一个命令行待办事项管理软件。当前 Todo Manager benchmark 已升级为 `PRD.md`、`user_stories.md`、`design_model.md`、`acceptance_criteria.md` 四份中文材料，并要求默认启动简单 TUI。本文后续仍保留对旧 run 的过程解释。
 
 - Agent 在实现阶段生成了 `todo_manager` Python 包。
 - Agent 在测试阶段生成并运行了自测文件 `tests/test_todo.py`。
@@ -43,24 +43,28 @@ codeagent_runs\interactive_demo\todo_manager\runs\2026-06-03_164411_134073_imple
 $todoDemo = "codeagent_runs\interactive_demo\todo_manager"
 Remove-Item -LiteralPath $todoDemo -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path "$todoDemo\workspace" -Force | Out-Null
-Copy-Item -LiteralPath benchmark\selfbuilt\cases\01_todo_manager\input\requirements.md -Destination "$todoDemo\requirements.md"
+New-Item -ItemType Directory -Path "$todoDemo\input" -Force | Out-Null
+Copy-Item -LiteralPath benchmark\selfbuilt\cases\01_todo_manager\input\PRD.md -Destination "$todoDemo\input\PRD.md"
+Copy-Item -LiteralPath benchmark\selfbuilt\cases\01_todo_manager\input\user_stories.md -Destination "$todoDemo\input\user_stories.md"
+Copy-Item -LiteralPath benchmark\selfbuilt\cases\01_todo_manager\input\design_model.md -Destination "$todoDemo\input\design_model.md"
+Copy-Item -LiteralPath benchmark\selfbuilt\cases\01_todo_manager\input\acceptance_criteria.md -Destination "$todoDemo\input\acceptance_criteria.md"
 ```
 
 这一步的含义是：
 
 - 删除旧的演示副本，避免旧代码影响本次演示。
 - 创建一个空的 `workspace/`，模拟用户自己的空项目目录。
-- 复制一份公开需求文档到 `requirements.md`。
+- 复制四份公开输入材料到 `input/`：`PRD.md`、`user_stories.md`、`design_model.md`、`acceptance_criteria.md`。
 - 不修改 benchmark 原始 case。
 
-`requirements.md` 描述了要生成的软件：
+这些材料描述了要生成的软件：
 
 - 使用 Python 3.11+。
 - 只允许使用标准库。
 - 入口是 `python -m todo_manager`。
 - 数据保存到 JSON 文件。
-- 支持 `add`、`list`、`done`、`delete`。
-- 需要处理空标题、非法日期、错误 JSON、任务不存在等异常。
+- 默认启动简单文本 TUI，让用户在同一个会话中添加、查看、完成、删除任务。
+- 需要处理空标题、非法日期、非法优先级、错误 JSON、任务不存在等异常。
 - Agent 需要自己创建包目录、代码、入口和必要测试。
 
 换句话说，Agent 不是在补全一个已有项目，而是从空目录开始生成完整软件。
@@ -93,7 +97,7 @@ Copy-Item -LiteralPath benchmark\selfbuilt\cases\01_todo_manager\input\requireme
 ```text
 阶段组合：完整流水线：实现 + 测试 + 调试 + 修复
 项目目录：codeagent_runs\interactive_demo\todo_manager\workspace
-输入材料：requirements.md
+输入材料：PRD.md、user_stories.md、design_model.md、acceptance_criteria.md
 输出目录：codeagent_runs\interactive_demo\todo_manager\runs
 测试命令：python -m pytest -q
 ```
@@ -214,11 +218,14 @@ runs\<run_id>\checkpoints.sqlite
 Agent 首先读取：
 
 ```text
-codeagent_runs\interactive_demo\todo_manager\requirements.md
+codeagent_runs\interactive_demo\todo_manager\input\PRD.md
+codeagent_runs\interactive_demo\todo_manager\input\user_stories.md
+codeagent_runs\interactive_demo\todo_manager\input\design_model.md
+codeagent_runs\interactive_demo\todo_manager\input\acceptance_criteria.md
 codeagent_runs\interactive_demo\todo_manager\workspace
 ```
 
-此时 `workspace/` 是空的，所以 Agent 看到的是“只有需求，没有代码”。
+当前新版演示应改为读取 `input\PRD.md`、`input\user_stories.md`、`input\design_model.md`、`input\acceptance_criteria.md` 和空 `workspace/`。旧 run 中 `workspace/` 是空的，所以 Agent 看到的是“只有需求，没有代码”。
 
 ### 7.2 调用 LLM 生成实现计划
 
@@ -363,7 +370,7 @@ summary: Implementation patch applied and syntax check completed.
 
 测试阶段不会凭空写测试。它会读取：
 
-- 原始需求 `requirements.md`
+- 原始输入材料。旧 run 是 `requirements.md`；新版 Todo case 是四份中文材料：`PRD.md`、`user_stories.md`、`design_model.md`、`acceptance_criteria.md`
 - 当前 `workspace/` 中的实现代码
 - 实现阶段产生的计划、patch、changed files 等产物
 
@@ -766,7 +773,11 @@ python -m pytest -q tests/test_todo.py
 
 ```text
 codeagent_runs\interactive_demo\todo_manager
-├─ requirements.md                 # 人给 Agent 的需求输入
+├─ input\                          # 人给 Agent 的新版四件套输入
+│  ├─ PRD.md
+│  ├─ user_stories.md
+│  ├─ design_model.md
+│  └─ acceptance_criteria.md
 ├─ workspace\                      # Agent 生成的软件项目
 │  ├─ todo_manager\                # 实现阶段生成的 Python 包
 │  ├─ tests\test_todo.py           # 测试阶段最终生成/更新的 Agent 自测

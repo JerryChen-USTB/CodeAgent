@@ -2,6 +2,30 @@
 
 This directory contains benchmark inputs derived from `dataset/` and reshaped for the software-engineering agent described in the SRS. The main config is `benchmark.yaml`.
 
+## Output Directory Convention
+
+Benchmark source material stays under `benchmark/`; generated run artifacts now
+go under the repository-level `codeagent_runs/benchmarks/` directory:
+
+```text
+codeagent_runs/
+  benchmarks/
+    public/
+      <timestamp>_<benchmark_id>_<hash>/
+        benchmark_report.md
+        benchmark_result.json
+        case_workspaces/
+        case_runs/
+        oracle_logs/
+    selfbuilt/
+      <timestamp>_<benchmark_id>_<hash>/
+```
+
+Do not put new benchmark outputs under `benchmark/codeagent_runs/` or
+`benchmark/selfbuilt/codeagent_runs/`. Those locations may still exist as
+historical ignored artifacts from earlier validation runs, but new runs should
+use the centralized output roots configured in the benchmark YAML files.
+
 ## Case Layout
 
 Each case directory contains:

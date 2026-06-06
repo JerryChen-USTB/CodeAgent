@@ -22,7 +22,6 @@ from codeagent.stages.repair_service import (
     RepairService,
 )
 from codeagent.tools.hitl import ApprovalDecision
-from codeagent.tools.risk_checker import RepairRiskChecker
 from codeagent.workflow.checkpoint import CheckpointManager
 from codeagent.workflow.factory import WorkflowFactory
 from codeagent.workflow.state import AgentState, create_initial_state
@@ -83,7 +82,14 @@ def _write_buggy_project(project_root: Path) -> None:
 _PLAN_FIXTURES: dict[int, tuple[str, str, str, str]] = {}
 
 
-def _plan(new_content: str, *, path: str = "math_utils.py") -> RepairPlan:
+def _plan(
+    new_content: str,
+    *,
+    path: str = "math_utils.py",
+    failure_origin: str = "product_code",
+    test_repair_allowed: bool = False,
+    test_repair_rationale: str | None = None,
+) -> RepairPlan:
     plan = RepairPlan(
         root_cause="The add helper subtracts instead of adding.",
         strategy="Replace subtraction with addition in the implementation.",
@@ -96,6 +102,15 @@ def _plan(new_content: str, *, path: str = "math_utils.py") -> RepairPlan:
         ],
         verification_command="python -m pytest -q",
         framework="pytest",
+        failure_origin=failure_origin,  # type: ignore[arg-type]
+        test_repair_allowed=test_repair_allowed,
+        test_repair_rationale=(
+            test_repair_rationale
+            if test_repair_rationale is not None
+            else "The failure is in visible generated test code."
+            if test_repair_allowed
+            else None
+        ),
     )
     _PLAN_FIXTURES[id(plan)] = (path, new_content, plan.verification_command, plan.framework)
     return plan
@@ -190,6 +205,119 @@ def test_repair_risk_checker_rejects_test_skip_patch(tmp_path) -> None:
         encoding="utf-8"
     )
     assert (run_context.run_dir / "repair" / "repair_risk.json").exists()
+
+
+def test_repair_service_can_fix_visible_generated_test_code_error(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "math_utils.py").write_text(
+        "def add(left, right):\n"
+        "    return left + right\n",
+        encoding="utf-8",
+    )
+    tests_dir = project_root / "tests"
+    tests_dir.mkdir()
+    test_path = tests_dir / "test_generated.py"
+    test_path.write_text(
+        "from math_utils import add\n\n"
+        "def test_add_generated():\n"
+        "    assert add(2, 3) == null\n",
+        encoding="utf-8",
+    )
+    service, run_context = _service(tmp_path, project_root)
+    fixed_test = (
+        "from math_utils import add\n\n"
+        "def test_add_generated():\n"
+        "    assert add(2, 3) == 5\n"
+    )
+    plan = _plan(
+        fixed_test,
+        path="tests/test_generated.py",
+        failure_origin="generated_test_code",
+        test_repair_allowed=True,
+        test_repair_rationale="NameError null is in visible generated pytest code.",
+    )
+
+    result = service.run(_request(plan))
+
+    risk = json.loads((run_context.run_dir / "repair" / "repair_risk.json").read_text(encoding="utf-8"))
+    assert result.status == "succeeded"
+    assert "null" not in test_path.read_text(encoding="utf-8")
+    assert risk["level"] == "medium"
+    assert any(
+        finding["kind"] == "visible_test_modification"
+        for finding in risk["findings"]
+    )
+
+
+def test_repair_service_rejects_visible_test_change_without_permission(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    service, _run_context = _service(tmp_path, project_root)
+    changed_test = (
+        "from math_utils import add\n\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 4\n"
+    )
+
+    result = service.run(_request(_plan(changed_test, path="tests/test_math_utils.py")))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "test_modification" in result.error.message
+    assert "== 5" in (project_root / "tests" / "test_math_utils.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_repair_risk_checker_rejects_test_assertion_removal_even_when_allowed(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    service, _run_context = _service(tmp_path, project_root)
+    weakened_test = (
+        "from math_utils import add\n\n"
+        "def test_add():\n"
+        "    add(2, 3)\n"
+    )
+    plan = _plan(
+        weakened_test,
+        path="tests/test_math_utils.py",
+        failure_origin="generated_test_code",
+        test_repair_allowed=True,
+    )
+
+    result = service.run(_request(plan))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "test_assertion_removal" in result.error.message
+    assert "assert add(2, 3) == 5" in (
+        project_root / "tests" / "test_math_utils.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_repair_risk_checker_rejects_test_infrastructure_even_when_allowed(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    (project_root / "conftest.py").write_text(
+        "def pytest_configure(config):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    service, _run_context = _service(tmp_path, project_root)
+    plan = _plan(
+        "def pytest_configure(config):\n"
+        "    config.option.keyword = 'not test_add'\n",
+        path="conftest.py",
+        failure_origin="generated_test_code",
+        test_repair_allowed=True,
+    )
+
+    result = service.run(_request(plan))
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "test infrastructure" in result.error.message
 
 
 @pytest.mark.parametrize(
@@ -388,7 +516,7 @@ def test_repair_service_failed_regression_returns_failed_stage(tmp_path) -> None
     assert result.status == "failed"
     assert result.error is not None
     assert result.error.category == "pytest_failure"
-    assert "Testing failed" in failure_report
+    assert "测试失败" in failure_report or "Testing failed" in failure_report
 
 
 def test_repair_subgraph_handler_and_main_graph_retry_until_max_attempts(tmp_path) -> None:

@@ -10,6 +10,7 @@ from typing import Any
 
 from codeagent import filesystem as fs
 from codeagent.context.redaction import redact_sensitive_text
+from codeagent.reports.jsonl_utils import jsonl_path_lock
 
 
 _MAX_TEXT_FIELD_CHARS = 200_000
@@ -41,11 +42,11 @@ class WorkflowTraceRecorder:
                 **payload,
             }
         )
-        fs.append_text(
-            self.events_path,
-            json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n",
-        )
-        fs.append_text(self.log_path, _render_event(event))
+        event_line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+        log_entry = _render_event(event)
+        with jsonl_path_lock(self.events_path):
+            fs.append_text(self.events_path, event_line)
+            fs.append_text(self.log_path, log_entry)
         return event
 
 

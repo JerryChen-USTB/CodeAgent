@@ -6,10 +6,12 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from codeagent.cli.app import app
+from codeagent.cli.approval_console import PATCH_AUTO_APPROVE_REMAINING_KEY
 from codeagent.cli.executor import _failure_logs_from_config
 from codeagent.config.schema import InputMaterial, Stage, TaskConfig
 from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.implementation_service import (
+    ImplementationApprovalPreview,
     ImplementationFileChange,
     ImplementationPlan,
     ImplementationPatchDraft,
@@ -522,6 +524,23 @@ class _FailingImplementationService:
     def __init__(self, *, run_context) -> None:
         self.run_context = run_context
 
+    def prepare_plan_review(self, _request) -> ImplementationApprovalPreview:
+        return ImplementationApprovalPreview(
+            payload={
+                "interrupt_id": PLAN_INTERRUPT_ID,
+                "action": "review_implementation_plan",
+                "title": "实施此实现计划？",
+                "summary": "Synthetic plan preview.",
+                "risk_level": "medium",
+                "allowed_decisions": ["approve", "respond"],
+                "default_decision": "approve",
+                "payload": {},
+            }
+        )
+
+    def apply_plan_review_decision(self, request, *, approval):
+        return request
+
     def run(self, _request) -> None:
         raise RuntimeError("synthetic implementation service failure")
 
@@ -610,6 +629,441 @@ def test_implement_subcommand_generates_plan_and_applies_patch(
     assert stage_result["status"] == "succeeded"
     assert (project / "feature.py").read_text(encoding="utf-8") == 'VERSION = "1.0"\n'
     assert "implementation | succeeded" in report
+
+
+def test_incremental_implementation_applies_each_file_before_next_generation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [implement]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+permissions:
+  approval_mode: auto
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class IncrementalImplementationPlanner:
+        saw_applied_first_file = False
+        saw_plan_before_first_file = False
+        saw_aggregate_patch_before_second_file = False
+
+        def create_implementation_request(self, _context) -> ImplementationRequest:
+            return ImplementationRequest(
+                plan=ImplementationPlan(
+                    requirements_summary="Add two coordinated modules.",
+                    implementation_strategy="Write a.py first, then b.py imports it.",
+                    changes=[
+                        ImplementationFileChange(
+                            path="a.py",
+                            rationale="Provide a shared value.",
+                        ),
+                        ImplementationFileChange(
+                            path="b.py",
+                            rationale="Consume the shared value.",
+                        ),
+                    ],
+                    acceptance_criteria=["Both modules are present and syntactically valid."],
+                ),
+                approval=ApprovalDecision(
+                    interrupt_id=PATCH_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=True,
+                    decided_by="test",
+                ),
+            )
+
+        def select_patch_file_context(
+            self,
+            _context,
+            *,
+            stage,
+            plan,
+            target_path,
+            workspace_tree,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ):
+            raise AssertionError("per-file LLM context selection should not be called")
+
+        def create_implementation_file_patch_draft(
+            self,
+            _context,
+            _plan,
+            *,
+            target_path,
+            workspace_context,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ) -> ImplementationPatchDraft:
+            stage_dir = _context.run_dir / "implementation"
+            if Path(target_path).as_posix() == "a.py":
+                type(self).saw_plan_before_first_file = (
+                    (stage_dir / "implementation_plan.md").exists()
+                    and (stage_dir / "implementation_plan.json").exists()
+                )
+                return _implementation_draft("a.py", "VALUE = 1\n")
+            aggregate_patch = stage_dir / "implementation.patch.diff"
+            aggregate_draft = stage_dir / "implementation_patch_draft.json"
+            type(self).saw_aggregate_patch_before_second_file = (
+                aggregate_patch.exists()
+                and aggregate_draft.exists()
+                and "b/a.py" in aggregate_patch.read_text(encoding="utf-8")
+                and "b/b.py" not in aggregate_patch.read_text(encoding="utf-8")
+            )
+            type(self).saw_applied_first_file = "VALUE = 1" in workspace_context
+            return _implementation_draft(
+                "b.py",
+                "from a import VALUE\n\nRESULT = VALUE + 1\n",
+            )
+
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        IncrementalImplementationPlanner,
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert (project / "a.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert (
+        project / "b.py"
+    ).read_text(encoding="utf-8") == "from a import VALUE\n\nRESULT = VALUE + 1\n"
+    assert IncrementalImplementationPlanner.saw_plan_before_first_file is True
+    assert IncrementalImplementationPlanner.saw_aggregate_patch_before_second_file is True
+    assert IncrementalImplementationPlanner.saw_applied_first_file is True
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    final_patch = (run_dir / "implementation" / "implementation.patch.diff").read_text(
+        encoding="utf-8"
+    )
+    assert "b/a.py" in final_patch
+    assert "b/b.py" in final_patch
+    file_patches = list((run_dir / "implementation" / "file_patches").glob("*.patch.diff"))
+    assert len(file_patches) == 2
+    workflow_events = [
+        json.loads(line)
+        for line in (run_dir / "workflow_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert (
+        sum(
+            1
+            for event in workflow_events
+            if event.get("event_type") == "incremental_file_patch_applied"
+        )
+        == 2
+    )
+    assert not any(
+        event.get("event_type") == "incremental_patch_decision_requested"
+        for event in workflow_events
+    )
+    assert not any(
+        event.get("event_type") == "incremental_patch_context_requested"
+        for event in workflow_events
+    )
+    assert (
+        sum(
+            1
+            for event in workflow_events
+            if event.get("event_type") == "incremental_stage_patch_context_built"
+        )
+        == 1
+    )
+    assert (
+        sum(
+            1
+            for event in workflow_events
+            if event.get("event_type") == "incremental_stage_patch_context_reused"
+        )
+        == 2
+    )
+    assert (
+        sum(
+            1
+            for event in workflow_events
+            if event.get("event_type")
+            == "incremental_aggregate_patch_artifacts_written"
+        )
+        == 2
+    )
+    assert (run_dir / "implementation" / "stage_patch_context.md").exists()
+    applied_context = (
+        run_dir / "implementation" / "applied_file_context.md"
+    ).read_text(encoding="utf-8")
+    assert "VALUE = 1" in applied_context
+    decisions = [
+        json.loads(line)
+        for line in (run_dir / "decision_trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    single_file_decisions = [
+        event
+        for event in decisions
+        if event.get("comment", "").startswith("Generated single-file patch for")
+    ]
+    assert [event["auto"] for event in single_file_decisions] == [True, True]
+
+
+def test_incremental_patch_approval_can_auto_approve_rest_of_stage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [implement]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+permissions:
+  approval_mode: manual
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class IncrementalImplementationPlanner:
+        def create_implementation_request(self, _context) -> ImplementationRequest:
+            return ImplementationRequest(
+                plan=ImplementationPlan(
+                    requirements_summary="Add two files.",
+                    implementation_strategy="Write both files incrementally.",
+                    changes=[
+                        ImplementationFileChange(path="a.py", rationale="First file."),
+                        ImplementationFileChange(path="b.py", rationale="Second file."),
+                    ],
+                    acceptance_criteria=["Both files are present."],
+                ),
+                approval=ApprovalDecision(
+                    interrupt_id=PATCH_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=False,
+                    decided_by="test",
+                ),
+            )
+
+        def select_patch_file_context(
+            self,
+            _context,
+            *,
+            stage,
+            plan,
+            target_path,
+            workspace_tree,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ):
+            raise AssertionError("per-file LLM context selection should not be called")
+
+        def create_implementation_file_patch_draft(
+            self,
+            _context,
+            _plan,
+            *,
+            target_path,
+            workspace_context,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ) -> ImplementationPatchDraft:
+            if Path(target_path).as_posix() == "a.py":
+                return _implementation_draft("a.py", "VALUE = 1\n")
+            return _implementation_draft("b.py", "VALUE = 2\n")
+
+    class AutoRestApprovalConsole:
+        prompts: list[str] = []
+
+        def prompt(self, request):
+            self.prompts.append(request.interrupt_id)
+            if request.action == "review_implementation_plan":
+                return ApprovalDecision(
+                    interrupt_id=request.interrupt_id,
+                    decision_type="approve",
+                    auto=False,
+                    decided_by="user",
+                )
+            if request.action == "approve_implementation_patch":
+                assert request.allowed_decisions == ("approve", "respond")
+                return ApprovalDecision(
+                    interrupt_id=request.interrupt_id,
+                    decision_type="approve",
+                    edited_payload={PATCH_AUTO_APPROVE_REMAINING_KEY: True},
+                    comment="Apply and stop prompting for this stage.",
+                    auto=False,
+                    decided_by="user",
+                )
+            raise AssertionError(f"unexpected approval prompt: {request.action}")
+
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        IncrementalImplementationPlanner,
+    )
+    monkeypatch.setattr("codeagent.cli.executor.ApprovalConsole", AutoRestApprovalConsole)
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert (project / "a.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert (project / "b.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert AutoRestApprovalConsole.prompts == [
+        PLAN_INTERRUPT_ID,
+        PATCH_INTERRUPT_ID,
+    ]
+    assert "auto-approved" in result.output
+    assert "目标文件：b.py (b.py)" in result.output
+    assert "file:///" not in result.output
+    assert "]8;;" not in result.output
+    auto_lines = [
+        line for line in result.output.splitlines() if "auto-approved" in line
+    ]
+    assert auto_lines
+    assert all(".patch.diff" not in line for line in auto_lines)
+    assert all("file_patches" not in line for line in auto_lines)
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    decisions = [
+        json.loads(line)
+        for line in (run_dir / "decision_trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    patch_decisions = [
+        event
+        for event in decisions
+        if event.get("action") == "approve_implementation_patch"
+    ]
+    assert patch_decisions[0]["edited_payload"] == {
+        PATCH_AUTO_APPROVE_REMAINING_KEY: True
+    }
+    assert patch_decisions[1]["auto"] is True
+    assert patch_decisions[1]["decision_source"] == "stage_patch_auto_approve"
+
+
+def test_incremental_patch_retry_reports_reason_to_cli(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [implement]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+permissions:
+  approval_mode: auto
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class RetryingImplementationPlanner:
+        calls = 0
+
+        def create_implementation_request(self, _context) -> ImplementationRequest:
+            return ImplementationRequest(
+                plan=ImplementationPlan(
+                    requirements_summary="Update app value.",
+                    implementation_strategy="Modify app.py incrementally.",
+                    changes=[
+                        ImplementationFileChange(
+                            path="app.py",
+                            rationale="Update the visible value.",
+                        )
+                    ],
+                    acceptance_criteria=["app.py has the updated value."],
+                ),
+                approval=ApprovalDecision(
+                    interrupt_id=PATCH_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=True,
+                    decided_by="test",
+                ),
+            )
+
+        def select_patch_file_context(
+            self,
+            _context,
+            *,
+            stage,
+            plan,
+            target_path,
+            workspace_tree,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ):
+            raise AssertionError("per-file LLM context selection should not be called")
+
+        def create_implementation_file_patch_draft(
+            self,
+            _context,
+            _plan,
+            *,
+            target_path,
+            workspace_context,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ) -> ImplementationPatchDraft:
+            type(self).calls += 1
+            old_content = "WRONG = 0\n" if type(self).calls == 1 else "VALUE = 0\n"
+            return ImplementationPatchDraft(
+                plan_summary="Update app.py.",
+                changes=[
+                    ImplementationPatchFileChange(
+                        path=target_path,
+                        old_content=old_content,
+                        new_content="VALUE = 1\n",
+                        rationale="Update the visible value.",
+                    )
+                ],
+                syntax_check_targets=["app.py"],
+            )
+
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        RetryingImplementationPlanner,
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert (project / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert RetryingImplementationPlanner.calls == 2
+    assert "单文件补丁 app.py 第 1 次未通过" in result.output
+    assert "补丁应用失败" in result.output
+    assert "正在重新生成当前文件" in result.output
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    events = [
+        json.loads(line)
+        for line in (run_dir / "workflow_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    retry_events = [
+        event
+        for event in events
+        if event.get("event_type") == "incremental_file_patch_retry"
+    ]
+    assert retry_events
+    assert retry_events[0]["reason"] == "补丁应用失败"
 
 
 def test_manual_implementation_prompts_for_plan_before_patch(
@@ -859,6 +1313,161 @@ permissions:
     assert not (run_dir / "debugging" / "stage_result.json").exists()
     workflow_log = (run_dir / "workflow.log").read_text(encoding="utf-8")
     assert "approval_feedback_regeneration" in workflow_log
+
+
+def test_incremental_testing_applies_file_patches_before_running_generated_tests(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "math_utils.py").write_text(
+        "def add(left: int, right: int) -> int:\n    return left + right\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        f"""
+stages: [test]
+project_path: {project.as_posix()}
+output_dir: {output_dir.as_posix()}
+test_command:
+  command: python -m pytest tests -q
+permissions:
+  approval_mode: auto
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class IncrementalTestingPlanner:
+        def create_testing_request(self, _context) -> TestingRequest:
+            return TestingRequest(
+                plan=TestingPlan(
+                    target_summary="Generate visible math tests.",
+                    strategy="Write two independent test files.",
+                    acceptance_criteria=["Generated tests are collected and pass."],
+                    changes=[
+                        TestFileChange(
+                            path="tests/test_math_add.py",
+                            test_focus="Positive addition.",
+                            rationale="Cover the main addition path.",
+                        ),
+                        TestFileChange(
+                            path="tests/test_math_zero.py",
+                            test_focus="Zero boundary.",
+                            rationale="Cover zero as a boundary value.",
+                        ),
+                    ],
+                    command="python -m pytest tests -q",
+                    framework="pytest",
+                ),
+                plan_review=ApprovalDecision(
+                    interrupt_id=TEST_PLAN_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=True,
+                    decided_by="test",
+                ),
+                patch_approval=ApprovalDecision(
+                    interrupt_id=TEST_PATCH_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=True,
+                    decided_by="test",
+                ),
+                command_approval=ApprovalDecision(
+                    interrupt_id=TEST_COMMAND_INTERRUPT_ID,
+                    decision_type="approve",
+                    auto=True,
+                    decided_by="test",
+                ),
+            )
+
+        def select_patch_file_context(
+            self,
+            _context,
+            *,
+            stage,
+            plan,
+            target_path,
+            workspace_tree,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ):
+            raise AssertionError("per-file LLM context selection should not be called")
+
+        def create_testing_file_patch_draft(
+            self,
+            _context,
+            _plan,
+            *,
+            target_path,
+            workspace_context,
+            work_summary,
+            completed_files,
+            failed_attempts,
+            feedback=None,
+        ) -> TestingPatchDraft:
+            if Path(target_path).as_posix().endswith("test_math_add.py"):
+                assert "def add(left: int, right: int) -> int:" in workspace_context
+                return _testing_draft(
+                    "tests/test_math_add.py",
+                    "from math_utils import add\n\n\ndef test_add_positive_numbers():\n    assert add(2, 3) == 5\n",
+                    command="python -m pytest tests -q",
+                )
+            assert "test_add_positive_numbers" in workspace_context
+            return _testing_draft(
+                "tests/test_math_zero.py",
+                "from math_utils import add\n\n\ndef test_add_zero_boundary():\n    assert add(0, 4) == 4\n",
+                command="python -m pytest tests/test_math_zero.py -q",
+            )
+
+    monkeypatch.setattr(
+        "codeagent.cli.executor.PlanGenerationService",
+        IncrementalTestingPlanner,
+    )
+
+    result = runner.invoke(app, ["run", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    run_dir = next(path for path in output_dir.iterdir() if path.is_dir())
+    assert (project / "tests" / "test_math_add.py").exists()
+    assert (project / "tests" / "test_math_zero.py").exists()
+    stage_result = json.loads(
+        (run_dir / "testing" / "stage_result.json").read_text(encoding="utf-8")
+    )
+    assert stage_result["status"] == "succeeded"
+    test_command = json.loads(
+        (run_dir / "testing" / "test_command.json").read_text(encoding="utf-8")
+    )
+    assert test_command["command"] == "python -m pytest tests -q"
+    test_result = json.loads(
+        (run_dir / "testing" / "test_result.json").read_text(encoding="utf-8")
+    )
+    assert test_result["total"] == 2
+    file_patches = list((run_dir / "testing" / "file_patches").glob("*.patch.diff"))
+    assert len(file_patches) == 2
+    workflow_events = [
+        json.loads(line)
+        for line in (run_dir / "workflow_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert not any(
+        event.get("event_type") == "incremental_patch_context_requested"
+        for event in workflow_events
+    )
+    assert (
+        sum(
+            1
+            for event in workflow_events
+            if event.get("event_type") == "incremental_stage_patch_context_built"
+        )
+        == 1
+    )
+    assert "test_add_positive_numbers" in (
+        run_dir / "testing" / "applied_file_context.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_implement_subcommand_classifies_stage_runtime_errors_separately_from_model(

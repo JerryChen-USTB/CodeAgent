@@ -84,6 +84,30 @@ class RepairPlan(BaseModel):
     changes: list[RepairFileChange] = Field(min_length=1)
     verification_command: str = Field(min_length=1, max_length=1000)
     framework: Literal["pytest", "unittest"] = "pytest"
+    failure_origin: Literal[
+        "product_code",
+        "generated_test_code",
+        "mixed",
+        "test_harness",
+        "inconclusive",
+    ] = "product_code"
+    test_repair_allowed: bool = False
+    test_repair_rationale: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_test_repair_permission(self) -> "RepairPlan":
+        if self.test_repair_allowed and self.failure_origin not in {
+            "generated_test_code",
+            "mixed",
+            "test_harness",
+        }:
+            raise ValueError(
+                "test_repair_allowed requires failure_origin generated_test_code, "
+                "mixed, or test_harness"
+            )
+        if self.test_repair_allowed and not (self.test_repair_rationale or "").strip():
+            raise ValueError("test_repair_rationale is required when test repair is allowed")
+        return self
 
 
 class RepairPatchDraft(BaseModel):
@@ -174,6 +198,8 @@ class RepairService:
                     "plan_path": "repair/repair_plan.md",
                     "plan_json_path": "repair/repair_plan.json",
                     "root_cause": request.plan.root_cause,
+                    "failure_origin": request.plan.failure_origin,
+                    "test_repair_allowed": request.plan.test_repair_allowed,
                     "changed_files": [
                         change.path.as_posix() for change in request.plan.changes
                     ],
@@ -431,7 +457,10 @@ class RepairService:
             )
             if not validation.valid:
                 raise PatchValidationError("; ".join(validation.errors))
-            risk = self.risk_checker.assess(validation)
+            risk = self.risk_checker.assess(
+                validation,
+                allow_test_modification=_repair_allows_test_modification(plan),
+            )
             if not risk.allowed:
                 raise PatchValidationError(_risk_message(risk))
             applied = self.patch_service.apply_patch(
@@ -649,7 +678,10 @@ class RepairService:
                         }
                     )
                     continue
-                risk = self.risk_checker.assess(validation)
+                risk = self.risk_checker.assess(
+                    validation,
+                    allow_test_modification=_repair_allows_test_modification(plan),
+                )
                 summary = self.patch_service.summarize_patch(candidate_path)
                 attempts.append(
                     {
@@ -1048,38 +1080,44 @@ class RepairService:
     ) -> Path:
         path = self.stage_dir / "repair_report.md"
         lines = [
-            "# Repair Report",
+            "# 修复报告",
             "",
-            "## Root Cause",
+            "## 根因",
             "",
             plan.root_cause,
             "",
-            "## Strategy",
+            "## 修复策略",
             "",
             plan.strategy,
             "",
-            "## Changed Files",
+            "## 故障归因",
+            "",
+            f"- 来源: `{plan.failure_origin}`",
+            f"- 允许修复可见测试: `{plan.test_repair_allowed}`",
+            f"- 理由: {plan.test_repair_rationale or '未授权测试修改'}",
+            "",
+            "## 已变更文件",
             "",
         ]
         lines.extend(f"- `{item}`" for item in changed_files)
         if patch_draft is not None:
-            lines.extend(["", "## Generated Repair Files", ""])
+            lines.extend(["", "## 生成的修复文件", ""])
             for change in patch_draft.changes:
                 lines.append(f"- `{change.path.as_posix()}`: {change.rationale}")
         lines.extend(
             [
                 "",
-                "## Verification",
+                "## 验证",
                 "",
-                f"- Command: `{command}`",
-                f"- Success: {success}",
-                f"- Passed: {test_result.get('passed')}",
-                f"- Failed: {test_result.get('failed')}",
-                f"- Errors: {test_result.get('errors')}",
+                f"- 命令: `{command}`",
+                f"- 成功: {success}",
+                f"- 通过: {test_result.get('passed')}",
+                f"- 失败: {test_result.get('failed')}",
+                f"- 错误: {test_result.get('errors')}",
             ]
         )
         if not success:
-            lines.extend(["", "## Testing failed", "", str(test_result.get("error_summary") or "")])
+            lines.extend(["", "## 测试失败", "", str(test_result.get("error_summary") or "")])
         fs.write_text(path, "\n".join(lines) + "\n")
         return path
 
@@ -1163,9 +1201,9 @@ class RepairService:
             report_path = self.stage_dir / "repair_report.md"
             fs.write_text(
                 report_path,
-                "# Repair Report\n\n"
-                f"## Status\n\n{result.summary}\n\n"
-                f"## Next\n\n{result.next_suggestion}\n",
+                "# 修复报告\n\n"
+                f"## 状态\n\n{result.summary}\n\n"
+                f"## 下一步\n\n{result.next_suggestion}\n",
             )
             artifact_ids = [
                 *artifact_ids,
@@ -1251,29 +1289,43 @@ def _result_from_non_approve_decision(
 
 def _render_plan(plan: RepairPlan) -> str:
     lines = [
-        "# Final Repair Plan",
+        "# 最终修复计划",
         "",
-        "## Root Cause",
+        "## 根因",
         "",
         plan.root_cause,
         "",
-        "## Strategy",
+        "## 修复策略",
         "",
         plan.strategy,
         "",
-        "## Planned Changes",
+        "## 故障归因",
+        "",
+        f"- 来源: `{plan.failure_origin}`",
+        f"- 允许修复可见测试: `{plan.test_repair_allowed}`",
+        f"- 理由: {plan.test_repair_rationale or '未授权测试修改'}",
+        "",
+        "## 计划变更",
         "",
     ]
     for change in plan.changes:
         lines.extend(
             [
                 f"- `{change.path.as_posix()}`",
-                f"  - Rationale: {change.rationale}",
-                f"  - Expected effect: {change.expected_effect}",
+                f"  - 理由: {change.rationale}",
+                f"  - 预期效果: {change.expected_effect}",
             ]
         )
-    lines.extend(["", "## Verification", "", f"`{plan.verification_command}`"])
+    lines.extend(["", "## 验证", "", f"`{plan.verification_command}`"])
     return "\n".join(lines) + "\n"
+
+
+def _repair_allows_test_modification(plan: RepairPlan) -> bool:
+    return bool(
+        plan.test_repair_allowed
+        and plan.failure_origin in {"generated_test_code", "mixed", "test_harness"}
+        and (plan.test_repair_rationale or "").strip()
+    )
 
 
 def _hidden_command_path_error(command: str) -> str | None:

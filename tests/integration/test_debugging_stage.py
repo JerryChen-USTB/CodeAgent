@@ -12,6 +12,7 @@ from codeagent.reports.artifact_store import ArtifactStore
 from codeagent.reports.schemas import StageResult
 from codeagent.runtime.run_context import create_run_context
 from codeagent.stages.debugging_service import (
+    DebuggingAnalysis,
     DebuggingRequest,
     DebuggingService,
     FaultCandidate,
@@ -40,6 +41,25 @@ def _run_context(tmp_path: Path, project_root: Path):
 def _service(tmp_path: Path, project_root: Path) -> tuple[DebuggingService, object]:
     run_context = _run_context(tmp_path, project_root)
     return DebuggingService(run_context=run_context), run_context
+
+
+class _FakeDebuggingAnalysisProvider:
+    def __init__(self, analysis: DebuggingAnalysis) -> None:
+        self.analysis = analysis
+        self.failure_summary = ""
+        self.static_localization: object | None = None
+
+    def create_debugging_analysis(
+        self,
+        context,
+        *,
+        failure_summary: str,
+        static_localization,
+        feedback: str | None = None,
+    ) -> DebuggingAnalysis:
+        self.failure_summary = failure_summary
+        self.static_localization = static_localization
+        return self.analysis
 
 
 def _decision(kind: str = "approve") -> ApprovalDecision:
@@ -162,6 +182,56 @@ def test_debugging_service_reproduces_failure_and_writes_evidence(
     assert "debugging_attempt_finished" in workflow_log
 
 
+def test_debugging_service_writes_llm_analysis_and_merges_candidates(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    _write_buggy_project(project_root)
+    analysis = DebuggingAnalysis(
+        failure_origin="generated_test_code",
+        confidence="high",
+        candidates=[
+            {
+                "path": "tests/test_math_utils.py",
+                "kind": "test_code",
+                "line_number": 4,
+                "confidence": "high",
+                "evidence": ["pytest traceback points to an invalid generated test"],
+                "rationale": "The visible generated test contains the bad fixture.",
+            }
+        ],
+        evidence=["The failure occurs before product code is exercised."],
+        root_cause="生成测试自身脚手架错误导致失败。",
+        repair_strategy="修复 tests/test_math_utils.py 中的可见测试脚手架。",
+        test_repair_allowed=True,
+        test_repair_rationale="错误位于可见生成测试代码。",
+        recommended_verification_command="python -m pytest -q",
+        framework="pytest",
+    )
+    provider = _FakeDebuggingAnalysisProvider(analysis)
+    run_context = _run_context(tmp_path, project_root)
+    service = DebuggingService(run_context=run_context, analysis_provider=provider)
+
+    result = service.run(_request())
+
+    stage_dir = run_context.run_dir / "debugging"
+    fault = json.loads((stage_dir / "fault_localization.json").read_text(encoding="utf-8"))
+    llm_payload = json.loads(
+        (stage_dir / "llm_debug_analysis.json").read_text(encoding="utf-8")
+    )
+    report = (stage_dir / "debug_report.md").read_text(encoding="utf-8")
+
+    assert result.status == "succeeded"
+    assert fault["failure_origin"] == "generated_test_code"
+    assert fault["test_repair_allowed"] is True
+    assert fault["llm_analysis_available"] is True
+    assert any(
+        candidate["file_path"] == "tests/test_math_utils.py"
+        for candidate in fault["candidates"]
+    )
+    assert llm_payload["test_repair_allowed"] is True
+    assert "生成测试自身脚手架错误" in report
+    assert provider.static_localization is not None
+
+
 def test_debugging_service_writes_artifacts_under_long_windows_paths(tmp_path) -> None:
     project_root = tmp_path / "project"
     _write_buggy_project(project_root)
@@ -232,7 +302,7 @@ def test_debugging_service_static_fallback_reports_low_confidence(tmp_path) -> N
     assert "low confidence" in result.summary.lower()
 
 
-def test_debugging_service_stops_on_generated_test_harness_cwd_failure(tmp_path) -> None:
+def test_debugging_service_reports_generated_test_harness_cwd_failure(tmp_path) -> None:
     project_root = tmp_path / "project"
     _write_buggy_project(project_root)
     harness_log = project_root / "harness_failure.log"
@@ -255,11 +325,11 @@ def test_debugging_service_stops_on_generated_test_harness_cwd_failure(tmp_path)
     fault = json.loads((stage_dir / "fault_localization.json").read_text(encoding="utf-8"))
     workflow_log = (run_context.run_dir / "workflow.log").read_text(encoding="utf-8")
 
-    assert result.status == "failed"
-    assert result.error is not None
-    assert result.error.category == "validation"
-    assert "self-test harness" in result.error.message
-    assert "Regenerate the testing" in (stage_dir / "repair_plan.md").read_text(
+    assert result.status == "succeeded"
+    assert result.error is None
+    assert fault["failure_origin"] == "test_harness"
+    assert fault["test_repair_allowed"] is True
+    assert "Repair the visible generated" in (stage_dir / "repair_plan.md").read_text(
         encoding="utf-8"
     )
     assert fault["candidates"] == []

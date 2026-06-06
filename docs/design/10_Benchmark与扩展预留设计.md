@@ -54,7 +54,7 @@ Benchmark runner 必须把 `benchmark/cases/<case_id>/` 或 `benchmark/selfbuilt
 ```yaml
 benchmark_id: codeagent_course_benchmark_v1
 name: 基于大语言模型的软件工程智能体 Benchmark
-output_dir: ./codeagent_runs/benchmark
+output_dir: ./codeagent_runs/benchmarks
 
 model:
   provider: openai_compatible

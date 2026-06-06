@@ -5,19 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from rich.console import Console
+from rich.text import Text
 
 from codeagent.cli.approval_console import (
     ApprovalInputError,
-    _choice_label,
-    _ordered_allowed_decisions,
-    parse_approval_decision,
+    _approval_choice_options,
+    _approval_decision_from_choice,
 )
 from codeagent.cli.progress import ProgressEventFormatter, ProgressReporter
 from codeagent.config import defaults
 from codeagent.tools.hitl import ApprovalDecision, ApprovalRequest
+
+
+if TYPE_CHECKING:
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.styles import Style
 
 
 FORM_GROUPS = {
@@ -391,10 +396,10 @@ class TuiApprovalConsole:
         self.driver = driver or PromptToolkitTuiDriver()
 
     def prompt(self, request: ApprovalRequest) -> ApprovalDecision:
-        decisions = _ordered_allowed_decisions(request)
+        options = _approval_choice_options(request)
         choices = [
-            TuiChoice(_choice_label(request, decision), decision)
-            for decision in decisions
+            TuiChoice(label, value)
+            for value, label in options
         ]
         decision_type = self.driver.select(
             request.title,
@@ -402,7 +407,7 @@ class TuiApprovalConsole:
             default=(
                 request.default_decision
                 if request.default_decision in request.allowed_decisions
-                else decisions[0]
+                else options[0][0]
             ),
         )
         comment = None
@@ -422,7 +427,7 @@ class TuiApprovalConsole:
         elif decision_type in {"reject", "cancel"}:
             comment = self.driver.text("可选：请输入原因", default="")
 
-        return parse_approval_decision(
+        return _approval_decision_from_choice(
             decision_type,
             request=request,
             edited_payload_text=edited_payload_text,
@@ -442,7 +447,13 @@ class TuiProgressReporter(ProgressReporter):
 
     def render_event(self, event: dict[str, object]) -> str:
         line = self._formatter.format_event(event)
-        self._console.print(f"│ {line}", markup=False)
+        renderable = self._formatter.renderable_for_event(event)
+        if isinstance(renderable, Text):
+            prefixed = Text("│ ")
+            prefixed.append(renderable)
+            self._console.print(prefixed, markup=False)
+        else:
+            self._console.print(f"│ {renderable}", markup=False)
         try:
             self._console.file.flush()
         except Exception:
@@ -468,7 +479,6 @@ def _run_form_prompt(state: WizardFormState) -> tuple[str, str]:
     from prompt_toolkit.layout import Layout
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.layout.containers import Window
-    from prompt_toolkit.styles import Style
 
     kb = KeyBindings()
 
@@ -1274,7 +1284,6 @@ def _run_select_prompt(
     from prompt_toolkit.layout import Layout
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.layout.containers import Window
-    from prompt_toolkit.styles import Style
 
     kb = KeyBindings()
 

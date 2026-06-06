@@ -1175,36 +1175,36 @@ class ImplementationService:
     ) -> Path:
         path = self.stage_dir / "implementation_report.md"
         lines = [
-            "# Implementation Report",
+            "# 实现报告",
             "",
-            "## Status",
+            "## 状态",
             "",
-            f"- Status: {result.status}",
-            f"- Summary: {result.summary}",
+            f"- 状态: {result.status}",
+            f"- 摘要: {result.summary}",
             "",
-            "## Requirements Summary",
+            "## 需求摘要",
             "",
             plan.requirements_summary,
             "",
-            "## Project Impact",
+            "## 项目影响",
             "",
             plan.impact_summary,
             "",
-            "## Acceptance Criteria",
+            "## 验收标准",
             "",
             *(f"- {item}" for item in plan.acceptance_criteria),
             "",
-            "## Patch Attempts",
+            "## 补丁尝试",
             "",
         ]
         if patch_draft is not None:
             lines.extend(
                 [
-                    "## Patch Draft",
+                    "## 补丁草案",
                     "",
                     patch_draft.plan_summary,
                     "",
-                    "### Draft Files",
+                    "### 草案文件",
                     "",
                     *(f"- `{change.path.as_posix()}`: {change.rationale}" for change in patch_draft.changes),
                     "",
@@ -1212,26 +1212,26 @@ class ImplementationService:
             )
         for attempt in attempts:
             lines.append(
-                f"- Attempt {attempt.get('attempt')}: {attempt.get('status')}"
+                f"- 尝试 {attempt.get('attempt')}: {attempt.get('status')}"
                 + (f" - {attempt.get('error')}" if attempt.get("error") else "")
             )
         if patch_summary is not None:
             lines.extend(
                 [
                     "",
-                    "## Patch Summary",
+                    "## 补丁摘要",
                     "",
-                    f"- Files: {', '.join(patch_summary.changed_files) or '-'}",
-                    f"- Added lines: {patch_summary.added_lines}",
-                    f"- Removed lines: {patch_summary.removed_lines}",
-                    f"- Risk level: {patch_summary.risk_level}",
+                    f"- 文件: {', '.join(patch_summary.changed_files) or '-'}",
+                    f"- 新增行数: {patch_summary.added_lines}",
+                    f"- 删除行数: {patch_summary.removed_lines}",
+                    f"- 风险等级: {patch_summary.risk_level}",
                 ]
             )
         if changed_files is not None:
             lines.extend(
                 [
                     "",
-                    "## Changed Files",
+                    "## 已变更文件",
                     "",
                     *(f"- {path}" for path in changed_files),
                 ]
@@ -1240,14 +1240,14 @@ class ImplementationService:
             lines.extend(
                 [
                     "",
-                    "## Syntax Check",
+                    "## 语法检查",
                     "",
-                    f"- Status: {syntax.status}",
-                    f"- Log: {syntax.log_path.name}",
+                    f"- 状态: {syntax.status}",
+                    f"- 日志: {syntax.log_path.name}",
                 ]
             )
         if result.next_suggestion:
-            lines.extend(["", "## Next Suggestion", "", result.next_suggestion])
+            lines.extend(["", "## 下一步建议", "", result.next_suggestion])
         _write_text(path, "\n".join(lines) + "\n")
         return path
 
@@ -1418,35 +1418,35 @@ class ImplementationService:
 
 def _render_plan(plan: ImplementationPlan) -> str:
     lines = [
-        "# Implementation Plan",
+        "# 实现计划",
         "",
-        "## Requirements Summary",
+        "## 需求摘要",
         "",
         plan.requirements_summary,
         "",
-        "## Implementation Strategy",
+        "## 实现策略",
         "",
         plan.implementation_strategy,
         "",
-        "## Planned Changes",
+        "## 计划变更",
         "",
     ]
     for change in plan.changes:
         lines.extend(
             [
                 f"- `{change.path.as_posix()}`",
-                f"  - Change type: {change.change_type}",
-                f"  - Rationale: {change.rationale}",
+                f"  - 变更类型: {change.change_type}",
+                f"  - 理由: {change.rationale}",
             ]
         )
         if change.public_interfaces:
-            lines.extend(f"  - Interface: {item}" for item in change.public_interfaces)
+            lines.extend(f"  - 接口: {item}" for item in change.public_interfaces)
         if change.acceptance_notes:
-            lines.extend(f"  - Acceptance note: {item}" for item in change.acceptance_notes)
-    lines.extend(["", "## Acceptance Criteria", ""])
+            lines.extend(f"  - 验收说明: {item}" for item in change.acceptance_notes)
+    lines.extend(["", "## 验收标准", ""])
     lines.extend(f"- {item}" for item in plan.acceptance_criteria)
     if plan.risk_notes:
-        lines.extend(["", "## Risks", ""])
+        lines.extend(["", "## 风险", ""])
         lines.extend(f"- {item}" for item in plan.risk_notes)
     return "\n".join(lines) + "\n"
 

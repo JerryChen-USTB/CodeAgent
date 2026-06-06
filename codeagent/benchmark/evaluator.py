@@ -63,7 +63,7 @@ class CaseEvaluator:
         missing = [
             path.name
             for path in (final_report, artifacts)
-            if not path.exists()
+            if not fs.exists(path)
         ]
         if missing:
             return CaseEvaluation(
@@ -178,9 +178,9 @@ def _read_agent_self_test(run_dir: Path) -> _AgentSelfTestOutcome:
     result_path: Path | None = None
     report_path: Path | None = None
     for candidate_result, candidate_report in candidates:
-        if candidate_result.exists():
+        if fs.exists(candidate_result):
             result_path = candidate_result
-            report_path = candidate_report if candidate_report.exists() else candidate_result
+            report_path = candidate_report if fs.exists(candidate_report) else candidate_result
             break
     if result_path is None:
         return _AgentSelfTestOutcome(
@@ -191,7 +191,7 @@ def _read_agent_self_test(run_dir: Path) -> _AgentSelfTestOutcome:
             failure_reason="agent self-test result is missing",
         )
     try:
-        data = json.loads(result_path.read_text(encoding="utf-8"))
+        data = json.loads(fs.read_text(result_path))
     except (OSError, json.JSONDecodeError) as exc:
         return _AgentSelfTestOutcome(
             success=False,

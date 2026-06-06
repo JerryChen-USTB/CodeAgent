@@ -4,6 +4,20 @@ This directory contains course-specific benchmark cases for the software
 engineering agent. The cases are managed separately from public-dataset cases
 under `benchmark/cases`.
 
+## Output Directory
+
+Self-built benchmark source material remains in `benchmark/selfbuilt/`. New
+self-built benchmark run artifacts are written to the centralized repository
+output root:
+
+```text
+codeagent_runs/benchmarks/selfbuilt/
+```
+
+Older ignored validation artifacts may still exist under
+`benchmark/selfbuilt/codeagent_runs/`, but new runs should use the `output_dir`
+declared in `selfbuilt_benchmark.yaml` and `meeting_room_demo_benchmark.yaml`.
+
 ## Design Principles
 
 - Each case starts from an empty `workspace/`.
@@ -29,7 +43,7 @@ benchmark/selfbuilt/
     05_meeting_room_booking/
 ```
 
-Each case uses:
+Most cases use:
 
 ```text
 case/
@@ -44,6 +58,20 @@ case/
   oracle_tests/
 ```
 
+`01_todo_manager` has been upgraded as the first richer-interaction case. It now
+keeps only four simplified-Chinese input materials:
+
+```text
+input/
+  PRD.md
+  user_stories.md
+  design_model.md
+  acceptance_criteria.md
+```
+
+The Todo Manager benchmark now requires a simple line-oriented TUI as the default
+product interaction, while hidden oracle tests drive the program through stdin.
+
 `workspace/` should remain empty in the original benchmark copy. A runner must
 copy the entire case to a clean temporary run directory before letting the agent
 write code or before running oracle tests. The agent and test command operate
@@ -54,7 +82,7 @@ benchmark runs.
 
 | Case | Difficulty | Type | Persistence |
 | --- | --- | --- | --- |
-| `01_todo_manager` | Introductory | CLI | JSON |
+| `01_todo_manager` | Introductory | TUI | JSON |
 | `02_personal_ledger` | Easy | CLI | JSON, CSV export |
 | `03_student_gradebook` | Medium | CLI | CSV import and report export |
 | `04_library_lending` | Medium-high | CLI | SQLite |
@@ -81,3 +109,4 @@ same command is the final verification step.
 | Date | Change | Reason |
 |---|---|---|
 | 2026-06-03 | Strengthened copy-to-clean-run-directory rule for self-built cases. | Keep original empty workspaces and hidden oracle tests reusable across repeated benchmark runs. |
+| 2026-06-05 | Upgraded `01_todo_manager` to four richer Chinese materials and TUI-based hidden oracle tests. | Make the first self-built case require realistic interactive software behavior instead of one-command-at-a-time usage. |

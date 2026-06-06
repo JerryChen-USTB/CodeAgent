@@ -43,16 +43,35 @@ class RepairRiskReport:
 class RepairRiskChecker:
     """Fail closed on suspicious repair patches."""
 
-    def assess(self, validation: PatchValidationResult) -> RepairRiskReport:
+    def assess(
+        self,
+        validation: PatchValidationResult,
+        *,
+        allow_test_modification: bool = False,
+    ) -> RepairRiskReport:
         findings: list[RepairRiskFinding] = []
         for finding in validation.risk_report.findings:
             findings.append(_from_patch_finding(finding))
         for path in validation.changed_files:
-            if _is_test_path(path):
+            if not _is_test_path(path):
+                continue
+            if allow_test_modification and _is_plain_visible_test_file(path):
+                findings.append(
+                    RepairRiskFinding(
+                        kind="visible_test_modification",
+                        path=str(path),
+                        message=(
+                            "repair patch modifies a visible generated test file under "
+                            "an approved test-repair plan"
+                        ),
+                        severity="medium",
+                    )
+                )
+            else:
                 findings.append(
                     RepairRiskFinding(
                         kind="test_modification",
-                        path=path,
+                        path=str(path),
                         message="repair patch modifies test infrastructure or a test path",
                         severity="high",
                     )
@@ -80,6 +99,24 @@ def _is_test_path(path: str | Path) -> bool:
     return (
         "tests" in posix.parts
         or name.startswith("test_")
+        or name.endswith("_test.py")
         or name in {"conftest.py", "pytest.ini", "tox.ini", "noxfile.py"}
         or name in {"setup.cfg", "pyproject.toml"}
+    )
+
+
+def _is_plain_visible_test_file(path: str | Path) -> bool:
+    posix = PurePosixPath(str(path).replace("\\", "/"))
+    name = posix.name.lower()
+    parts = tuple(part.lower() for part in posix.parts)
+    ordinary_name = name.startswith("test_") or name.endswith("_test.py")
+    return (
+        name.endswith(".py")
+        and name != "conftest.py"
+        and not any(part in {"oracle_tests", "evaluation"} for part in parts)
+        and name != "expected_result.json"
+        and (
+            (len(parts) >= 2 and parts[0] == "tests")
+            or (len(parts) == 1 and ordinary_name)
+        )
     )

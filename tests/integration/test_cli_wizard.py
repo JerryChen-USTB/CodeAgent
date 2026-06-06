@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from codeagent.cli.app import app
 from codeagent.cli.approval_console import (
+    PATCH_AUTO_APPROVE_REMAINING_KEY,
     ApprovalConsole,
     ApprovalInputError,
     parse_approval_decision,
@@ -335,7 +336,7 @@ def test_approval_console_questionary_prompt_uses_chinese_choices(monkeypatch) -
     assert captured["kwargs"]["instruction"] == "（上下键移动，回车选中）"
 
 
-def test_approval_console_patch_prompt_uses_two_chinese_choices(monkeypatch) -> None:
+def test_approval_console_patch_prompt_uses_three_chinese_choices(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakePrompt:
@@ -375,7 +376,51 @@ def test_approval_console_patch_prompt_uses_two_chinese_choices(monkeypatch) -> 
     titles = [choice.title for choice in captured["choices"]]
     assert decision.decision_type == "approve"
     assert captured["message"] == "应用此实现补丁？"
-    assert titles == ["是，应用此补丁", "否，告知 CodeAgent 如何调整"]
+    assert titles == [
+        "是，应用此补丁",
+        "是，应用此补丁，本阶段不再提示",
+        "否，告知 CodeAgent 如何调整",
+    ]
+
+
+def test_approval_console_patch_prompt_can_enable_stage_auto_approval(
+    monkeypatch,
+) -> None:
+    class FakePrompt:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class FakeQuestionary:
+        class Choice:
+            def __init__(self, *, title, value):
+                self.title = title
+                self.value = value
+
+        def select(self, message, choices, **kwargs):
+            return FakePrompt(choices[1].value)
+
+        def text(self, message, **kwargs):
+            raise AssertionError("auto approval choice must not ask for feedback")
+
+    request = ApprovalRequest(
+        interrupt_id="implementation_patch",
+        action="approve_implementation_patch",
+        title="应用此实现补丁？",
+        payload={"patch_path": "implementation/implementation.patch.diff"},
+        risk_level="medium",
+        allowed_decisions=("approve", "respond"),
+        default_decision="approve",
+    )
+    monkeypatch.setitem(sys.modules, "questionary", FakeQuestionary())
+
+    decision = ApprovalConsole()._prompt_questionary(request)
+
+    assert decision.decision_type == "approve"
+    assert decision.edited_payload == {PATCH_AUTO_APPROVE_REMAINING_KEY: True}
+    assert decision.decision_source == "user_stage_patch_auto_approve"
 
 
 def test_approval_console_prompt_can_be_scripted() -> None:

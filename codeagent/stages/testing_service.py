@@ -39,6 +39,7 @@ from codeagent.workflow.progress_events import emit_progress
 
 
 TESTING_STAGE = "testing"
+TESTING_STAGE_MAX_VISIBLE_TEST_FILES = 2
 TEST_PLAN_INTERRUPT_ID = "testing_plan"
 TEST_PATCH_INTERRUPT_ID = "testing_patch"
 TEST_COMMAND_INTERRUPT_ID = "testing_command"
@@ -499,8 +500,8 @@ class TestingService:
                 "Testing changed files",
             )
         )
-        command = draft.command if draft is not None else plan.command
-        framework = draft.framework if draft is not None else plan.framework
+        command = plan.command
+        framework = plan.framework
         return TestingApprovalPreview(
             payload={
                 "interrupt_id": TEST_COMMAND_INTERRUPT_ID,
@@ -512,6 +513,7 @@ class TestingService:
                 "default_decision": "approve",
                 "payload": {
                     "command": command,
+                    "cwd": str(self.run_context.task_config.project_path),
                     "framework": framework,
                     "changed_files": applied.changed_files,
                     "artifact_ids": artifacts,
@@ -530,8 +532,8 @@ class TestingService:
         draft = self._load_prepared_patch_draft(request.patch_draft)
         artifacts = self._register_existing_artifacts(plan, draft)
         changed_files = _read_changed_files(self.stage_dir / "changed_files.json")
-        planned_command = draft.command if draft is not None else plan.command
-        framework = draft.framework if draft is not None else plan.framework
+        planned_command = plan.command
+        framework = plan.framework
         command = self._command_from_decision(planned_command, command_approval)
         if isinstance(command, StageResult):
             command_path = self._write_command_record(
@@ -925,10 +927,10 @@ class TestingService:
             )
         )
 
-        command = self._command_from_decision(prepared.draft.command, request.command_approval)
+        command = self._command_from_decision(prepared.plan.command, request.command_approval)
         if isinstance(command, StageResult):
             command_path = self._write_command_record(
-                command=prepared.draft.command,
+                command=prepared.plan.command,
                 executed=False,
                 decision=request.command_approval.decision_type,
             )
@@ -1858,34 +1860,34 @@ class TestingService:
     ) -> Path:
         path = self.stage_dir / "test_report.md"
         lines = [
-            "# Testing Report",
+            "# 测试报告",
             "",
-            "## Target",
+            "## 测试目标",
             "",
             plan.target_summary,
             "",
-            "## Strategy",
+            "## 测试策略",
             "",
             plan.strategy,
             "",
-            "## Command",
+            "## 测试命令",
             "",
             f"`{command}`",
             "",
-            "## Result",
+            "## 测试结果",
             "",
-            f"- Success: {test_result.get('success')}",
-            f"- Passed: {test_result.get('passed')}",
-            f"- Failed: {test_result.get('failed')}",
-            f"- Errors: {test_result.get('errors')}",
-            f"- Skipped: {test_result.get('skipped')}",
-            f"- Total: {test_result.get('total')}",
-            f"- Timed out: {test_result.get('timed_out')}",
+            f"- 成功: {test_result.get('success')}",
+            f"- 通过: {test_result.get('passed')}",
+            f"- 失败: {test_result.get('failed')}",
+            f"- 错误: {test_result.get('errors')}",
+            f"- 跳过: {test_result.get('skipped')}",
+            f"- 总数: {test_result.get('total')}",
+            f"- 超时: {test_result.get('timed_out')}",
         ]
         if test_result.get("error_summary"):
-            lines.extend(["", "## Failure Summary", "", str(test_result["error_summary"])])
+            lines.extend(["", "## 失败摘要", "", str(test_result["error_summary"])])
         if patch_draft is not None:
-            lines.extend(["", "## Generated Test Files", ""])
+            lines.extend(["", "## 生成的测试文件", ""])
             for change in patch_draft.changes:
                 lines.append(f"- `{change.path.as_posix()}`: {change.rationale}")
         fs.write_text(path, "\n".join(lines) + "\n")
@@ -1964,7 +1966,7 @@ class TestingService:
                 plan=plan,
                 patch_draft=patch_draft,
                 test_result=report_payload,
-                command=patch_draft.command if patch_draft is not None else plan.command,
+                command=plan.command,
             )
             artifact_ids = [
                 *artifact_ids,
@@ -2091,6 +2093,22 @@ class TestingService:
 def _test_patch_quality_error(draft: TestingPatchDraft) -> str | None:
     if any(not _is_allowed_test_path(str(change.path)) for change in draft.changes):
         return None
+    unique_paths = {change.path.as_posix() for change in draft.changes}
+    if len(unique_paths) > TESTING_STAGE_MAX_VISIBLE_TEST_FILES:
+        return (
+            "testing patch drafts should keep generated tests in one visible test file "
+            f"by default and may use at most {TESTING_STAGE_MAX_VISIBLE_TEST_FILES} "
+            "visible test files"
+        )
+    if len(unique_paths) > 1 and _testing_command_targets_single_file(
+        draft.command,
+        unique_paths,
+    ):
+        return (
+            "testing patch command targets only one generated test file while the patch "
+            "contains multiple test files; use a full-suite command such as "
+            "python -m pytest -q or python -m pytest tests -q"
+        )
     generated_test_changes = [
         change
         for change in draft.changes
@@ -2105,6 +2123,79 @@ def _test_patch_quality_error(draft: TestingPatchDraft) -> str | None:
     if harness_error:
         return harness_error
     return None
+
+
+def _test_plan_quality_error(plan: TestingPlan) -> str | None:
+    if not plan.changes:
+        return "testing plans must include at least one visible test file change"
+    if any(not _is_allowed_test_path(str(change.path)) for change in plan.changes):
+        return "testing plans must target tests/ or test_*.py files only"
+    unique_paths = {change.path.as_posix() for change in plan.changes}
+    if len(unique_paths) > TESTING_STAGE_MAX_VISIBLE_TEST_FILES:
+        return (
+            "testing plans should keep generated tests in one visible test file by "
+            f"default and may use at most {TESTING_STAGE_MAX_VISIBLE_TEST_FILES} "
+            "visible test files"
+        )
+    if len(unique_paths) == TESTING_STAGE_MAX_VISIBLE_TEST_FILES and not _has_file_split_rationale(
+        plan.strategy,
+        [change.rationale for change in plan.changes],
+    ):
+        return (
+            "testing plan uses two test files but does not explain the split; prefer "
+            "one file or explain a unit/end-to-end/readability split"
+        )
+    command = plan.command.strip()
+    if not command:
+        return "testing plans must include a command that runs generated tests"
+    if "py_compile" in command:
+        return "testing plans must run pytest/unittest tests, not py_compile-only smoke checks"
+    hidden_error = _hidden_command_path_error(command)
+    if hidden_error:
+        return hidden_error
+    if len(unique_paths) > 1 and _testing_command_targets_single_file(command, unique_paths):
+        return (
+            "testing plan command targets only one generated test file while the plan "
+            "contains multiple test files; use a full-suite command such as "
+            "python -m pytest -q or python -m pytest tests -q"
+        )
+    return None
+
+
+def _has_file_split_rationale(strategy: str, rationales: list[str]) -> bool:
+    text = " ".join([strategy, *rationales]).lower()
+    keywords = {
+        "split",
+        "separate",
+        "separated",
+        "isolate",
+        "isolated",
+        "independent",
+        "readability",
+        "subprocess",
+        "end-to-end",
+        "e2e",
+        "拆分",
+        "分离",
+        "隔离",
+        "独立",
+        "可读",
+        "端到端",
+    }
+    return any(keyword in text for keyword in keywords)
+
+
+def _testing_command_targets_single_file(command: str, paths: set[str]) -> bool:
+    normalized = command.replace("\\", "/")
+    path_hits = [path for path in paths if path.replace("\\", "/") in normalized]
+    if len(path_hits) == 1:
+        return True
+    return bool(
+        re.search(
+            r"(?:^|\s)(?:\.?/)?tests/[^ \t\r\n;|&]+\.py(?:\s|$)",
+            normalized,
+        )
+    )
 
 
 def _generated_test_harness_quality_error(
@@ -2269,30 +2360,30 @@ def _result_from_non_approve_decision(
 
 def _render_plan(plan: TestingPlan) -> str:
     lines = [
-        "# Test Plan",
+        "# 测试计划",
         "",
-        "## Target Summary",
+        "## 测试目标摘要",
         "",
         plan.target_summary,
         "",
-        "## Strategy",
+        "## 测试策略",
         "",
         plan.strategy,
         "",
-        "## Acceptance Criteria",
+        "## 验收标准",
         "",
     ]
     lines.extend(f"- {item}" for item in plan.acceptance_criteria)
-    lines.extend(["", "## Planned Test Changes", ""])
+    lines.extend(["", "## 计划测试变更", ""])
     for change in plan.changes:
         lines.extend(
             [
                 f"- `{change.path.as_posix()}`",
-                f"  - Focus: {change.test_focus}",
-                f"  - Rationale: {change.rationale}",
+                f"  - 测试重点: {change.test_focus}",
+                f"  - 理由: {change.rationale}",
             ]
         )
-    lines.extend(["", "## Command", "", f"`{plan.command}`"])
+    lines.extend(["", "## 测试命令", "", f"`{plan.command}`"])
     return "\n".join(lines) + "\n"
 
 

@@ -21,12 +21,17 @@ function Test-AllowedCasePath {
 
     $Resolved = (Resolve-Path -Path $Path).Path
     $BenchmarkRoot = (Resolve-Path -Path (Join-Path $RepoRoot "benchmark")).Path
-    $RunsRoot = (Join-Path $BenchmarkRoot "codeagent_runs")
+    $LegacyRunsRoot = (Join-Path $BenchmarkRoot "codeagent_runs")
+    $CentralBenchmarkRunsRoot = (Join-Path $RepoRoot "codeagent_runs\benchmarks")
     $UnderBenchmark = $Resolved.StartsWith($BenchmarkRoot, [System.StringComparison]::OrdinalIgnoreCase)
     $IsCaseTemplate = $Resolved.Contains("\benchmark\cases\", [System.StringComparison]::OrdinalIgnoreCase)
     $IsCaseWorkspace = $Resolved.Contains("\case_workspaces\", [System.StringComparison]::OrdinalIgnoreCase)
-    $UnderRuns = $Resolved.StartsWith($RunsRoot, [System.StringComparison]::OrdinalIgnoreCase)
-    return ($UnderBenchmark -and ($IsCaseTemplate -or ($UnderRuns -and $IsCaseWorkspace)))
+    $UnderLegacyRuns = $Resolved.StartsWith($LegacyRunsRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    $UnderCentralBenchmarkRuns = $Resolved.StartsWith($CentralBenchmarkRunsRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    return (
+        ($UnderBenchmark -and $IsCaseTemplate) -or
+        (($UnderLegacyRuns -or $UnderCentralBenchmarkRuns) -and $IsCaseWorkspace)
+    )
 }
 
 function Remove-Tree {
@@ -172,7 +177,7 @@ repo_root="$RepoWsl"
 case_dir="$CaseWsl"
 bugsinpy_bin="`$repo_root/dataset/BugsInPy/framework/bin"
 
-if [[ "`$case_dir" != "`$repo_root"/benchmark/cases/* && "`$case_dir" != "`$repo_root"/benchmark/codeagent_runs/*/case_workspaces/* ]]; then
+if [[ "`$case_dir" != "`$repo_root"/benchmark/cases/* && "`$case_dir" != "`$repo_root"/benchmark/codeagent_runs/*/case_workspaces/* && "`$case_dir" != "`$repo_root"/codeagent_runs/benchmarks/*/case_workspaces/* ]]; then
   echo "Refusing to prepare path outside allowed benchmark workspaces: `$case_dir" >&2
   exit 2
 fi

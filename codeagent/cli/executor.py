@@ -2,40 +2,57 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import hashlib
 import os
 import sys
 from dataclasses import dataclass, replace
-from pathlib import Path
-from typing import Any, Protocol
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel
 
 from codeagent import filesystem as fs
 from codeagent.adapters.test_result import TestResult
 from codeagent.agents.plan_generation import PlanGenerationError, PlanGenerationService
 from codeagent.config.schema import Stage, TaskConfig
 from codeagent.context.redaction import redact_sensitive_text
+from codeagent.context.sensitive_filter import SensitiveFilter
 from codeagent.errors.exceptions import ErrorRecord, utc_timestamp
 from codeagent.reports import ArtifactKind, ArtifactRecord, ReportWriter, StageResult
 from codeagent.reports.schemas import HumanDecision
 from codeagent.runtime.commands import CommandApproval, ShellResult
 from codeagent.runtime.run_context import RunContext, create_run_context
+from codeagent.services.patch_service import FileChange, PatchApplyError, PatchValidationError
 from codeagent.stages.debugging_service import (
-    DEBUGGING_STAGE,
     REPRODUCTION_COMMAND_INTERRUPT_ID,
     DebuggingRequest,
     DebuggingService,
 )
 from codeagent.stages.implementation_service import (
+    PATCH_INTERRUPT_ID,
     PLAN_INTERRUPT_ID as IMPLEMENTATION_PLAN_INTERRUPT_ID,
+    ImplementationPatchDraft,
+    ImplementationPlan,
     ImplementationRequest,
     ImplementationService,
 )
 from codeagent.stages.repair_service import (
+    REPAIR_PATCH_INTERRUPT_ID,
     REPAIR_PLAN_INTERRUPT_ID,
+    RepairPatchDraft,
+    RepairPlan,
     RepairRequest,
     RepairService,
 )
-from codeagent.stages.testing_service import TestingRequest, TestingService
+from codeagent.stages.testing_service import (
+    TEST_PATCH_INTERRUPT_ID,
+    TestingPatchDraft,
+    TestingPlan,
+    TestingRequest,
+    TestingService,
+)
 from codeagent.tools.hitl import ApprovalDecision
 from codeagent.tools.pytest_tools import parse_shell_result
 from codeagent.tools.shell_tools import CommandDeniedError, ShellRunner
@@ -47,7 +64,10 @@ from codeagent.workflow.progress_events import emit_progress
 from codeagent.workflow.state import AgentState, create_initial_state
 
 from codeagent.cli.progress import ProgressReporter
-from codeagent.cli.approval_console import ApprovalConsole
+from codeagent.cli.approval_console import (
+    PATCH_AUTO_APPROVE_REMAINING_KEY,
+    ApprovalConsole,
+)
 from codeagent.tools.hitl import ApprovalRequest
 
 
@@ -65,8 +85,58 @@ class DisplayPathRef:
     absolute_path: Path
 
 
+@dataclass(frozen=True)
+class _IncrementalPatchResult:
+    drafts: list[BaseModel]
+    completed_files: list[str]
+    failures: list[dict[str, object]]
+    work_summary: str
+
+
+@dataclass
+class _StagePatchContext:
+    stage: Literal["implementation", "testing", "repair"]
+    workspace_tree: str
+    initial_context: str
+    applied_file_context: str
+    context_path: Path
+    metadata_path: Path
+    applied_context_path: Path
+    entries: list[dict[str, object]]
+    budget_chars: int
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
+class _SingleFilePatchResult:
+    draft: BaseModel
+    changed_files: list[str]
+    patch_path: Path
+    patch_sha256: str
+    attempts: list[dict[str, object]]
+    auto_approve_remaining: bool = False
+
+
 class ApprovalConsoleLike(Protocol):
     def prompt(self, request: ApprovalRequest) -> ApprovalDecision: ...
+
+
+WORK_SUMMARY_MAX_CHARS = 6_000
+STAGE_PATCH_CONTEXT_MAX_CHARS = 70_000
+STAGE_PATCH_APPLIED_CONTEXT_MAX_CHARS = 30_000
+STAGE_PATCH_APPLIED_FILE_MAX_CHARS = 18_000
+STAGE_CONTEXT_TEXT_EXTENSIONS = {".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml"}
+STAGE_CONTEXT_CONFIG_FILENAMES = {
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pytest.ini",
+    "tox.ini",
+    "package.json",
+    "tsconfig.json",
+}
 
 
 def execute_task_config(
@@ -115,6 +185,7 @@ def execute_task_config(
         {
             "type": "key_files_summary",
             "files": [ref.display for ref in key_file_refs],
+            "file_links": [_terminal_link_payload(ref) for ref in key_file_refs],
         }
     )
     progress.render_event({"type": "run_directory", "path": context.run_dir.as_posix()})
@@ -136,6 +207,10 @@ def _stage_handlers_for_cli(
         "debugging": _debugging_handler(context, approval_console),
         "repair": _repair_handler(context, approval_console),
     }
+
+
+def _planner_for_context(context: RunContext) -> PlanGenerationService:
+    return PlanGenerationService()
 
 
 def _should_prompt_for_approval(context: RunContext, approval: ApprovalDecision) -> bool:
@@ -205,20 +280,32 @@ def _prompt_approval(
         decided_at=decision.decided_at,
         decided_by="user",
         auto=False,
-        decision_source="user",
+        decision_source=decision.decision_source or "user",
         presented_to_user=True,
     )
 
 
 def _print_approval_context(context: RunContext, request: ApprovalRequest) -> None:
     refs = _approval_context_refs(context, request)
-    if not refs:
+    command_context = _approval_command_context(context, request)
+    if not refs and command_context is None:
         return
     lines = [ref.display for ref in refs]
     print("")
-    print("请先审查以下文件：")
-    for ref in refs:
-        print(f"- {_terminal_link(ref)}")
+    if refs:
+        print("请先审查以下文件：")
+        for ref in refs:
+            print(f"- {_terminal_link(ref)}")
+    command: str | None = None
+    cwd_ref: DisplayPathRef | None = None
+    if command_context is not None:
+        command, cwd_ref = command_context
+        if refs:
+            print("")
+        print("将执行命令：")
+        print(f"- {command}")
+        print("工作目录：")
+        print(f"- {_terminal_link(cwd_ref)}")
     hint = _approval_hint(request.action)
     if hint:
         print(hint)
@@ -229,6 +316,8 @@ def _print_approval_context(context: RunContext, request: ApprovalRequest) -> No
         action=request.action,
         files=lines,
         hint=hint,
+        command=command,
+        cwd=cwd_ref.absolute_path.as_posix() if cwd_ref is not None else None,
     )
 
 
@@ -271,6 +360,25 @@ def _approval_context_refs(
     return _dedupe_refs(refs)
 
 
+def _approval_command_context(
+    context: RunContext,
+    request: ApprovalRequest,
+) -> tuple[str, DisplayPathRef] | None:
+    if "command" not in request.action:
+        return None
+    command = request.payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    cwd_value = request.payload.get("cwd")
+    if isinstance(cwd_value, str) and cwd_value.strip():
+        cwd = Path(cwd_value)
+        if not cwd.is_absolute():
+            cwd = (context.task_config.project_path / cwd).resolve()
+    else:
+        cwd = context.task_config.project_path.resolve()
+    return command.strip(), DisplayPathRef(display=cwd.as_posix(), absolute_path=cwd)
+
+
 def _approval_hint(action: str) -> str:
     if "plan" in action:
         return "当前动作：补丁尚未生成；同意后开始生成补丁草案。"
@@ -310,13 +418,23 @@ def _existing_display_path_ref(path_text: str, *, base: Path) -> DisplayPathRef 
 
 
 def _terminal_link(ref: DisplayPathRef) -> str:
-    if not _terminal_hyperlinks_enabled():
-        return ref.display
-    try:
-        uri = ref.absolute_path.resolve().as_uri()
-    except ValueError:
+    uri = _terminal_uri(ref)
+    if uri is None:
         return ref.display
     return f"\033]8;;{uri}\033\\{ref.display}\033]8;;\033\\"
+
+
+def _terminal_link_payload(ref: DisplayPathRef) -> dict[str, str]:
+    return {"label": ref.display, "uri": _terminal_uri(ref) or ""}
+
+
+def _terminal_uri(ref: DisplayPathRef) -> str | None:
+    if not _terminal_hyperlinks_enabled():
+        return None
+    try:
+        return ref.absolute_path.resolve().as_uri()
+    except ValueError:
+        return None
 
 
 def _terminal_hyperlinks_enabled() -> bool:
@@ -645,6 +763,1679 @@ def _planner_create_request(
         return method(context)
 
 
+def _supports_incremental_patch_generation(
+    planner: PlanGenerationService,
+    stage: Literal["implementation", "testing", "repair"],
+) -> bool:
+    method_name = {
+        "implementation": "create_implementation_file_patch_draft",
+        "testing": "create_testing_file_patch_draft",
+        "repair": "create_repair_file_patch_draft",
+    }[stage]
+    return hasattr(planner, method_name)
+
+
+def _generate_and_apply_incremental_patches(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    service: ImplementationService | TestingService | RepairService,
+    planner: PlanGenerationService,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    approval_template: ApprovalDecision,
+    approval_console: ApprovalConsoleLike,
+    feedback: str | None = None,
+) -> _IncrementalPatchResult | StageResult:
+    started_at = utc_timestamp()
+    stage_dir = context.stage_dirs[_stage_enum_for_incremental(stage)]
+    fs.mkdir(stage_dir)
+    file_patch_dir = stage_dir / "file_patches"
+    fs.mkdir(file_patch_dir)
+    planned_paths = _planned_paths(plan)
+    drafts: list[BaseModel] = []
+    completed_files: list[str] = []
+    failures: list[dict[str, object]] = []
+    work_summary = ""
+    auto_approve_file_patches = False
+
+    context.workflow_trace.record(
+        "incremental_patch_loop_started",
+        stage=stage,
+        planned_files=planned_paths,
+        scheduled_by="approved_plan_order",
+        feedback=feedback,
+    )
+    emit_progress(
+        "agent_status",
+        stage=stage,
+        message="计划已通过，正在按单文件循环生成、检查、审批并应用补丁。",
+    )
+    stage_patch_context = _build_stage_patch_context(
+        context,
+        stage=stage,
+        plan=plan,
+        stage_dir=stage_dir,
+        planned_paths=planned_paths,
+    )
+
+    return _run_scheduled_incremental_patch_files(
+        context,
+        stage=stage,
+        service=service,
+        planner=planner,
+        plan=plan,
+        approval_template=approval_template,
+        approval_console=approval_console,
+        feedback=feedback,
+        started_at=started_at,
+        stage_dir=stage_dir,
+        file_patch_dir=file_patch_dir,
+        planned_paths=planned_paths,
+        drafts=drafts,
+        completed_files=completed_files,
+        failures=failures,
+        work_summary=work_summary,
+        auto_approve_file_patches=auto_approve_file_patches,
+        stage_patch_context=stage_patch_context,
+    )
+
+
+def _run_scheduled_incremental_patch_files(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    service: ImplementationService | TestingService | RepairService,
+    planner: PlanGenerationService,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    approval_template: ApprovalDecision,
+    approval_console: ApprovalConsoleLike,
+    feedback: str | None,
+    started_at: str,
+    stage_dir: Path,
+    file_patch_dir: Path,
+    planned_paths: list[str],
+    drafts: list[BaseModel],
+    completed_files: list[str],
+    failures: list[dict[str, object]],
+    work_summary: str,
+    auto_approve_file_patches: bool,
+    stage_patch_context: _StagePatchContext,
+) -> _IncrementalPatchResult | StageResult:
+    if not planned_paths:
+        return _failed_stage_result(
+            stage=stage,
+            started_at=started_at,
+            summary="Incremental patch loop has no planned files.",
+            category="model",
+            message="Approved plan did not contain any file changes.",
+            next_suggestion="Regenerate the plan with explicit file changes.",
+        )
+
+    for scheduled_index, target_key in enumerate(planned_paths, start=1):
+        if target_key in completed_files:
+            context.workflow_trace.record(
+                "incremental_scheduled_file_skipped",
+                stage=stage,
+                target_path=target_key,
+                reason="already completed",
+            )
+            continue
+        target = Path(target_key)
+        context.workflow_trace.record(
+            "incremental_stage_patch_context_reused",
+            stage=stage,
+            target_path=target_key,
+            context_path=_run_relative_path(
+                stage_patch_context.context_path,
+                run_dir=context.run_dir,
+            ),
+            applied_context_path=_run_relative_path(
+                stage_patch_context.applied_context_path,
+                run_dir=context.run_dir,
+            ),
+            applied_context_chars=len(stage_patch_context.applied_file_context),
+        )
+        single = _generate_approve_apply_single_file_patch(
+            context,
+            stage=stage,
+            service=service,
+            planner=planner,
+            plan=plan,
+            target_path=target,
+            read_context=_stage_patch_context_for_prompt(stage_patch_context),
+            work_summary=work_summary,
+            completed_files=completed_files,
+            failures=failures,
+            approval_template=approval_template,
+            approval_console=approval_console,
+            file_patch_dir=file_patch_dir,
+            file_index=len(drafts) + 1,
+            auto_approve=auto_approve_file_patches,
+        )
+        if isinstance(single, StageResult):
+            return single
+        if single.auto_approve_remaining:
+            auto_approve_file_patches = True
+        drafts.append(single.draft)
+        _write_incremental_aggregate_artifacts(
+            context,
+            stage=stage,
+            service=service,
+            plan=plan,
+            drafts=drafts,
+        )
+        _update_stage_patch_context_after_apply(
+            context,
+            stage_patch_context=stage_patch_context,
+            target_path=target,
+            draft=single.draft,
+            changed_files=single.changed_files,
+        )
+        for changed_file in single.changed_files:
+            if changed_file not in completed_files:
+                completed_files.append(changed_file)
+        if target_key not in completed_files:
+            completed_files.append(target_key)
+        work_summary = _append_work_summary(
+            work_summary,
+            _single_file_summary(
+                index=len(drafts),
+                target_path=target_key,
+                draft=single.draft,
+                changed_files=single.changed_files,
+            ),
+        )
+        _write_incremental_work_summary(stage_dir, work_summary)
+        context.workflow_trace.record(
+            "incremental_file_patch_applied",
+            stage=stage,
+            target_path=target_key,
+            changed_files=single.changed_files,
+            patch_path=_run_relative_path(single.patch_path, run_dir=context.run_dir),
+        )
+
+    if drafts:
+        context.workflow_trace.record(
+            "incremental_patch_loop_completed",
+            stage=stage,
+            completed_files=completed_files,
+            failures=failures,
+        )
+        return _IncrementalPatchResult(
+            drafts=drafts,
+            completed_files=completed_files,
+            failures=failures,
+            work_summary=work_summary,
+        )
+    return _failed_stage_result(
+        stage=stage,
+        started_at=started_at,
+        summary="Incremental patch loop completed without generating any file patch.",
+        category="model",
+        message="All scheduled files were skipped before producing a patch draft.",
+        next_suggestion="Regenerate the plan with explicit uncompleted file changes.",
+    )
+
+
+def _build_stage_patch_context(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    stage_dir: Path,
+    planned_paths: list[str],
+) -> _StagePatchContext:
+    workspace_tree = _visible_workspace_tree(context)
+    sections: list[str] = []
+    entries: list[dict[str, object]] = []
+    budget = STAGE_PATCH_CONTEXT_MAX_CHARS
+    truncated = False
+
+    budget, section_truncated = _append_stage_context_text_section(
+        sections,
+        entries,
+        label="project_tree",
+        text=workspace_tree,
+        budget=budget,
+    )
+    truncated = truncated or section_truncated
+
+    for path in _stage_input_material_paths(context):
+        budget, section_truncated = _append_stage_context_file_section(
+            sections,
+            entries,
+            label=f"input/{path.name}",
+            path=path,
+            budget=budget,
+        )
+        truncated = truncated or section_truncated
+        if budget <= 0:
+            break
+
+    if stage == "repair" and budget > 0:
+        for path in _stage_patch_evidence_paths(context):
+            budget, section_truncated = _append_stage_context_file_section(
+                sections,
+                entries,
+                label=f"stage_artifact/{path.name}",
+                path=path,
+                budget=budget,
+            )
+            truncated = truncated or section_truncated
+            if budget <= 0:
+                break
+
+    for target in planned_paths:
+        if budget <= 0:
+            break
+        budget, section_truncated = _append_planned_target_context_section(
+            context,
+            sections,
+            entries,
+            target_path=Path(target),
+            budget=budget,
+        )
+        truncated = truncated or section_truncated
+
+    for path in _stage_project_context_paths(
+        context,
+        stage=stage,
+        planned_paths=planned_paths,
+    ):
+        if budget <= 0:
+            break
+        try:
+            label = path.resolve().relative_to(
+                context.task_config.project_path.resolve()
+            ).as_posix()
+        except ValueError:
+            label = path.name
+        budget, section_truncated = _append_stage_context_file_section(
+            sections,
+            entries,
+            label=f"project/{label}",
+            path=path,
+            budget=budget,
+        )
+        truncated = truncated or section_truncated
+
+    initial_context = "\n\n".join(sections) if sections else "(no stage context selected)"
+    stage_context = _StagePatchContext(
+        stage=stage,
+        workspace_tree=workspace_tree,
+        initial_context=initial_context,
+        applied_file_context="",
+        context_path=stage_dir / "stage_patch_context.md",
+        metadata_path=stage_dir / "stage_patch_context.json",
+        applied_context_path=stage_dir / "applied_file_context.md",
+        entries=entries,
+        budget_chars=STAGE_PATCH_CONTEXT_MAX_CHARS,
+        truncated=truncated,
+    )
+    _write_stage_patch_context_artifacts(context, stage_context, plan=plan)
+    context.workflow_trace.record(
+        "incremental_stage_patch_context_built",
+        stage=stage,
+        planned_files=planned_paths,
+        context_path=_run_relative_path(
+            stage_context.context_path,
+            run_dir=context.run_dir,
+        ),
+        metadata_path=_run_relative_path(
+            stage_context.metadata_path,
+            run_dir=context.run_dir,
+        ),
+        applied_context_path=_run_relative_path(
+            stage_context.applied_context_path,
+            run_dir=context.run_dir,
+        ),
+        entry_count=len(entries),
+        context_chars=len(initial_context),
+        budget_chars=STAGE_PATCH_CONTEXT_MAX_CHARS,
+        truncated=truncated,
+    )
+    emit_progress(
+        "agent_status",
+        stage=stage,
+        message=(
+            "已在阶段开始读取并缓存补丁上下文；后续单文件补丁将复用该上下文。"
+        ),
+    )
+    return stage_context
+
+
+def _stage_patch_context_for_prompt(stage_context: _StagePatchContext) -> str:
+    applied = stage_context.applied_file_context.strip()
+    sections = [
+        (
+            "## Stage context snapshot\n"
+            "The workflow read this visible context once at the start of the current "
+            "stage. Later file patch calls reuse this snapshot; do not assume another "
+            "workspace read will happen during this stage.\n\n"
+            f"{stage_context.initial_context}"
+        )
+    ]
+    if applied:
+        sections.append(
+            "## Approved file patches applied after the stage snapshot\n" + applied
+        )
+    else:
+        sections.append(
+            "## Approved file patches applied after the stage snapshot\n"
+            "(no file patches have been applied in this stage yet)"
+        )
+    return "\n\n".join(sections)
+
+
+def _write_stage_patch_context_artifacts(
+    context: RunContext,
+    stage_context: _StagePatchContext,
+    *,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+) -> None:
+    fs.write_text(stage_context.context_path, stage_context.initial_context)
+    fs.write_text(
+        stage_context.applied_context_path,
+        "(no approved file patches have been applied in this stage yet)\n",
+    )
+    fs.write_text(
+        stage_context.metadata_path,
+        json.dumps(
+            {
+                "stage": stage_context.stage,
+                "budget_chars": stage_context.budget_chars,
+                "context_chars": len(stage_context.initial_context),
+                "truncated": stage_context.truncated,
+                "planned_files": _planned_paths(plan),
+                "entries": stage_context.entries,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _update_stage_patch_context_after_apply(
+    context: RunContext,
+    *,
+    stage_patch_context: _StagePatchContext,
+    target_path: Path,
+    draft: BaseModel,
+    changed_files: list[str],
+) -> None:
+    addition = _applied_file_context_from_draft(draft)
+    if not addition:
+        return
+    combined = "\n\n".join(
+        item
+        for item in [stage_patch_context.applied_file_context.strip(), addition.strip()]
+        if item
+    )
+    if len(combined) > STAGE_PATCH_APPLIED_CONTEXT_MAX_CHARS:
+        marker = "[older applied file context truncated]\n"
+        keep = max(0, STAGE_PATCH_APPLIED_CONTEXT_MAX_CHARS - len(marker))
+        combined = marker + combined[-keep:]
+    stage_patch_context.applied_file_context = combined
+    fs.write_text(stage_patch_context.applied_context_path, combined + "\n")
+    context.workflow_trace.record(
+        "incremental_stage_patch_context_updated",
+        stage=stage_patch_context.stage,
+        target_path=target_path.as_posix(),
+        changed_files=changed_files,
+        applied_context_path=_run_relative_path(
+            stage_patch_context.applied_context_path,
+            run_dir=context.run_dir,
+        ),
+        applied_context_chars=len(combined),
+    )
+
+
+def _applied_file_context_from_draft(draft: BaseModel) -> str:
+    sections: list[str] = []
+    for change in getattr(draft, "changes", []):
+        path = Path(getattr(change, "path")).as_posix()
+        new_content = getattr(change, "new_content", None)
+        if new_content is None:
+            sections.append(f"### applied/{path}\n[file deleted by approved patch]\n")
+            continue
+        text = redact_sensitive_text(str(new_content))
+        if len(text) > STAGE_PATCH_APPLIED_FILE_MAX_CHARS:
+            text = text[:STAGE_PATCH_APPLIED_FILE_MAX_CHARS] + "\n[truncated]\n"
+        sections.append(f"### applied/{path}\n{text}")
+    return "\n\n".join(sections)
+
+
+def _append_stage_context_text_section(
+    sections: list[str],
+    entries: list[dict[str, object]],
+    *,
+    label: str,
+    text: str,
+    budget: int,
+) -> tuple[int, bool]:
+    if budget <= 0:
+        return budget, False
+    original_chars = len(text)
+    truncated = original_chars > budget
+    if truncated:
+        text = text[:budget] + "\n[truncated]\n"
+    sections.append(f"### {label}\n{text}")
+    entries.append(
+        {
+            "label": label,
+            "chars": len(text),
+            "original_chars": original_chars,
+            "truncated": truncated,
+        }
+    )
+    return budget - len(text), truncated
+
+
+def _append_stage_context_file_section(
+    sections: list[str],
+    entries: list[dict[str, object]],
+    *,
+    label: str,
+    path: Path,
+    budget: int,
+) -> tuple[int, bool]:
+    text = _read_context_text_file(path)
+    if text is None:
+        return budget, False
+    remaining, truncated = _append_stage_context_text_section(
+        sections,
+        entries,
+        label=label,
+        text=text,
+        budget=budget,
+    )
+    if entries:
+        entries[-1]["path"] = str(path)
+    return remaining, truncated
+
+
+def _append_planned_target_context_section(
+    context: RunContext,
+    sections: list[str],
+    entries: list[dict[str, object]],
+    *,
+    target_path: Path,
+    budget: int,
+) -> tuple[int, bool]:
+    root = context.task_config.project_path.resolve()
+    target = (root / target_path).resolve()
+    label = f"planned_target/{target_path.as_posix()}"
+    if not _is_visible_project_context_file(context, target):
+        text = "[file does not exist at stage context build time]\n"
+        if fs.exists(target):
+            text = "[read denied by visibility policy]\n"
+        return _append_stage_context_text_section(
+            sections,
+            entries,
+            label=label,
+            text=text,
+            budget=budget,
+        )
+    return _append_stage_context_file_section(
+        sections,
+        entries,
+        label=label,
+        path=target,
+        budget=budget,
+    )
+
+
+def _stage_input_material_paths(context: RunContext) -> list[Path]:
+    paths: list[Path] = []
+    for material in context.task_config.input_materials:
+        paths.extend(_iter_stage_context_text_files(material.path))
+    return _dedupe_path_list(paths)
+
+
+def _stage_project_context_paths(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    planned_paths: list[str],
+) -> list[Path]:
+    root = context.task_config.project_path.resolve()
+    planned = {(root / Path(path)).resolve() for path in planned_paths}
+    paths: list[Path] = []
+    for filename in sorted(STAGE_CONTEXT_CONFIG_FILENAMES):
+        candidate = root / filename
+        if _is_visible_project_context_file(context, candidate):
+            paths.append(candidate)
+    for path in _iter_stage_context_text_files(root):
+        resolved = path.resolve()
+        if resolved in planned or not _is_visible_project_context_file(context, resolved):
+            continue
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if stage in {"implementation", "testing"} and _is_test_artifact_path(relative):
+            continue
+        paths.append(resolved)
+    return _dedupe_path_list(paths)
+
+
+def _stage_patch_evidence_paths(context: RunContext) -> list[Path]:
+    candidates = [
+        context.stage_dirs[Stage.REPAIR] / "repair_test_result.json",
+        context.stage_dirs[Stage.REPAIR] / "after_test.log",
+        context.stage_dirs[Stage.REPAIR] / "repair_report.md",
+        context.stage_dirs[Stage.REPAIR] / "stage_result.json",
+        context.stage_dirs[Stage.REPAIR] / "changed_files.json",
+        context.stage_dirs[Stage.DEBUG] / "failure_summary.md",
+        context.stage_dirs[Stage.DEBUG] / "llm_debug_analysis.json",
+        context.stage_dirs[Stage.DEBUG] / "llm_debug_analysis.md",
+        context.stage_dirs[Stage.DEBUG] / "fault_localization.json",
+        context.stage_dirs[Stage.DEBUG] / "root_cause.md",
+        context.stage_dirs[Stage.DEBUG] / "repair_plan.md",
+        context.stage_dirs[Stage.DEBUG] / "debug_report.md",
+        context.stage_dirs[Stage.TEST] / "test_result.json",
+        context.stage_dirs[Stage.TEST] / "test_command.json",
+        context.stage_dirs[Stage.TEST] / "test_report.md",
+        context.stage_dirs[Stage.TEST] / "test_report.json",
+        context.stage_dirs[Stage.TEST] / "stage_result.json",
+    ]
+    logs_dir = context.stage_dirs[Stage.REPAIR] / "logs"
+    if fs.exists(logs_dir):
+        candidates.extend(sorted(logs_dir.glob("*.stdout.log")))
+        candidates.extend(sorted(logs_dir.glob("*.stderr.log")))
+    logs_dir = context.stage_dirs[Stage.TEST] / "logs"
+    if fs.exists(logs_dir):
+        candidates.extend(sorted(logs_dir.glob("*.stdout.log")))
+        candidates.extend(sorted(logs_dir.glob("*.stderr.log")))
+    return _dedupe_path_list(
+        [path for path in candidates if fs.exists(path) and fs.is_file(path)]
+    )
+
+
+def _is_visible_project_context_file(context: RunContext, path: Path) -> bool:
+    if not fs.exists(path) or not fs.is_file(path):
+        return False
+    if path.suffix.lower() not in STAGE_CONTEXT_TEXT_EXTENSIONS:
+        return False
+    root = context.task_config.project_path.resolve()
+    hidden_roots = [
+        hidden.resolve() for hidden in context.task_config.agent_visibility.hidden_paths
+    ]
+    try:
+        SensitiveFilter(
+            root,
+            visible_roots=[root],
+            hidden_roots=hidden_roots,
+        ).ensure_allowed(path.resolve())
+    except (PermissionError, ValueError, OSError):
+        return False
+    return True
+
+
+def _iter_stage_context_text_files(path: Path) -> list[Path]:
+    path = path.resolve()
+    if fs.is_file(path):
+        return [path] if path.suffix.lower() in STAGE_CONTEXT_TEXT_EXTENSIONS else []
+    if not fs.is_dir(path):
+        return []
+    return [
+        candidate
+        for candidate in sorted(path.rglob("*"))
+        if fs.is_file(candidate)
+        and candidate.suffix.lower() in STAGE_CONTEXT_TEXT_EXTENSIONS
+    ]
+
+
+def _read_context_text_file(path: Path) -> str | None:
+    try:
+        text = fs.read_text(path)
+    except UnicodeDecodeError:
+        text = fs.portable_path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return redact_sensitive_text(text)
+
+
+def _dedupe_path_list(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(path)
+    return deduped
+
+
+def _is_test_artifact_path(path: str) -> bool:
+    normalized = PurePosixPath(path.replace("\\", "/"))
+    return (
+        "tests" in normalized.parts
+        or normalized.name.startswith("test_")
+        or normalized.name.endswith("_test.py")
+        or normalized.name == "conftest.py"
+        or normalized.name in {"pytest.ini", "tox.ini"}
+    )
+
+
+def _generate_approve_apply_single_file_patch(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    service: ImplementationService | TestingService | RepairService,
+    planner: PlanGenerationService,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    target_path: Path,
+    read_context: str,
+    work_summary: str,
+    completed_files: list[str],
+    failures: list[dict[str, object]],
+    approval_template: ApprovalDecision,
+    approval_console: ApprovalConsoleLike,
+    file_patch_dir: Path,
+    file_index: int,
+    auto_approve: bool = False,
+) -> _SingleFilePatchResult | StageResult:
+    started_at = utc_timestamp()
+    target_key = target_path.as_posix()
+    local_feedback: str | None = None
+    attempts_for_file: list[dict[str, object]] = []
+    max_attempts = max(1, context.task_config.model.max_retries + 1)
+    for attempt in range(1, max_attempts + 1):
+        emit_progress(
+            "agent_status",
+            stage=stage,
+            message=f"正在生成单文件补丁 {file_index}.{attempt}: {target_key}",
+        )
+        draft = _create_single_file_patch_draft(
+            context,
+            planner=planner,
+            stage=stage,
+            plan=plan,
+            target_path=target_path,
+            read_context=read_context,
+            work_summary=work_summary,
+            completed_files=completed_files,
+            failures=failures[-8:],
+            feedback=local_feedback,
+        )
+        prepared, validation_attempts = _prepare_single_file_candidate(
+            service,
+            plan=plan,
+            draft=draft,
+        )
+        attempts_for_file.extend(validation_attempts)
+        if prepared is None:
+            error = _incremental_last_attempt_error(validation_attempts)
+            failure = {
+                "target_path": target_key,
+                "attempt": attempt,
+                "status": "validation_failed",
+                "error": error,
+                "attempts": validation_attempts,
+            }
+            failures.append(failure)
+            _write_incremental_failures(
+                context.stage_dirs[_stage_enum_for_incremental(stage)],
+                failures,
+            )
+            local_feedback = (
+                "The previous single-file patch for "
+                f"{target_key} failed validation: {error}. Regenerate only this file "
+                "and avoid repeating the same mistake."
+            )
+            _emit_single_file_retry_message(
+                context,
+                stage=stage,
+                target_path=target_key,
+                attempt=attempt,
+                reason="补丁校验失败",
+                detail=error,
+            )
+            continue
+        risk_error = _prepared_risk_error(stage, prepared)
+        if risk_error:
+            failure = {
+                "target_path": target_key,
+                "attempt": attempt,
+                "status": "risk_failed",
+                "error": risk_error,
+            }
+            failures.append(failure)
+            _write_incremental_failures(
+                context.stage_dirs[_stage_enum_for_incremental(stage)],
+                failures,
+            )
+            local_feedback = (
+                f"The previous single-file patch for {target_key} failed risk checks: "
+                f"{risk_error}. Regenerate only this file and avoid the risky change."
+            )
+            _emit_single_file_retry_message(
+                context,
+                stage=stage,
+                target_path=target_key,
+                attempt=attempt,
+                reason="风险检查未通过",
+                detail=risk_error,
+            )
+            continue
+
+        import_error = _single_file_local_import_error(context, draft, plan=plan)
+        if import_error:
+            failure = {
+                "target_path": target_key,
+                "attempt": attempt,
+                "status": "local_import_failed",
+                "error": import_error,
+            }
+            failures.append(failure)
+            _write_incremental_failures(
+                context.stage_dirs[_stage_enum_for_incremental(stage)],
+                failures,
+            )
+            local_feedback = (
+                f"The previous single-file patch for {target_key} introduced an "
+                f"invalid local import: {import_error}. Regenerate only this file; "
+                "use existing workspace modules/APIs and do not invent local modules."
+            )
+            _emit_single_file_retry_message(
+                context,
+                stage=stage,
+                target_path=target_key,
+                attempt=attempt,
+                reason="本地导入检查未通过",
+                detail=import_error,
+            )
+            continue
+
+        patch_text = _prepared_patch_text(prepared)
+        patch_sha256 = _sha256_text(patch_text)
+        patch_path, draft_json_path = _write_single_file_patch_artifacts(
+            file_patch_dir,
+            file_index=file_index,
+            attempt=attempt,
+            target_path=target_path,
+            draft=draft,
+            patch_text=patch_text,
+        )
+        approval = _approve_single_file_patch(
+            context,
+            stage=stage,
+            approval_template=approval_template,
+            approval_console=approval_console,
+            target_path=target_key,
+            patch_path=patch_path,
+            draft_json_path=draft_json_path,
+            prepared=prepared,
+            patch_sha256=patch_sha256,
+            auto_approve=auto_approve,
+        )
+        _record_approval_decision(
+            context,
+            stage=stage,
+            action=_patch_approval_action(stage),
+            approval=approval,
+        )
+        if approval.decision_type == "respond":
+            feedback = _feedback_from_decision(approval)
+            failures.append(
+                {
+                    "target_path": target_key,
+                    "attempt": attempt,
+                    "status": "reviewer_feedback",
+                    "error": feedback,
+                }
+            )
+            _write_incremental_failures(
+                context.stage_dirs[_stage_enum_for_incremental(stage)],
+                failures,
+            )
+            local_feedback = (
+                f"Reviewer feedback for {target_key}: {feedback}. Regenerate only this file."
+            )
+            _emit_single_file_retry_message(
+                context,
+                stage=stage,
+                target_path=target_key,
+                attempt=attempt,
+                reason="收到人工调整意见",
+                detail=feedback,
+            )
+            continue
+        if approval.decision_type in {"reject", "cancel"}:
+            return _incremental_patch_decision_result(
+                stage=stage,
+                started_at=started_at,
+                target_path=target_key,
+                approval=approval,
+            )
+        if approval.decision_type != "approve":
+            return _failed_stage_result(
+                stage=stage,
+                started_at=started_at,
+                summary="Single-file patch approval returned an unsupported decision.",
+                category="hitl",
+                message=f"Unsupported decision for single-file patch: {approval.decision_type}",
+                next_suggestion="Apply the patch or respond with concrete feedback.",
+            )
+        try:
+            applied = service.patch_service.apply_patch(
+                patch_path,
+                context.task_config.project_path,
+                operation_id=f"{stage}_single_file_patch_{file_index}_{attempt}",
+            )
+        except (PatchApplyError, PatchValidationError, OSError, ValueError) as exc:
+            error = str(exc)
+            failures.append(
+                {
+                    "target_path": target_key,
+                    "attempt": attempt,
+                    "status": "apply_failed",
+                    "error": error,
+                }
+            )
+            _write_incremental_failures(
+                context.stage_dirs[_stage_enum_for_incremental(stage)],
+                failures,
+            )
+            local_feedback = (
+                "The previous approved single-file patch for "
+                f"{target_key} could not be applied: {error}. Regenerate only this "
+                "file against the current workspace content."
+            )
+            _emit_single_file_retry_message(
+                context,
+                stage=stage,
+                target_path=target_key,
+                attempt=attempt,
+                reason="补丁应用失败",
+                detail=error,
+            )
+            continue
+        return _SingleFilePatchResult(
+            draft=draft,
+            changed_files=applied.changed_files,
+            patch_path=patch_path,
+            patch_sha256=patch_sha256,
+            attempts=attempts_for_file,
+            auto_approve_remaining=_approval_enables_stage_auto_approve(approval),
+        )
+
+    return _failed_stage_result(
+        stage=stage,
+        started_at=started_at,
+        summary=f"Single-file patch generation failed for {target_key}.",
+        category="patch",
+        message=_incremental_last_attempt_error(attempts_for_file),
+        next_suggestion="Inspect the single-file patch attempts and regenerate this target file.",
+    )
+
+
+def _create_single_file_patch_draft(
+    context: RunContext,
+    *,
+    planner: PlanGenerationService,
+    stage: Literal["implementation", "testing", "repair"],
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    target_path: Path,
+    read_context: str,
+    work_summary: str,
+    completed_files: list[str],
+    failures: list[dict[str, object]],
+    feedback: str | None,
+) -> BaseModel:
+    common = {
+        "target_path": target_path,
+        "workspace_context": read_context,
+        "work_summary": work_summary,
+        "completed_files": completed_files,
+        "failed_attempts": failures,
+        "feedback": feedback,
+    }
+    if stage == "implementation":
+        return planner.create_implementation_file_patch_draft(
+            context,
+            plan,  # type: ignore[arg-type]
+            **common,
+        )
+    if stage == "testing":
+        return planner.create_testing_file_patch_draft(
+            context,
+            plan,  # type: ignore[arg-type]
+            **common,
+        )
+    return planner.create_repair_file_patch_draft(
+        context,
+        plan,  # type: ignore[arg-type]
+        **common,
+    )
+
+
+def _prepare_single_file_candidate(
+    service: ImplementationService | TestingService | RepairService,
+    *,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    draft: BaseModel,
+) -> tuple[Any | None, list[dict[str, object]]]:
+    return service._prepare_patch_candidates(plan, [draft])  # type: ignore[attr-defined,arg-type]
+
+
+def _single_file_local_import_error(
+    context: RunContext,
+    draft: BaseModel,
+    *,
+    plan: BaseModel | None = None,
+) -> str:
+    root = context.task_config.project_path.resolve()
+    changes = getattr(draft, "changes", [])
+    new_paths = {
+        Path(getattr(change, "path")).as_posix()
+        for change in changes
+        if getattr(change, "new_content", None) is not None
+    }
+    planned_paths = _plan_python_paths(plan)
+    local_roots = _local_python_roots(root, new_paths | planned_paths)
+    if not local_roots:
+        return ""
+    for change in changes:
+        path = Path(getattr(change, "path"))
+        if path.suffix != ".py":
+            continue
+        new_content = getattr(change, "new_content", None)
+        if not isinstance(new_content, str):
+            continue
+        try:
+            tree = ast.parse(new_content)
+        except SyntaxError:
+            continue
+        for module in _imported_modules(tree, target_path=path):
+            if not module:
+                continue
+            top_level = module.split(".", 1)[0]
+            if top_level not in local_roots:
+                continue
+            if not _local_module_exists(root, module, new_paths | planned_paths):
+                return (
+                    f"{path.as_posix()} imports local module {module!r}, "
+                    "but that module is not present in the current workspace, this patch, "
+                    "or the approved plan."
+                )
+    return ""
+
+
+def _plan_python_paths(plan: BaseModel | None) -> set[str]:
+    if plan is None:
+        return set()
+    paths: set[str] = set()
+    for change in getattr(plan, "changes", []):
+        raw_path = getattr(change, "path", None)
+        if raw_path is None:
+            continue
+        path = Path(raw_path)
+        if path.suffix == ".py":
+            paths.add(path.as_posix())
+    return paths
+
+
+def _local_python_roots(root: Path, new_paths: set[str]) -> set[str]:
+    roots: set[str] = set()
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        name = child.name
+        if fs.is_file(child) and child.suffix == ".py":
+            roots.add(child.stem)
+        elif fs.is_dir(child) and fs.exists(child / "__init__.py"):
+            roots.add(name)
+    for raw_path in new_paths:
+        parts = PurePosixPath(raw_path).parts
+        if not parts:
+            continue
+        if len(parts) == 1 and parts[0].endswith(".py"):
+            roots.add(PurePosixPath(parts[0]).stem)
+        elif len(parts) >= 2 and parts[1] == "__init__.py":
+            roots.add(parts[0])
+    return roots
+
+
+def _imported_modules(tree: ast.AST, *, target_path: Path) -> list[str]:
+    modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolved_import_from_module(node, target_path=target_path)
+            if module:
+                modules.append(module)
+    return modules
+
+
+def _resolved_import_from_module(node: ast.ImportFrom, *, target_path: Path) -> str:
+    module = node.module or ""
+    if node.level <= 0:
+        return module
+    package_parts = list(target_path.parent.parts)
+    if len(package_parts) < node.level:
+        return module
+    base = package_parts[: len(package_parts) - node.level + 1]
+    parts = [*base]
+    if module:
+        parts.extend(module.split("."))
+    return ".".join(part for part in parts if part)
+
+
+def _local_module_exists(root: Path, module: str, new_paths: set[str]) -> bool:
+    module_path = PurePosixPath(*module.split("."))
+    file_path = f"{module_path.as_posix()}.py"
+    package_path = f"{module_path.as_posix()}/__init__.py"
+    if file_path in new_paths or package_path in new_paths:
+        return True
+    return fs.exists(root / Path(file_path)) or fs.exists(root / Path(package_path))
+
+
+def _approve_single_file_patch(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    approval_template: ApprovalDecision,
+    approval_console: ApprovalConsoleLike,
+    target_path: str,
+    patch_path: Path,
+    draft_json_path: Path,
+    prepared: Any,
+    patch_sha256: str,
+    auto_approve: bool = False,
+) -> ApprovalDecision:
+    default = ApprovalDecision(
+        interrupt_id=_patch_interrupt_id(stage),
+        decision_type="approve",
+        comment=f"Generated single-file patch for {target_path}.",
+        auto=approval_template.auto,
+        decided_by=approval_template.decided_by,
+        decision_source=approval_template.decision_source,
+        presented_to_user=False,
+    )
+    if auto_approve:
+        approval = _auto_approve_single_file_patch(
+            stage=stage,
+            target_path=target_path,
+        )
+        _emit_auto_approved_patch_message(
+            context,
+            stage=stage,
+            target_path=target_path,
+        )
+        return approval
+    if not _should_prompt_for_approval(context, default):
+        return _effective_approval(context, default)
+    payload = {
+        "interrupt_id": _patch_interrupt_id(stage),
+        "action": _patch_approval_action(stage),
+        "title": _single_file_patch_title(stage),
+        "summary": f"目标文件：{target_path}。审批通过后将立即写入该文件。",
+        "risk_level": _prepared_risk_level(stage, prepared),
+        "allowed_decisions": ["approve", "respond"],
+        "default_decision": "approve",
+        "payload": {
+            "patch_path": _run_relative_path(patch_path, run_dir=context.run_dir),
+            "patch_draft_json_path": _run_relative_path(draft_json_path, run_dir=context.run_dir),
+            "changed_files": _prepared_changed_files(prepared),
+            "added_lines": getattr(prepared.summary, "added_lines", 0),
+            "removed_lines": getattr(prepared.summary, "removed_lines", 0),
+            "risk_level": _prepared_risk_level(stage, prepared),
+            "patch_sha256": patch_sha256,
+        },
+    }
+    return _prompt_approval(context, payload, approval_console)
+
+
+def _visible_workspace_tree(context: RunContext, *, max_entries: int = 500) -> str:
+    root = context.task_config.project_path.resolve()
+    hidden_roots = [
+        path.resolve() for path in context.task_config.agent_visibility.hidden_paths
+    ]
+    sensitive_filter = SensitiveFilter(
+        root,
+        visible_roots=[root],
+        hidden_roots=hidden_roots,
+    )
+    lines: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if len(lines) >= max_entries:
+            lines.append(f"... truncated after {max_entries} visible entries")
+            break
+        try:
+            if sensitive_filter.is_denied(path):
+                continue
+            relative = path.relative_to(root).as_posix()
+        except (OSError, ValueError):
+            continue
+        if not relative:
+            continue
+        if fs.is_dir(path):
+            lines.append(f"[dir]  {relative}/")
+        elif fs.is_file(path):
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            lines.append(f"[file] {relative} ({size} bytes)")
+    return "\n".join(lines) if lines else "(no visible files)"
+
+
+def _write_single_file_patch_artifacts(
+    file_patch_dir: Path,
+    *,
+    file_index: int,
+    attempt: int,
+    target_path: Path,
+    draft: BaseModel,
+    patch_text: str,
+) -> tuple[Path, Path]:
+    slug = _path_slug(target_path)
+    draft_json_path = file_patch_dir / f"{file_index:03d}_{attempt:02d}_{slug}.json"
+    patch_path = file_patch_dir / f"{file_index:03d}_{attempt:02d}_{slug}.patch.diff"
+    fs.write_text(
+        draft_json_path,
+        json.dumps(draft.model_dump(mode="json"), indent=2, ensure_ascii=False),
+    )
+    fs.write_text(patch_path, patch_text)
+    return patch_path, draft_json_path
+
+
+def _write_incremental_work_summary(stage_dir: Path, work_summary: str) -> None:
+    fs.write_text(stage_dir / "incremental_work_summary.md", work_summary)
+
+
+def _write_incremental_failures(
+    stage_dir: Path,
+    failures: list[dict[str, object]],
+) -> None:
+    fs.write_text(
+        stage_dir / "incremental_patch_failures.json",
+        json.dumps({"failures": failures}, indent=2, ensure_ascii=False),
+    )
+
+
+def _append_work_summary(current: str, addition: str) -> str:
+    addition = addition.strip()
+    if not addition:
+        return current
+    if not current.strip():
+        combined = f"- {addition}\n"
+    else:
+        combined = current.rstrip() + f"\n- {addition}\n"
+    if len(combined) <= WORK_SUMMARY_MAX_CHARS:
+        return combined
+    marker = "[older incremental work summary truncated]\n"
+    keep = max(0, WORK_SUMMARY_MAX_CHARS - len(marker))
+    return marker + combined[-keep:]
+
+
+def _single_file_summary(
+    *,
+    index: int,
+    target_path: str,
+    draft: BaseModel,
+    changed_files: list[str],
+) -> str:
+    summary = str(getattr(draft, "plan_summary", "")).strip()
+    changed = ", ".join(changed_files) or target_path
+    return f"文件 {index} `{target_path}` 已应用；changed_files={changed}；summary={summary}"
+
+
+def _planned_paths(plan: ImplementationPlan | TestingPlan | RepairPlan) -> list[str]:
+    paths: list[str] = []
+    for change in plan.changes:
+        path = change.path.as_posix()
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _combine_implementation_patch_drafts(
+    plan: ImplementationPlan,
+    drafts: list[BaseModel],
+) -> ImplementationPatchDraft:
+    changes = []
+    syntax_targets: list[Path] = []
+    summaries: list[str] = []
+    for draft in drafts:
+        typed = ImplementationPatchDraft.model_validate(draft.model_dump(mode="json"))
+        changes.extend(typed.changes)
+        syntax_targets.extend(typed.syntax_check_targets)
+        summaries.append(typed.plan_summary)
+    return ImplementationPatchDraft(
+        plan_summary="\n".join(_dedupe_lines([item for item in summaries if item]))
+        or plan.implementation_strategy,
+        changes=changes,
+        syntax_check_targets=_dedupe_paths(syntax_targets),
+    )
+
+
+def _combine_testing_patch_drafts(
+    plan: TestingPlan,
+    drafts: list[BaseModel],
+) -> TestingPatchDraft:
+    changes = []
+    summaries: list[str] = []
+    framework = plan.framework
+    for draft in drafts:
+        typed = TestingPatchDraft.model_validate(draft.model_dump(mode="json"))
+        changes.extend(typed.changes)
+        summaries.append(typed.plan_summary)
+        framework = typed.framework or framework
+    return TestingPatchDraft(
+        plan_summary="\n".join(_dedupe_lines([item for item in summaries if item]))
+        or plan.strategy,
+        changes=changes,
+        command=plan.command,
+        framework=framework,
+    )
+
+
+def _combine_repair_patch_drafts(
+    plan: RepairPlan,
+    drafts: list[BaseModel],
+) -> RepairPatchDraft:
+    changes = []
+    summaries: list[str] = []
+    command = plan.verification_command
+    framework = plan.framework
+    for draft in drafts:
+        typed = RepairPatchDraft.model_validate(draft.model_dump(mode="json"))
+        changes.extend(typed.changes)
+        summaries.append(typed.plan_summary)
+        command = typed.verification_command or command
+        framework = typed.framework or framework
+    return RepairPatchDraft(
+        plan_summary="\n".join(_dedupe_lines([item for item in summaries if item]))
+        or plan.strategy,
+        changes=changes,
+        verification_command=command,
+        framework=framework,
+    )
+
+
+def _write_incremental_aggregate_artifacts(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    service: ImplementationService | TestingService | RepairService,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    drafts: list[BaseModel],
+) -> None:
+    """Refresh stage-level patch artifacts after each approved single-file patch."""
+    if not drafts:
+        return
+    stage_dir = context.stage_dirs[_stage_enum_for_incremental(stage)]
+    fs.mkdir(stage_dir)
+    if stage == "implementation":
+        typed_draft = _combine_implementation_patch_drafts(plan, drafts)  # type: ignore[arg-type]
+        service._write_plan(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_plan_json(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_patch_draft_json(typed_draft)  # type: ignore[attr-defined]
+        patch_path = stage_dir / "implementation.patch.diff"
+    elif stage == "testing":
+        typed_draft = _combine_testing_patch_drafts(plan, drafts)  # type: ignore[arg-type]
+        service._write_plan(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_plan_json(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_patch_draft_json(typed_draft)  # type: ignore[attr-defined]
+        patch_path = stage_dir / "test.patch.diff"
+    else:
+        typed_draft = _combine_repair_patch_drafts(plan, drafts)  # type: ignore[arg-type]
+        service._write_plan_artifacts(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_patch_draft_json(typed_draft)  # type: ignore[attr-defined]
+        patch_path = stage_dir / "repair.patch.diff"
+
+    patch = service.patch_service.create_unified_diff(
+        _file_changes_from_draft_preserving_none(typed_draft)
+    )
+    fs.write_text(patch_path, patch.text)
+    context.workflow_trace.record(
+        "incremental_aggregate_patch_artifacts_written",
+        stage=stage,
+        patch_path=_run_relative_path(patch_path, run_dir=context.run_dir),
+        changed_files=patch.changed_files,
+        completed_patch_count=len(drafts),
+    )
+
+
+def _write_final_incremental_patch_artifacts(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    service: ImplementationService | TestingService | RepairService,
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+    draft: BaseModel,
+    started_at: str,
+) -> str | StageResult:
+    stage_dir = context.stage_dirs[_stage_enum_for_incremental(stage)]
+    fs.mkdir(stage_dir)
+    if stage == "implementation":
+        typed_draft = ImplementationPatchDraft.model_validate(draft.model_dump(mode="json"))
+        service._write_plan(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_plan_json(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_patch_draft_json(typed_draft)  # type: ignore[attr-defined]
+        patch_path = stage_dir / "implementation.patch.diff"
+    elif stage == "testing":
+        typed_draft = TestingPatchDraft.model_validate(draft.model_dump(mode="json"))
+        service._write_plan(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_plan_json(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_patch_draft_json(typed_draft)  # type: ignore[attr-defined]
+        patch_path = stage_dir / "test.patch.diff"
+    else:
+        typed_draft = RepairPatchDraft.model_validate(draft.model_dump(mode="json"))
+        service._write_plan_artifacts(plan)  # type: ignore[attr-defined,arg-type]
+        service._write_patch_draft_json(typed_draft)  # type: ignore[attr-defined]
+        patch_path = stage_dir / "repair.patch.diff"
+
+    patch = service.patch_service.create_unified_diff(
+        _file_changes_from_draft_preserving_none(typed_draft)
+    )
+    fs.write_text(patch_path, patch.text)
+    validation = service.patch_service.validate_patch(
+        patch_path,
+        context.task_config.project_path,
+    )
+    if not validation.valid:
+        service._write_attempts(  # type: ignore[attr-defined]
+            [
+                {
+                    "attempt": 1,
+                    "status": "validation_failed",
+                    "error": "; ".join(validation.errors),
+                    "warnings": validation.warnings,
+                }
+            ]
+        )
+        return _failed_stage_result(
+            stage=stage,
+            started_at=started_at,
+            summary="Final incremental patch validation failed.",
+            category="patch",
+            message="; ".join(validation.errors),
+            next_suggestion="Inspect the per-file patches and regenerate the final patch draft.",
+        )
+    attempt: dict[str, object] = {
+        "attempt": 1,
+        "status": "valid",
+        "changed_files": validation.changed_files,
+        "warnings": validation.warnings,
+    }
+    if stage == "repair":
+        risk = service.risk_checker.assess(  # type: ignore[attr-defined]
+            validation,
+            allow_test_modification=_repair_plan_allows_test_modification(plan),
+        )
+        service._write_risk_report(risk)  # type: ignore[attr-defined]
+        attempt["risk"] = risk.to_json_dict()
+        if not risk.allowed:
+            service._write_attempts([attempt])  # type: ignore[attr-defined]
+            return _failed_stage_result(
+                stage=stage,
+                started_at=started_at,
+                summary="Final incremental repair patch failed risk checks.",
+                category="patch",
+                message=_repair_risk_message(risk),
+                next_suggestion="Regenerate the risky single-file repair patch.",
+            )
+    else:
+        attempt["risk_level"] = validation.risk_report.level
+    service._write_attempts([attempt])  # type: ignore[attr-defined]
+    return _sha256_text(patch.text)
+
+
+def _file_changes_from_draft_preserving_none(draft: BaseModel) -> list[FileChange]:
+    return [
+        FileChange(
+            path=change.path,
+            old_content=change.old_content,
+            new_content=change.new_content,
+        )
+        for change in getattr(draft, "changes")
+    ]
+
+
+def _repair_risk_message(risk: Any) -> str:
+    findings = [
+        f"{finding.kind}:{finding.path}:{finding.message}"
+        for finding in risk.findings
+    ]
+    return "; ".join(findings) or "repair risk level is high"
+
+
+def _repair_plan_allows_test_modification(
+    plan: ImplementationPlan | TestingPlan | RepairPlan,
+) -> bool:
+    return isinstance(plan, RepairPlan) and bool(
+        plan.test_repair_allowed
+        and plan.failure_origin in {"generated_test_code", "mixed", "test_harness"}
+        and (plan.test_repair_rationale or "").strip()
+    )
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for path in paths:
+        key = path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _stage_enum_for_incremental(stage: Literal["implementation", "testing", "repair"]) -> Stage:
+    if stage == "testing":
+        return Stage.TEST
+    if stage == "repair":
+        return Stage.REPAIR
+    return Stage.IMPLEMENT
+
+
+def _patch_interrupt_id(stage: Literal["implementation", "testing", "repair"]) -> str:
+    if stage == "testing":
+        return TEST_PATCH_INTERRUPT_ID
+    if stage == "repair":
+        return REPAIR_PATCH_INTERRUPT_ID
+    return PATCH_INTERRUPT_ID
+
+
+def _patch_approval_action(stage: Literal["implementation", "testing", "repair"]) -> str:
+    if stage == "testing":
+        return "approve_test_patch"
+    if stage == "repair":
+        return "approve_repair_patch"
+    return "approve_implementation_patch"
+
+
+def _single_file_patch_title(stage: Literal["implementation", "testing", "repair"]) -> str:
+    if stage == "testing":
+        return "应用这个单文件测试补丁？"
+    if stage == "repair":
+        return "应用这个单文件修复补丁？"
+    return "应用这个单文件实现补丁？"
+
+
+def _prepared_patch_text(prepared: Any) -> str:
+    if hasattr(prepared, "patch_text"):
+        return str(prepared.patch_text)
+    return str(prepared.patch.text)
+
+
+def _prepared_changed_files(prepared: Any) -> list[str]:
+    return list(prepared.validation.changed_files)
+
+
+def _prepared_risk_level(
+    stage: Literal["implementation", "testing", "repair"],
+    prepared: Any,
+) -> str:
+    if stage == "repair" and hasattr(prepared, "risk"):
+        return str(prepared.risk.level)
+    return str(prepared.validation.risk_report.level)
+
+
+def _prepared_risk_error(
+    stage: Literal["implementation", "testing", "repair"],
+    prepared: Any,
+) -> str | None:
+    if stage == "repair" and hasattr(prepared, "risk") and not prepared.risk.allowed:
+        findings = [
+            f"{finding.kind}:{finding.path}:{finding.message}"
+            for finding in prepared.risk.findings
+        ]
+        return "; ".join(findings) or "repair risk level is high"
+    return None
+
+
+def _approval_enables_stage_auto_approve(approval: ApprovalDecision) -> bool:
+    payload = approval.edited_payload
+    return bool(
+        isinstance(payload, dict)
+        and payload.get(PATCH_AUTO_APPROVE_REMAINING_KEY) is True
+    )
+
+
+def _auto_approve_single_file_patch(
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    target_path: str,
+) -> ApprovalDecision:
+    return ApprovalDecision(
+        interrupt_id=_patch_interrupt_id(stage),
+        decision_type="approve",
+        comment=f"Auto-approved single-file patch for {target_path}.",
+        decided_by="workflow",
+        auto=True,
+        decision_source="stage_patch_auto_approve",
+        presented_to_user=False,
+    )
+
+
+def _emit_single_file_retry_message(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    target_path: str,
+    attempt: int,
+    reason: str,
+    detail: str,
+) -> None:
+    compact_detail = _compact_retry_detail(detail)
+    message = (
+        f"单文件补丁 {target_path} 第 {attempt} 次未通过："
+        f"{reason}（{compact_detail}）；正在重新生成当前文件。"
+    )
+    emit_progress("agent_status", stage=stage, message=message)
+    context.workflow_trace.record(
+        "incremental_file_patch_retry",
+        stage=stage,
+        target_path=target_path,
+        attempt=attempt,
+        reason=reason,
+        detail=compact_detail,
+    )
+
+
+def _compact_retry_detail(detail: str, *, limit: int = 180) -> str:
+    text = " ".join(str(detail or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _emit_auto_approved_patch_message(
+    context: RunContext,
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+    target_path: str,
+) -> None:
+    target_ref = _display_path_ref(target_path, base=context.task_config.project_path)
+    emit_progress(
+        "agent_status",
+        stage=stage,
+        message="auto-approved 自动通过补丁，目标文件：",
+        message_link=_terminal_link_payload(target_ref),
+    )
+
+
+def _incremental_patch_decision_result(
+    *,
+    stage: str,
+    started_at: str,
+    target_path: str,
+    approval: ApprovalDecision,
+) -> StageResult:
+    status: Literal["failed", "cancelled"] = (
+        "cancelled" if approval.decision_type == "cancel" else "failed"
+    )
+    return StageResult(
+        stage=stage,
+        status=status,
+        started_at=started_at,
+        ended_at=utc_timestamp(),
+        summary=f"Single-file patch approval returned {approval.decision_type}: {target_path}.",
+        error=ErrorRecord(
+            error_id=f"{stage}_single_file_patch_{approval.decision_type}",
+            stage=stage,
+            node=_patch_approval_action(stage),  # type: ignore[arg-type]
+            category="hitl",
+            message=f"single-file patch decision: {approval.decision_type}",
+            retryable=status != "cancelled",
+        ),
+        next_suggestion=(
+            "Run was cancelled by the approval decision."
+            if status == "cancelled"
+            else "Ask the Agent to regenerate the single-file patch or approve it."
+        ),
+    )
+
+
+def _incremental_final_patch_approval(
+    *,
+    stage: Literal["implementation", "testing", "repair"],
+) -> ApprovalDecision:
+    return ApprovalDecision(
+        interrupt_id=_patch_interrupt_id(stage),
+        decision_type="approve",
+        comment="All single-file patches were approved and applied incrementally.",
+        decided_by="workflow",
+        auto=True,
+        decision_source="incremental_file_approvals",
+        presented_to_user=False,
+    )
+
+
+def _incremental_last_attempt_error(attempts: list[dict[str, object]]) -> str:
+    for attempt in reversed(attempts):
+        error = attempt.get("error")
+        if error:
+            return str(error)
+    return "single-file patch validation failed"
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _run_relative_path(path: Path, *, run_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(run_dir.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _path_slug(path: Path) -> str:
+    raw = path.as_posix().replace("/", "_").replace("\\", "_")
+    return "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in raw)[:120] or "target"
+
+
 def _approval_feedback_limit_result(
     *,
     stage: str,
@@ -725,7 +2516,7 @@ def _implementation_handler(
                 stage="implementation",
                 message="正在读取公开需求和可见源码，准备生成实现计划",
             )
-            request = PlanGenerationService().create_implementation_request(context)
+            request = _planner_for_context(context).create_implementation_request(context)
         except Exception as exc:
             result = _llm_generation_failed_result(
                 stage="implementation",
@@ -774,16 +2565,16 @@ def _run_implementation_with_approval(
     request: ImplementationRequest,
     approval_console: ApprovalConsoleLike,
 ) -> StageResult:
-    planner = PlanGenerationService()
+    planner = _planner_for_context(context)
     started_at = utc_timestamp()
     for review_round in range(1, _max_review_rounds(context) + 1):
+        plan_preview = service.prepare_plan_review(request)
+        if plan_preview.result is not None:
+            return plan_preview.result
+        if plan_preview.payload is None:
+            raise RuntimeError("implementation plan approval payload missing")
         plan_review = _implementation_plan_review(context, request)
         if _should_prompt_for_approval(context, plan_review):
-            plan_preview = service.prepare_plan_review(request)
-            if plan_preview.result is not None:
-                return plan_preview.result
-            if plan_preview.payload is None:
-                raise RuntimeError("implementation plan approval payload missing")
             plan_review = _prompt_approval(
                 context,
                 plan_preview.payload,
@@ -812,6 +2603,42 @@ def _run_implementation_with_approval(
             request = reviewed
         else:
             request = replace(request, plan_review=plan_review)
+
+        if _supports_incremental_patch_generation(planner, "implementation"):
+            incremental = _generate_and_apply_incremental_patches(
+                context,
+                stage="implementation",
+                service=service,
+                planner=planner,
+                plan=request.plan,
+                approval_template=request.approval,
+                approval_console=approval_console,
+            )
+            if isinstance(incremental, StageResult):
+                return incremental
+            request = replace(
+                request,
+                patch_draft=_combine_implementation_patch_drafts(
+                    request.plan,
+                    incremental.drafts,
+                ),
+                alternate_patch_drafts=[],
+            )
+            approved_hash = _write_final_incremental_patch_artifacts(
+                context,
+                stage="implementation",
+                service=service,
+                plan=request.plan,
+                draft=request.patch_draft,
+                started_at=started_at,
+            )
+            if isinstance(approved_hash, StageResult):
+                return approved_hash
+            return service.apply_prepared_patch(
+                request,
+                approval=_incremental_final_patch_approval(stage="implementation"),
+                approved_patch_sha256=approved_hash,
+            )
 
         request = _generate_implementation_patch_request(
             context,
@@ -878,7 +2705,7 @@ def _testing_handler(
                 stage="testing",
                 message="正在根据公开需求、实现产物和可见源码设计自测用例",
             )
-            request = PlanGenerationService().create_testing_request(context)
+            request = _planner_for_context(context).create_testing_request(context)
         except Exception as exc:
             result = _llm_generation_failed_result(
                 stage="testing",
@@ -928,7 +2755,7 @@ def _run_testing_with_approval(
     request: TestingRequest,
     approval_console: ApprovalConsoleLike,
 ) -> StageResult:
-    planner = PlanGenerationService()
+    planner = _planner_for_context(context)
     started_at = utc_timestamp()
     for review_round in range(1, _max_review_rounds(context) + 1):
         plan_preview = service.prepare_plan_review(request)
@@ -962,6 +2789,56 @@ def _run_testing_with_approval(
             action="review_test_plan",
             approval=plan_review,
         )
+        if _supports_incremental_patch_generation(planner, "testing"):
+            incremental = _generate_and_apply_incremental_patches(
+                context,
+                stage="testing",
+                service=service,
+                planner=planner,
+                plan=request.plan,
+                approval_template=request.patch_approval,
+                approval_console=approval_console,
+            )
+            if isinstance(incremental, StageResult):
+                return incremental
+            request = replace(
+                request,
+                patch_draft=_combine_testing_patch_drafts(
+                    request.plan,
+                    incremental.drafts,
+                ),
+                alternate_patch_drafts=[],
+                patch_approval=_incremental_final_patch_approval(stage="testing"),
+            )
+            approved_hash = _write_final_incremental_patch_artifacts(
+                context,
+                stage="testing",
+                service=service,
+                plan=request.plan,
+                draft=request.patch_draft,
+                started_at=started_at,
+            )
+            if isinstance(approved_hash, StageResult):
+                return approved_hash
+            patch_approval = _incremental_final_patch_approval(stage="testing")
+            request = replace(request, patch_approval=patch_approval)
+            command_preview = service.apply_patch_and_prepare_command(
+                request,
+                patch_approval=patch_approval,
+                approved_patch_sha256=approved_hash,
+            )
+            if command_preview.result is not None:
+                return command_preview.result
+            if command_preview.payload is None:
+                raise RuntimeError("testing command approval payload missing")
+            command_approval = (
+                _prompt_approval(context, command_preview.payload, approval_console)
+                if _should_prompt_for_approval(context, request.command_approval)
+                else _effective_approval(context, request.command_approval)
+            )
+            request = replace(request, command_approval=command_approval)
+            return service.run_prepared_command(request, command_approval=command_approval)
+
         request = _generate_testing_patch_request(
             context,
             request,
@@ -1087,7 +2964,10 @@ def _debugging_handler(
     context: RunContext,
     approval_console: ApprovalConsoleLike,
 ) -> StageHandler:
-    service = DebuggingService(run_context=context)
+    service = DebuggingService(
+        run_context=context,
+        analysis_provider=_planner_for_context(context),
+    )
 
     def run(state: AgentState) -> dict[str, Any]:
         emit_progress(
@@ -1148,7 +3028,7 @@ def _repair_handler(
                 stage="repair",
                 message="正在读取调试证据和失败日志，准备生成修复计划",
             )
-            request = PlanGenerationService().create_repair_request(context)
+            request = _planner_for_context(context).create_repair_request(context)
         except Exception as exc:
             result = _llm_generation_failed_result(
                 stage="repair",
@@ -1197,7 +3077,7 @@ def _run_repair_with_approval(
     request: RepairRequest,
     approval_console: ApprovalConsoleLike,
 ) -> StageResult:
-    planner = PlanGenerationService()
+    planner = _planner_for_context(context)
     started_at = utc_timestamp()
     for review_round in range(1, _max_review_rounds(context) + 1):
         plan_preview = service.prepare_plan_review(request)
@@ -1239,6 +3119,56 @@ def _run_repair_with_approval(
             action="review_repair_plan",
             approval=plan_review,
         )
+        if _supports_incremental_patch_generation(planner, "repair"):
+            incremental = _generate_and_apply_incremental_patches(
+                context,
+                stage="repair",
+                service=service,
+                planner=planner,
+                plan=request.plan,
+                approval_template=request.patch_approval,
+                approval_console=approval_console,
+            )
+            if isinstance(incremental, StageResult):
+                return incremental
+            request = replace(
+                request,
+                patch_draft=_combine_repair_patch_drafts(
+                    request.plan,
+                    incremental.drafts,
+                ),
+                alternate_patch_drafts=[],
+                patch_approval=_incremental_final_patch_approval(stage="repair"),
+            )
+            approved_hash = _write_final_incremental_patch_artifacts(
+                context,
+                stage="repair",
+                service=service,
+                plan=request.plan,
+                draft=request.patch_draft,
+                started_at=started_at,
+            )
+            if isinstance(approved_hash, StageResult):
+                return approved_hash
+            patch_approval = _incremental_final_patch_approval(stage="repair")
+            request = replace(request, patch_approval=patch_approval)
+            command_preview = service.apply_patch_and_prepare_command(
+                request,
+                patch_approval=patch_approval,
+                approved_patch_sha256=approved_hash,
+            )
+            if command_preview.result is not None:
+                return command_preview.result
+            if command_preview.payload is None:
+                raise RuntimeError("repair command approval payload missing")
+            command_approval = (
+                _prompt_approval(context, command_preview.payload, approval_console)
+                if _should_prompt_for_approval(context, request.command_approval)
+                else _effective_approval(context, request.command_approval)
+            )
+            request = replace(request, command_approval=command_approval)
+            return service.run_prepared_command(request, command_approval=command_approval)
+
         request = _generate_repair_patch_request(
             context,
             request,

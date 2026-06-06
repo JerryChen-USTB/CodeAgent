@@ -217,6 +217,35 @@ def test_validate_flags_test_deletion_skip_and_hardcoding_risks(tmp_path) -> Non
     assert {"test_deletion", "skip_or_xfail", "hardcoded_case"} <= risk_kinds
 
 
+def test_validate_treats_product_literal_branch_as_low_risk(tmp_path) -> None:
+    project = tmp_path / "project"
+    _write(project / "src" / "app.py", "def label(value):\n    return 'other'\n")
+    patch_path = _patch(
+        tmp_path / "product_literal_branch.diff",
+        """--- a/src/app.py
++++ b/src/app.py
+@@ -1,2 +1,4 @@
+ def label(value):
++    if value == "done":
++        return "completed"
+     return 'other'
+""",
+    )
+    service = PatchService()
+
+    validation = service.validate_patch(patch_path, project)
+    hardcoded = [
+        finding
+        for finding in validation.risk_report.findings
+        if finding.kind == "hardcoded_case"
+    ]
+
+    assert validation.valid is True
+    assert validation.risk_report.level == "medium"
+    assert hardcoded
+    assert {finding.severity for finding in hardcoded} == {"low"}
+
+
 def test_validate_flags_large_patch_as_high_risk(tmp_path) -> None:
     project = tmp_path / "project"
     project.mkdir()

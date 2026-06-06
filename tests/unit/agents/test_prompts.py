@@ -38,6 +38,9 @@ def test_agent_prompts_contain_safety_schema_and_audit_rules() -> None:
         assert "schema" in system
         assert "do not claim tests pass" in system
         assert "audit" in system
+        assert "simplified chinese" in system
+        assert "简体中文" in prompt.system
+        assert "Preserve code identifiers" in prompt.system
 
 
 def test_prompt_registry_renders_role_context_without_missing_tokens() -> None:
