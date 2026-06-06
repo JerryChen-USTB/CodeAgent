@@ -22,8 +22,9 @@ declared in `selfbuilt_benchmark.yaml` and `meeting_room_demo_benchmark.yaml`.
 
 - Each case starts from an empty `workspace/`.
 - The agent must implement the project from the input materials.
-- The `input/` directory is the primary task context and contains natural
-  requirements, PRD, user stories, design models, and acceptance criteria.
+- The `input/` directory is the primary task context. Each current self-built
+  case keeps exactly four simplified-Chinese materials: PRD, user stories,
+  design model, and acceptance criteria.
 - The `oracle_tests/` directory is hidden from the agent and is used only by
   the benchmark runner.
 - No case uses `expected_result.json`; success criteria are declared in
@@ -43,34 +44,19 @@ benchmark/selfbuilt/
     05_meeting_room_booking/
 ```
 
-Most cases use:
+Each current case uses:
 
 ```text
 case/
   case.yaml
   input/
-    requirements.md
-    prd.md
-    user_stories.yaml
+    PRD.md
+    user_stories.md
     design_model.md
     acceptance_criteria.md
   workspace/
   oracle_tests/
 ```
-
-`01_todo_manager` has been upgraded as the first richer-interaction case. It now
-keeps only four simplified-Chinese input materials:
-
-```text
-input/
-  PRD.md
-  user_stories.md
-  design_model.md
-  acceptance_criteria.md
-```
-
-The Todo Manager benchmark now requires a simple line-oriented TUI as the default
-product interaction, while hidden oracle tests drive the program through stdin.
 
 `workspace/` should remain empty in the original benchmark copy. A runner must
 copy the entire case to a clean temporary run directory before letting the agent
@@ -78,15 +64,21 @@ write code or before running oracle tests. The agent and test command operate
 only on the copied workspace; the original case remains reusable for later
 benchmark runs.
 
+The first three cases require simple line-oriented TUI interaction that hidden
+oracle tests can drive through stdin/stdout. The fourth case requires a local
+browser-accessible Web UI implemented with the Python standard library. The
+fifth case is the Flask upgrade: it must provide both a browser Web UI and a
+stable JSON API.
+
 ## Case Summary
 
 | Case | Difficulty | Type | Persistence |
 | --- | --- | --- | --- |
 | `01_todo_manager` | Introductory | TUI | JSON |
-| `02_personal_ledger` | Easy | CLI | JSON, CSV export |
-| `03_student_gradebook` | Medium | CLI | CSV import and report export |
-| `04_library_lending` | Medium-high | CLI | SQLite |
-| `05_meeting_room_booking` | High | Flask API | SQLite |
+| `02_personal_ledger` | Easy | TUI | JSON |
+| `03_student_gradebook` | Medium | TUI | JSON |
+| `04_library_lending` | Medium-high | Standard-library Web UI | SQLite |
+| `05_meeting_room_booking` | High | Flask Web UI + JSON API | SQLite |
 
 ## Manual Initial Check
 
@@ -110,3 +102,4 @@ same command is the final verification step.
 |---|---|---|
 | 2026-06-03 | Strengthened copy-to-clean-run-directory rule for self-built cases. | Keep original empty workspaces and hidden oracle tests reusable across repeated benchmark runs. |
 | 2026-06-05 | Upgraded `01_todo_manager` to four richer Chinese materials and TUI-based hidden oracle tests. | Make the first self-built case require realistic interactive software behavior instead of one-command-at-a-time usage. |
+| 2026-06-06 | Synchronized all five cases to four Chinese input materials; upgraded cases 02 and 03 to TUI, case 04 to standard-library Web UI, and case 05 to Flask Web UI + JSON API. | Keep the benchmark documentation aligned with the current case materials, case configs, and hidden oracle expectations. |

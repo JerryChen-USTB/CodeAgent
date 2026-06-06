@@ -97,6 +97,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -Cas
 
 本次整理后的 case 可以映射到需求规格中的关键输入输出规则：
 
+说明：本节描述的是 `benchmark/cases/` 下 HumanEval、MBPP、QuixBugs、BugsInPy 等公共样例的结构；`benchmark/selfbuilt/` 下的自建案例已经统一为 `PRD.md`、`user_stories.md`、`design_model.md`、`acceptance_criteria.md` 四份中文输入材料，详见 `docs/test/自建benchmark案例设计报告.md`。
+
 | 需求规格内容 | 本次实现方式 |
 | --- | --- |
 | FR-73 Benchmark 配置 | `benchmark/benchmark.yaml` 汇总所有案例 |

@@ -91,7 +91,7 @@ benchmark 成功条件现在同时要求：
 3. runner-only 隐藏 oracle 未失败。
 4. 原始 case 模板未被污染。
 
-为降低课程现场演示成本，新增 `benchmark/selfbuilt/meeting_room_demo_benchmark.yaml`，只启用会议室预约 API 一个 case。完整 `selfbuilt_benchmark.yaml` 仍用于最终验收或显式回归。
+为降低课程现场演示成本，新增 `benchmark/selfbuilt/meeting_room_demo_benchmark.yaml`，只启用会议室预约系统一个 case。当前该 case 是 Flask Web UI + JSON API；完整 `selfbuilt_benchmark.yaml` 仍用于最终验收或显式回归。
 
 ### 2.7 模型预算与错误脱敏
 

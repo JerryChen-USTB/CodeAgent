@@ -1,7 +1,7 @@
 schema_version: 1
 name: codeagent_meeting_room_demo_benchmark
 benchmark_id: codeagent_meeting_room_demo_benchmark
-description: Cost-controlled single-case demo benchmark for the meeting-room booking Flask API.
+description: Cost-controlled single-case demo benchmark for the meeting-room booking Flask Web UI and JSON API.
 output_dir: ../../codeagent_runs/benchmarks/selfbuilt
 case_root: cases
 default_agent_visible_paths:
@@ -14,5 +14,5 @@ cases:
     config: cases/05_meeting_room_booking/case.yaml
     enabled: true
     difficulty: high
-    project_type: flask_api
+    project_type: flask_web_ui
     dependency_note: "Agent should create workspace/requirements.txt with Flask dependency during implementation."

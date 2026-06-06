@@ -580,11 +580,11 @@ python -m mypy codeagent tests
 - Config: `benchmark/selfbuilt/selfbuilt_benchmark.yaml`.
 - Reuse rule: every run copies the selected original self-built case to a clean run workspace first. The original empty `workspace/` and hidden `oracle_tests/` remain untouched so the case can be reused.
 - Cases:
-  - `01_todo_manager`: CLI + JSON persistence.
-  - `02_personal_ledger`: CLI + JSON + CSV export.
-  - `03_student_gradebook`: CLI + CSV import/export and grade stats.
-  - `04_library_lending`: CLI + SQLite lending workflow.
-  - `05_meeting_room_booking`: Flask API + SQLite; requires generated Flask dependency.
+  - `01_todo_manager`: stdin/stdout-drivable TUI + JSON persistence.
+  - `02_personal_ledger`: stdin/stdout-drivable TUI + JSON ledger persistence.
+  - `03_student_gradebook`: stdin/stdout-drivable TUI + JSON gradebook persistence.
+  - `04_library_lending`: standard-library Web UI + SQLite lending workflow.
+  - `05_meeting_room_booking`: Flask Web UI + JSON API + SQLite; requires generated Flask dependency.
 - Execution order: run from easiest to hardest after public suite passes.
 - Hidden oracle policy: expose only `input/` and copied `workspace/`; runner alone uses `oracle_tests/`.
 - Success rules: created package/API matches input materials and all hidden oracle tests pass in isolated copy.

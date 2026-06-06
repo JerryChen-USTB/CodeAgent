@@ -133,10 +133,11 @@ python -m codeagent benchmark --config benchmark/selfbuilt/meeting_room_demo_ben
 python -m codeagent benchmark --config benchmark/selfbuilt/selfbuilt_benchmark.yaml
 ```
 
-`meeting_room_demo_benchmark.yaml` runs only the meeting-room Flask API case and
-is the recommended low-cost live demo. The full `selfbuilt_benchmark.yaml` runs
-all five self-built cases and should be reserved for final acceptance or explicit
-regression runs because it costs more time and tokens.
+`meeting_room_demo_benchmark.yaml` runs only the meeting-room Flask Web UI + JSON
+API case and is the recommended low-cost live demo. The full
+`selfbuilt_benchmark.yaml` runs all five self-built cases and should be reserved
+for final acceptance or explicit regression runs because it costs more time and
+tokens.
 
 The BugsInPy case is environment-gated. If WSL/conda/Python 3.8.3 readiness is
 missing, the benchmark records an explicit blocker instead of silently skipping it.

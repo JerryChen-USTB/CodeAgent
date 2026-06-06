@@ -16,7 +16,7 @@
 4. 图书借阅管理系统。
 5. 会议室预约系统。
 
-新版目标是让 Agent 真正从空项目开始，根据充分的需求、PRD、用户故事、设计模型和验收标准完成实现、测试、调试和修复。
+新版目标是让 Agent 真正从空项目开始，根据充分的 PRD、用户故事、设计模型和验收标准完成实现、测试、调试和修复。当前 5 个案例已经统一收敛为四份简体中文输入材料，并按案例难度逐步提高交互要求。
 
 ## 2. 目录结构
 
@@ -32,22 +32,7 @@ benchmark/selfbuilt/
     05_meeting_room_booking/
 ```
 
-多数案例结构为：
-
-```text
-case/
-  case.yaml
-  input/
-    requirements.md
-    prd.md
-    user_stories.yaml
-    design_model.md
-    acceptance_criteria.md
-  workspace/
-  oracle_tests/
-```
-
-其中 `01_todo_manager` 已作为首个交互体验增强案例升级为四份中文输入材料：
+当前每个案例结构为：
 
 ```text
 case/
@@ -70,14 +55,14 @@ case/
 
 ## 3. 与需求规格的对应
 
-需求规格说明书要求实现阶段至少具备项目骨架，以及自然语言需求、PRD、用户故事、API 规格或设计模型中的一种。新版自建案例采用更充分的输入形式：
+需求规格说明书要求实现阶段至少具备项目骨架，以及自然语言需求、PRD、用户故事、API 规格或设计模型中的一种。当前自建案例采用更充分且统一的输入形式：
 
 | SRS 输入材料 | 新版自建案例做法 |
 | --- | --- |
 | 项目骨架 | `workspace/` 作为空项目目录 |
-| 自然语言需求 | 旧版案例使用 `input/requirements.md`；`01_todo_manager` 已合并进 `input/PRD.md` |
-| PRD | `input/prd.md`；`01_todo_manager` 使用更完整的 `input/PRD.md` |
-| 用户故事 | `input/user_stories.yaml`；`01_todo_manager` 使用自然语言版 `input/user_stories.md` |
+| 自然语言需求 | 合并进 `input/PRD.md`，以业务背景、场景和功能需求形式呈现 |
+| PRD | `input/PRD.md`，每个案例均使用更完整的中文产品需求文档 |
+| 用户故事 | `input/user_stories.md`，使用详细自然语言描述用户操作场景 |
 | 设计模型 | `input/design_model.md`，包含 Mermaid 类图、活动图、状态图或时序图 |
 | 验收条件 | `input/acceptance_criteria.md` |
 
@@ -88,12 +73,12 @@ case/
 | case_id | 难度 | 项目形态 | 主要能力 |
 | --- | --- | --- | --- |
 | `01_todo_manager` | 入门 | TUI + JSON | 会话式任务增删改查、状态过滤、文件持久化 |
-| `02_personal_ledger` | 简单 | CLI + JSON/CSV | 记账、月度汇总、分类统计、CSV 导出 |
-| `03_student_gradebook` | 中等 | CLI + CSV | 成绩导入、总评计算、等级转换、班级统计 |
-| `04_library_lending` | 中高 | CLI + SQLite | 图书入库、读者注册、借书、还书、逾期查询 |
-| `05_meeting_room_booking` | 较高 | Flask API + SQLite | 会议室管理、预约创建、冲突检测、取消预约 |
+| `02_personal_ledger` | 简单 | TUI + JSON | 记账、流水查询、月度汇总、分类统计、编辑删除、持久化 |
+| `03_student_gradebook` | 中等 | TUI + JSON | 学生、课程、成绩管理，查询统计，排名与数据持久化 |
+| `04_library_lending` | 中高 | 标准库 Web UI + SQLite | 浏览器表单完成图书入库、读者注册、借书、还书、库存和逾期查询 |
+| `05_meeting_room_booking` | 较高 | Flask Web UI + JSON API + SQLite | 浏览器预约会议室，同时保留 API 创建、查询、冲突检测和取消预约 |
 
-前 4 个案例只使用 Python 标准库。会议室预约系统需要 Flask，依赖要求写入输入材料，由 Agent 在实现时自行创建 `requirements.txt`。
+前 4 个案例只使用 Python 标准库。会议室预约系统需要 Flask，依赖要求写入输入材料，由 Agent 在实现时自行创建 `workspace/requirements.txt`。
 
 ## 5. 评测方式
 
@@ -125,11 +110,12 @@ python -m unittest discover -s oracle_tests
 
 ## 7. 结论
 
-新版自建 benchmark 更符合需求规格说明书对实现阶段输入材料的要求，也更适合展示软件工程智能体从空项目开始完成常规软件开发任务的能力。5 个案例覆盖 CLI、文件处理、CSV、SQLite 和 Web API 等常见项目形态，难度递增且主题普通，便于课程展示和批量评测。
+新版自建 benchmark 更符合需求规格说明书对实现阶段输入材料的要求，也更适合展示软件工程智能体从空项目开始完成常规软件开发任务的能力。5 个案例覆盖 TUI、文件持久化、数据校验、SQLite、本地 Web UI、Flask Web UI 和 JSON API 等常见项目形态，难度递增且主题普通，便于课程展示和批量评测。
 
 ## 实现对齐变更记录
 
 | 日期 | 变更 | 原因 | 影响 |
 |---|---|---|---|
 | 2026-06-03 | 明确自建 benchmark 必须复制整个原始 case 到干净副本后运行，原始空 `workspace/` 和 `oracle_tests/` 保持不变。 | 保证自建案例可重复利用并维持隐藏测试隔离。 | 不改变案例验收标准；后续 runner 需在副本中执行 Agent 和 oracle tests。 |
-| 2026-06-05 | 优化 `01_todo_manager`：输入材料收敛为 PRD、用户故事、设计模型、验收标准四份中文材料，并将隐藏测试改为 stdin 驱动的 TUI 验收。 | 增强自建 benchmark 的输入充分性和交互真实感，避免只奖励一次一个命令的 CLI 实现。 | Todo Manager 的 Agent 可见输入和 oracle 约束发生变化；其他四个自建案例暂不调整。 |
+| 2026-06-05 | 优化 `01_todo_manager`：输入材料收敛为 PRD、用户故事、设计模型、验收标准四份中文材料，并将隐藏测试改为 stdin 驱动的 TUI 验收。 | 增强自建 benchmark 的输入充分性和交互真实感，避免只奖励一次一个命令的 CLI 实现。 | Todo Manager 的 Agent 可见输入和 oracle 约束先行变化，作为后续案例统一升级的参考样板。 |
+| 2026-06-06 | 同步优化 `02_personal_ledger`、`03_student_gradebook`、`04_library_lending`、`05_meeting_room_booking`：全部统一为四份中文输入材料；案例二、三要求 TUI；案例四要求标准库 Web UI；案例五要求 Flask Web UI + JSON API。 | 防止不同案例输入结构和交互要求不一致，让 benchmark 更接近真实软件使用体验。 | 更新 case 配置、聚合配置、oracle 测试和开发团队演示手册；隐藏测试关注交互入口、持久化、异常处理和核心业务流程。 |

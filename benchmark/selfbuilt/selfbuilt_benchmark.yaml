@@ -18,12 +18,12 @@ cases:
     config: cases/02_personal_ledger/case.yaml
     enabled: true
     difficulty: easy
-    project_type: cli
+    project_type: tui
   - case_id: 03_student_gradebook
     config: cases/03_student_gradebook/case.yaml
     enabled: true
     difficulty: medium
-    project_type: cli
+    project_type: tui
   - case_id: 04_library_lending
     config: cases/04_library_lending/case.yaml
     enabled: true

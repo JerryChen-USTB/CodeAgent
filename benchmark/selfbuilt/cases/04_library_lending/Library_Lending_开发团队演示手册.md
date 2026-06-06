@@ -557,7 +557,7 @@ Set-Location $DemoRoot
 
 ### 10.1 为什么本案例不用 Flask
 
-本案例特意要求标准库 Web UI，用 `http.server` 和 `sqlite3` 即可。这样它和第五个 Flask API 案例形成区分：第四案考察浏览器页面和表单交互，第五案考察 Flask API。
+本案例特意要求标准库 Web UI，用 `http.server` 和 `sqlite3` 即可。这样它和第五个 Flask Web UI + JSON API 案例形成区分：第四案考察不依赖第三方框架的浏览器页面和表单交互，第五案考察 Flask 应用工厂、浏览器页面和稳定 JSON API。
 
 ### 10.2 如果浏览器打不开页面
 
