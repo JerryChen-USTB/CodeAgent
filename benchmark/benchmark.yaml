@@ -1,7 +1,7 @@
 schema_version: 1
 name: codeagent_course_benchmark
 description: Lightweight benchmark inputs for the course software-engineering agent
-default_output_dir: codeagent_runs/benchmark
+output_dir: ../codeagent_runs/benchmarks/public
 cases:
   - case_id: humaneval_000_has_close_elements
     config: cases/humaneval_000_has_close_elements/task_config.yaml

@@ -112,7 +112,7 @@ CSV 表头固定为：
 id,date,type,category,amount,note
 ```
 
-导出顺序与 `list` 相同。
+导出顺序保持 stored/addition order，即 JSON 文件中记录的存储/添加顺序，不受 `list` 的日期排序规则影响。
 
 ## 5. 数据文件规则
 
@@ -130,3 +130,8 @@ id,date,type,category,amount,note
 - 金额小于等于 0 或不能解析：包含 `invalid amount`。
 - 分类为空：包含 `category is required`。
 - JSON 文件损坏：包含 `invalid ledger file`。
+
+## 7. CSV Export Ordering Clarification
+
+- CSV export must preserve the ledger's stored record order, which is the order records were added and persisted in the JSON file.
+- Do not re-sort CSV rows by date or category during export.

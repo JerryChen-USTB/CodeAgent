@@ -1,8 +1,9 @@
 param(
-    [string]$CaseDir = "benchmark\cases\bugsinpy_black_001",
+    [string]$CaseDir = "",
     [string]$Project = "black",
     [string]$CondaEnv = "codeagent-bugsinpy-py383",
     [string]$TestTimeout = "300s",
+    [int]$WslCommandTimeoutSeconds = 60,
     [switch]$SkipCompile,
     [switch]$AllowTestFailure
 )
@@ -10,6 +11,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($CaseDir)) {
+    throw "CaseDir is required. Pass a clean copied benchmark case directory."
+}
 $CasePath = Join-Path $RepoRoot $CaseDir
 $CaseId = Split-Path -Path $CasePath -Leaf
 $ProjectPath = Join-Path $CasePath ("workspace\" + $Project)
@@ -23,16 +27,107 @@ function ConvertTo-WslPath {
 
     $Resolved = (Resolve-Path -Path $Path).Path
     $WindowsPathArg = $Resolved -replace "\\", "/"
-    $Converted = & wsl -- wslpath -a $WindowsPathArg
-    if ($LASTEXITCODE -ne 0) {
+    $Converted = Invoke-WslPath -WindowsPathArg $WindowsPathArg
+    if ([string]::IsNullOrWhiteSpace($Converted)) {
         throw "Failed to convert path to WSL path: $Resolved"
     }
-    return (($Converted | Select-Object -First 1).Trim())
+    return $Converted
+}
+
+function Invoke-WslPath {
+    param(
+        [string]$WindowsPathArg,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = "wsl"
+    $EscapedPath = $WindowsPathArg.Replace('"', '\"')
+    $StartInfo.Arguments = "-- wslpath -a `"$EscapedPath`""
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $Process.Kill() } catch {}
+        throw "WSL path conversion timed out after $TimeoutSeconds seconds."
+    }
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    if ($Process.ExitCode -ne 0) {
+        throw "Failed to convert path to WSL path: $Stderr"
+    }
+    return (($Stdout | Select-Object -First 1).Trim())
+}
+
+function Test-WslBashAvailable {
+    param([int]$TimeoutSeconds = 20)
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = "wsl"
+    $StartInfo.Arguments = "-- bash -lc `"echo CODEAGENT_WSL_READY`""
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $Process.Kill() } catch {}
+        throw "WSL bash preflight timed out after $TimeoutSeconds seconds."
+    }
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    if ($Process.ExitCode -ne 0 -or -not $Stdout.Contains("CODEAGENT_WSL_READY")) {
+        throw "WSL bash preflight failed: $Stderr"
+    }
+}
+
+function Invoke-WslBash {
+    param(
+        [string]$InputText,
+        [int]$TimeoutSeconds
+    )
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = "wsl"
+    $StartInfo.Arguments = "-- bash -lc `"tr -d '\r' | bash -s`""
+    $StartInfo.RedirectStandardInput = $true
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    $Process.StandardInput.Write($InputText)
+    $Process.StandardInput.Close()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $Process.Kill() } catch {}
+        throw "WSL bash command timed out after $TimeoutSeconds seconds."
+    }
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    if (-not [string]::IsNullOrWhiteSpace($Stdout)) {
+        Write-Host $Stdout
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Stderr)) {
+        Write-Host $Stderr
+    }
+    return $Process.ExitCode
 }
 
 $RepoWsl = ConvertTo-WslPath $RepoRoot
 $ProjectWsl = ConvertTo-WslPath $ProjectPath
 $SkipCompileFlag = if ($SkipCompile) { "1" } else { "0" }
+Test-WslBashAvailable
 
 $BashCommand = @"
 set -euo pipefail
@@ -93,8 +188,7 @@ echo "[bugsinpy] relevant test passed"
 "@
 
 $BashCommand = $BashCommand -replace "`r`n", "`n"
-$BashCommand | wsl -- bash -lc "tr -d '\r' | bash -s"
-$ExitCode = $LASTEXITCODE
+$ExitCode = Invoke-WslBash -InputText $BashCommand -TimeoutSeconds $WslCommandTimeoutSeconds
 
 if ($ExitCode -ne 0 -and $AllowTestFailure) {
     Write-Host "[bugsinpy] test failed as expected for the initial buggy version." -ForegroundColor Yellow

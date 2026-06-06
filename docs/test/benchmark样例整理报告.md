@@ -78,15 +78,15 @@ case_id/
 当前项目已改为优先使用 BugsInPy 官方 checkout 流程。由于本项目运行在 Windows 上，官方 Bash 脚本通过 WSL 执行，Python 版本由 conda 环境 `codeagent-bugsinpy-py383` 提供：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\prepare_bugsinpy_wsl_conda.ps1 -CaseDir benchmark\cases\bugsinpy_black_001
+powershell -ExecutionPolicy Bypass -File scripts\prepare_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir>
 ```
 
 官方 `bugsinpy-checkout` 会先 checkout fixed commit 复制 regression test，再 checkout buggy commit，并把测试文件放回 buggy workspace。因此，`run_test.sh` 中的测试名可能在纯 buggy commit 中不存在，但在官方 checkout 后的 workspace 中存在。
 
-官方 checkout 会在 `benchmark/cases/bugsinpy_black_001/workspace/black/` 生成项目目录，并包含 `bugsinpy_bug.info`、`bugsinpy_run_test.sh`、`bugsinpy_requirements.txt` 等 BugsInPy 官方辅助文件。测试运行通过 `scripts/run_bugsinpy_wsl_conda.ps1` 在 WSL conda 环境中执行官方 compile/test。为避免 WSL 在 Windows 盘 `/mnt/d` 上创建大量 venv 小文件，测试脚本会先把 workspace 复制到 WSL Linux 文件系统的临时运行目录，再调用官方脚本：
+官方 checkout 会在运行副本的 `<copied_case_dir>/workspace/black/` 生成项目目录，并包含 `bugsinpy_bug.info`、`bugsinpy_run_test.sh`、`bugsinpy_requirements.txt` 等 BugsInPy 官方辅助文件。测试运行通过 `scripts/run_bugsinpy_wsl_conda.ps1` 在 WSL conda 环境中执行官方 compile/test。为避免 WSL 在 Windows 盘 `/mnt/d` 上创建大量 venv 小文件，测试脚本会先把运行副本的 workspace 复制到 WSL Linux 文件系统的临时运行目录，再调用官方脚本：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir benchmark\cases\bugsinpy_black_001
+powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -CaseDir <copied_case_dir>
 ```
 
 该命令内部调用官方 `bugsinpy-compile` 和 `bugsinpy-test`。初始 buggy 版本应为预期失败；智能体修复后去掉 `-AllowTestFailure`，官方相关测试通过即可判定样例修复成功。
@@ -130,12 +130,13 @@ powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -Cas
 
 1. 读取 `benchmark/benchmark.yaml`。
 2. 过滤 `enabled: true` 的案例。
-3. 对每个案例读取 `task_config.yaml`。
-4. 将 `agent_visibility.visible_paths` 提供给 Agent。
-5. 按 `stages` 执行实现、测试、调试和修复流程。
-6. 执行 `test_command.command` 验证结果。
-7. 根据 `expected_result.json` 生成每例结果。
-8. 汇总生成 `benchmark_summary.md` 和 `benchmark_summary.json`。
+3. 将每个原始 case 整体复制到干净的本次运行目录，原始 case 目录不得直接修改。
+4. 对运行副本读取 `task_config.yaml`。
+5. 将运行副本中的 `agent_visibility.visible_paths` 提供给 Agent，继续隐藏 `evaluation/` 和 `expected_result.json`。
+6. 按 `stages` 执行实现、测试、调试和修复流程，所有 patch、测试和日志都落在运行副本与 run_dir 中。
+7. 执行 `test_command.command` 验证结果。
+8. 根据 `expected_result.json` 生成每例结果。
+9. 汇总生成 `benchmark_summary.md` 和 `benchmark_summary.json`。
 
 函数级案例中，`evaluation/` 应作为隐藏评测材料；QuixBugs 修复案例中，`workspace/tests/` 是复现失败所需输入，可以对 Agent 可见，但应禁止 Agent 修改测试文件。
 
@@ -143,11 +144,17 @@ powershell -ExecutionPolicy Bypass -File scripts\run_bugsinpy_wsl_conda.ps1 -Cas
 
 1. HumanEval 的 `canonical_solution`、MBPP 的 `code`、QuixBugs 的 `correct_python_programs` 没有写入 Agent 可见输入，避免答案泄露。
 2. 当前案例全部使用 Python 标准库 `unittest`，避免依赖 pytest。
-3. 当前 `workspace/` 是可编辑目录，运行 Agent 前建议复制到临时 run 目录，避免 benchmark 原始样例被直接改坏。
+3. 当前 `workspace/` 是可编辑目录，运行 Agent 前必须把整个 case 复制到干净临时 run 目录，Agent 和测试命令只操作副本，避免 benchmark 原始样例被直接改坏并保证后续可重复评测。
 4. QuixBugs 的 `before_test.log` 是初始失败日志，只用于调试输入；最终结果应以重新执行测试命令为准。
-5. BugsInPy 已具备 WSL + conda 运行入口，但默认仍禁用；正式批量评测时建议由 runner 为每次实验复制独立 workspace，避免修复过程污染原始样例。
+5. BugsInPy 已具备 WSL + conda 运行入口，但默认仍禁用；正式批量评测时由 runner 为每次实验复制独立 case/workspace，避免修复过程污染原始样例。
 6. SWE-bench Lite 更适合在后续专用 harness 中接入，不建议在当前轻量 benchmark 中强行执行。
 
 ## 9. 结论
 
 本次已将 HumanEval、MBPP、QuixBugs 和部分 BugsInPy 样例整理为符合项目输入形式的 benchmark 目录。其中 6 个案例默认启用，可直接作为课程项目智能体的第一批测试数据；1 个 BugsInPy 案例已接入官方 checkout、compile 和 test 流程，并通过 WSL + conda 提供运行环境，作为真实项目修复扩展入口保留。SWE-bench Lite 暂缓整理，以免在当前阶段引入过高的环境和评测复杂度。
+
+## 实现对齐变更记录
+
+| 日期 | 变更 | 原因 | 影响 |
+|---|---|---|---|
+| 2026-06-03 | 将公共 benchmark runner 流程中的 case 复制要求从建议强化为必须。 | 保证原始样例可重复利用，避免修复过程污染 benchmark 原件。 | 不改变样例内容；后续 runner 需在运行副本中执行 Agent、测试和日志记录。 |

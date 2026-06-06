@@ -13,6 +13,7 @@ Agent 必须从空 `workspace/` 开始创建完整 Python 项目。
 - 包名：`meeting_room_booking`。
 - 必须暴露工厂函数：`create_app(db_path=None)`。
 - 持久化方式：SQLite。
+- 每次数据库操作结束后必须关闭 SQLite 连接；仅使用 `with sqlite3.connect(...) as conn` 不会关闭 `sqlite3.Connection`，应使用显式 `close()`、`try/finally` 或 `contextlib.closing`，确保 Windows 下临时数据库文件不会被连接占用。
 - Agent 需要自行创建 `workspace/requirements.txt`，包含 Flask 依赖，例如 `Flask>=3.0,<4.0`。
 - `db_path=None` 时，默认使用当前工作目录下的 `meeting_rooms.db`。
 

@@ -1,6 +1,7 @@
 schema_version: 1
 name: codeagent_selfbuilt_python_benchmark
 description: Course-specific Python software projects for implementation, testing, debugging, and repair.
+output_dir: ../../codeagent_runs/benchmarks/selfbuilt
 case_root: cases
 default_agent_visible_paths:
   - input
@@ -12,7 +13,7 @@ cases:
     config: cases/01_todo_manager/case.yaml
     enabled: true
     difficulty: introductory
-    project_type: cli
+    project_type: tui
   - case_id: 02_personal_ledger
     config: cases/02_personal_ledger/case.yaml
     enabled: true

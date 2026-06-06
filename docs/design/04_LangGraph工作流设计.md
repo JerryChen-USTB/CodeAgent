@@ -178,7 +178,7 @@ flowchart TD
 
 ## 6. 调试阶段子图
 
-调试阶段包含复现、日志摘要、源码搜索、可疑位置排序、根因分析、修复建议。若没有测试命令，则跳过自动复现，进入基于日志/源码的静态分析路径。
+调试阶段包含复现、日志摘要、源码搜索、可疑位置排序、LLM 根因分析、修复建议。若没有测试命令，则跳过自动复现，进入基于日志/源码的静态分析路径。`D_Debugger` 是调试 Agent 节点：它在静态定位结果之上调用 LLM 生成结构化 `DebuggingAnalysis`，明确输出 `failure_origin`、候选文件、证据、根因、修复策略、置信度、推荐验证命令，以及是否允许后续修复可见测试代码。
 
 ```mermaid
 flowchart TD
@@ -193,7 +193,7 @@ flowchart TD
   D_Reproduce --> D_Parse[解析复现日志]
   D_Static --> D_Parse
   D_Parse --> D_FailureSummary[生成 failure_summary.md]
-  D_FailureSummary --> D_Debugger[调试 Agent 节点]
+  D_FailureSummary --> D_Debugger[调试 Agent 节点\nLLM DebuggingAnalysis]
 
   D_Debugger --> D_NeedTool{需要工具?}
   D_NeedTool -- 搜索错误关键词 --> D_Search[search_code]
@@ -203,7 +203,7 @@ flowchart TD
   D_Read --> D_Debugger
   D_ReadTest --> D_Debugger
 
-  D_NeedTool -- 输出定位 --> D_Fault[生成 fault_localization.json]
+  D_NeedTool -- 输出定位 --> D_Fault[生成 fault_localization.json\nllm_debug_analysis.json]
   D_Fault --> D_RankCheck{Top-N 是否有解释?}
   D_RankCheck -- 否 --> D_Debugger
   D_RankCheck -- 是 --> D_Root[生成 root_cause.md]
@@ -226,9 +226,15 @@ flowchart TD
 | 候选位置超过 5 个且缺少明确证据 | 降低 |
 | 根因只来自推测，没有工具证据 | 降低 |
 
+### 调试阶段故障归因
+
+`DebuggingAnalysis.failure_origin` 用于把失败分为 `product_code`、`generated_test_code`、`mixed`、`test_harness`、`inconclusive` 五类。调试阶段优先读取最新失败证据：如果 repair 后再次失败并回到 debug，先读取 `repair/repair_test_result.json`、`repair/after_test.log`、`repair/repair_report.md`，再回退到 testing 阶段产物，避免旧测试失败污染第二轮修复。
+
+当 LLM 明确判定失败来自可见生成测试代码或测试脚手架，并给出证据时，调试产物可设置 `test_repair_allowed=true`。该许可只传递给 repair 阶段的保守测试修复路径，不代表可以修改隐藏 oracle、evaluation、expected_result、pytest 配置，或通过删除、跳过、弱化断言来“修复”测试。
+
 ## 7. 修复阶段子图
 
-修复阶段根据调试产物生成最终修复计划和最小 patch。patch 审批后应用，再运行 pytest。失败后返回主图，由主图判断是否继续调试/修复闭环。
+修复阶段根据调试产物生成最终修复计划和最小 patch。默认只修产品/源码文件；只有调试阶段 `DebuggingAnalysis` 明确授权 `generated_test_code`、`mixed` 或 `test_harness`，并说明证据时，repair plan 才能声明 `test_repair_allowed=true`，在保守边界内修复可见测试代码本身的错误。patch 审批后应用，再运行 pytest。失败后返回主图，由主图判断是否继续调试/修复闭环。
 
 ```mermaid
 flowchart TD
@@ -243,7 +249,7 @@ flowchart TD
   R_Search --> R_Repairer
 
   R_NeedTool -- 生成修复补丁 --> R_Patch[生成 repair/repair.patch.diff]
-  R_Patch --> R_Risk[检查 patch 风险\n删除测试/跳过断言/硬编码]
+  R_Patch --> R_Risk[检查 patch 风险\n删除测试/跳过断言/硬编码/测试修复许可]
   R_Risk --> R_Approval{人工审批修复 patch}
   R_Approval -- reject/respond --> R_Repairer
   R_Approval -- edit --> R_Patch
@@ -262,6 +268,11 @@ flowchart TD
   R_PASS --> R_END([Repair END])
   R_FAIL --> R_END
 ```
+
+保守测试修复边界：
+
+- 允许：在 `test_repair_allowed=true` 且有调试证据时，修复可见 `tests/**` 或 `test_*.py` 中的语法、导入、cwd、subprocess 编码、fixture、`null`/`None` 等明显测试代码错误。
+- 拒绝：隐藏 benchmark、`oracle_tests`、`evaluation`、`expected_result.json`、删除测试文件、添加 `skip`/`xfail`、删除或弱化断言、修改 `conftest.py` 或 pytest 配置、硬编码特定样例。
 
 ## 8. 阶段内通用工具调用循环
 
