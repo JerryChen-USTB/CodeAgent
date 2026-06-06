@@ -114,7 +114,7 @@ runs\<run_id>\task_config.yaml
 - `stages: implement, test, debug, repair`
 - `project_path`: 生成软件的工作区
 - `input_materials`: 公开需求文档
-- `model_name: anthropic/claude-sonnet-4.6`
+- `model_name: google/gemini-3.5-flash`
 - `base_url: https://openrouter.ai/api/v1`
 - `api_key_env: OPENROUTER_API_KEY`
 - `test_command: python -m pytest -q`

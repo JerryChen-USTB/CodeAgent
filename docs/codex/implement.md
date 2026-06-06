@@ -122,7 +122,7 @@ Do not stop until all of the following are true, or until an external environmen
 - Implementation, testing, debugging, and repair stage flows are wired through LangGraph.
 - HITL approval points, patch-first behavior, decision trace, transcript, reports, and artifact index are implemented.
 - SQLite checkpoint/resume works at least for interrupt approval points, or failure is clearly documented with fallback behavior.
-- OpenRouter model configuration for the temporary cost-control model `anthropic/claude-sonnet-4.6` is implemented securely.
+- OpenRouter model configuration for the temporary cost-control model `google/gemini-3.5-flash` is implemented securely.
 - Public benchmark reporting works.
 - Self-built benchmark reporting works.
 - README and `docs/dev_reports/` are accurate and developer-friendly.

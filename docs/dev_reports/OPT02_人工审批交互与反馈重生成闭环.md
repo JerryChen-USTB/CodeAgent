@@ -89,7 +89,7 @@ python -m pytest -q
 
 在上述自动化测试后，补充运行了一个真实 OpenRouter LLM Todo Manager 场景：
 
-- 模型：`anthropic/claude-sonnet-4.6`。
+- 模型：`google/gemini-3.5-flash`。
 - 任务：从空 `workspace/` 根据 Todo Manager 需求实现完整 CLI 软件。
 - 阶段：`implement, test, debug, repair`。
 - 审批模式：`manual`。

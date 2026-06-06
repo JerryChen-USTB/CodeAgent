@@ -84,12 +84,12 @@ def test_wizard_answers_build_normalized_task_config_and_summary(tmp_path) -> No
     assert config.input_materials[0].material_type == "requirements"
     assert config.input_materials[0].path == requirements.resolve()
     assert config.test_command.command == "python -m pytest tests -q"
-    assert config.model.model_name == "anthropic/claude-sonnet-4.6"
+    assert config.model.model_name == "google/gemini-3.5-flash"
     assert config.permissions.approval_mode == "manual"
     assert "执行阶段：implement, test" in summary
     assert str(project.resolve()) in summary
     assert "python -m pytest tests -q" in summary
-    assert "模型：anthropic/claude-sonnet-4.6" in summary
+    assert "模型：google/gemini-3.5-flash" in summary
     assert "Approval mode: manual" in summary
 
 
@@ -198,7 +198,7 @@ def test_wizard_command_accepts_scripted_input_and_runs_agent(tmp_path, monkeypa
     assert len(run_dirs) == 1
     task_config = (run_dirs[0] / "task_config.yaml").read_text(encoding="utf-8")
     assert "mode: wizard" in task_config
-    assert "model_name: anthropic/claude-sonnet-4.6" in task_config
+    assert "model_name: google/gemini-3.5-flash" in task_config
     assert "test" in task_config
     assert (run_dirs[0] / "final_report.md").exists()
 

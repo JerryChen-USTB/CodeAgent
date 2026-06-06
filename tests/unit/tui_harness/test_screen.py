@@ -21,7 +21,7 @@ CodeAgent
     测试命令: python -m pytest -q
 
 模型与审批
-    模型: anthropic/claude-sonnet-4.6
+    模型: google/gemini-3.5-flash
     审批模式: 开启人工审批
 
 最终确认

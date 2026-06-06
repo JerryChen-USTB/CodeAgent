@@ -36,7 +36,7 @@ input_materials:
     assert config.stages == [Stage.IMPLEMENT, Stage.TEST]
     assert config.project_path == project
     assert config.input_materials[0].path == requirements
-    assert config.model.model_name == "anthropic/claude-sonnet-4.6"
+    assert config.model.model_name == "google/gemini-3.5-flash"
     assert config.model.api_key_env == "OPENROUTER_API_KEY"
     assert config.runtime.max_repair_attempts == 3
     assert config.test_command.command == "pytest -q"

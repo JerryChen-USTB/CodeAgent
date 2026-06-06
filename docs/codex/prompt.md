@@ -81,7 +81,7 @@
 3. 阶段选择与校验：允许单阶段或连续阶段组合；拒绝不连续或顺序错误组合。
 4. LangGraph 主图 + 四个阶段子图：ImplementationSubgraph、TestingSubgraph、DebuggingSubgraph、RepairSubgraph。
 5. LangChain 模型与工具层：统一模型调用、工具注册、结构化输出和工具级 HITL。
-6. OpenRouter 模型调用：临时使用成本控制模型 `anthropic/claude-sonnet-4.6` 驱动本项目的软件工程智能体。
+6. OpenRouter 模型调用：临时使用成本控制模型 `google/gemini-3.5-flash` 驱动本项目的软件工程智能体。
 7. 工具系统：项目扫描、文件读取、代码搜索、日志读取、patch 生成/校验/应用、shell/pytest 执行、pytest 结果解析、报告写入、artifact 记录。
 8. patch-first：所有项目源码和测试文件修改必须先生成 unified diff，审批后才能应用。
 9. HITL：测试方案、实现 patch、测试 patch、修复 patch、测试/复现/回归命令执行都必须能人工审批；benchmark 模式可自动审批，但必须记录 decision trace。
@@ -101,7 +101,7 @@
 - LangChain
 - `langchain-openai` 或当前官方推荐的 OpenAI-compatible 接入方式
 - OpenRouter OpenAI-compatible API
-- 模型：`anthropic/claude-sonnet-4.6`
+- 模型：`google/gemini-3.5-flash`
 - pytest
 - SQLite checkpoint（优先使用 LangGraph SQLite checkpointer；如官方 API 有变化，按最新文档适配并记录）
 - Typer + Rich，或 argparse + Rich
@@ -151,7 +151,7 @@ Software Engineering Project.txt
 ```yaml
 model:
   provider: openai_compatible
-  model_name: anthropic/claude-sonnet-4.6
+  model_name: google/gemini-3.5-flash
   base_url: https://openrouter.ai/api/v1
   api_key_env: OPENROUTER_API_KEY
   temperature: 0.2

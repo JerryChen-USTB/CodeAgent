@@ -23,11 +23,12 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_active_docs_use_temporary_sonnet_default_model() -> None:
+def test_active_docs_use_gemini_flash_default_model() -> None:
     for path in ACTIVE_MODEL_DOCS:
         text = _read(path)
         assert "anthropic/claude-opus-4.8" not in text, path
-        assert "anthropic/claude-sonnet-4.6" in text, path
+        assert "anthropic/claude-sonnet-4.6" not in text, path
+        assert "google/gemini-3.5-flash" in text, path
 
 
 def test_active_docs_do_not_reintroduce_local_secret_file_as_key_source() -> None:
@@ -59,14 +60,14 @@ def test_readme_stage_subcommand_examples_match_cli_contract() -> None:
 
 
 def test_personal_ledger_csv_export_visible_spec_is_not_order_contradictory() -> None:
-    requirements = _read(
+    prd = _read(
         ROOT
         / "benchmark"
         / "selfbuilt"
         / "cases"
         / "02_personal_ledger"
         / "input"
-        / "requirements.md"
+        / "PRD.md"
     )
     acceptance = _read(
         ROOT
@@ -78,7 +79,7 @@ def test_personal_ledger_csv_export_visible_spec_is_not_order_contradictory() ->
         / "acceptance_criteria.md"
     )
 
-    assert "导出顺序与 `list` 相同" not in requirements
+    assert "导出顺序与 `list` 相同" not in prd
     assert "行顺序与 list 一致" not in acceptance
-    assert "stored/addition order" in requirements
-    assert "stored/addition order" in acceptance
+    assert "不要求 CSV 导入导出" in prd
+    assert "CSV" not in acceptance

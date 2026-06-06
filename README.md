@@ -14,7 +14,7 @@ python -m pytest -q
 
 CodeAgent targets Python 3.11+ and uses OpenRouter through an OpenAI-compatible
 LangChain client. The current temporary cost-control default model is
-`anthropic/claude-sonnet-4.6`.
+`google/gemini-3.5-flash`.
 
 ## OpenRouter Key
 
@@ -65,7 +65,7 @@ from the same field.
 Non-TTY sessions fall back to the scriptable line form.
 
 The wizard can choose the OpenRouter model for this run. The default remains
-`anthropic/claude-sonnet-4.6`, with fixed alternatives including Anthropic Opus,
+`google/gemini-3.5-flash`, with fixed alternatives including Anthropic Opus,
 OpenAI GPT, Gemini, DeepSeek, MiniMax, and Qwen options. The selected model and
 approval mode are saved into the normalized `task_config.yaml` for audit and
 reproduction.

@@ -4,7 +4,7 @@ title: Student Gradebook
 difficulty: medium
 task_type: project_implementation_testing_debug_repair
 language: python
-project_type: cli
+project_type: tui
 stages:
   - implementation
   - testing
@@ -16,13 +16,10 @@ workspace:
   path: workspace
   initial_state: empty
 input_materials:
-  - path: input/requirements.md
-    type: natural_language_requirements
-    required: true
-  - path: input/prd.md
+  - path: input/PRD.md
     type: prd
     required: true
-  - path: input/user_stories.yaml
+  - path: input/user_stories.md
     type: user_stories
     required: true
   - path: input/design_model.md
@@ -42,5 +39,6 @@ test_command:
   timeout_seconds: 15
 success_criteria:
   - The agent creates a runnable student_gradebook package in the empty workspace.
-  - CSV import, grade calculation, class statistics, report export, and validation match the input materials.
+  - The default entrypoint starts a simple interactive TUI that can be driven through stdin.
+  - Student, course, grade, query, statistics, ranking, JSON persistence, and validation behavior match the input materials.
   - All hidden oracle tests pass.

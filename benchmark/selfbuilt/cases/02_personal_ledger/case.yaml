@@ -4,7 +4,7 @@ title: Personal Ledger
 difficulty: easy
 task_type: project_implementation_testing_debug_repair
 language: python
-project_type: cli
+project_type: tui
 stages:
   - implementation
   - testing
@@ -16,13 +16,10 @@ workspace:
   path: workspace
   initial_state: empty
 input_materials:
-  - path: input/requirements.md
-    type: natural_language_requirements
-    required: true
-  - path: input/prd.md
+  - path: input/PRD.md
     type: prd
     required: true
-  - path: input/user_stories.yaml
+  - path: input/user_stories.md
     type: user_stories
     required: true
   - path: input/design_model.md
@@ -42,5 +39,6 @@ test_command:
   timeout_seconds: 15
 success_criteria:
   - The agent creates a runnable personal_ledger package in the empty workspace.
-  - CLI behavior, JSON storage, CSV export, summaries, and validation match the input materials.
+  - The default entrypoint starts a simple interactive TUI that can be driven through stdin.
+  - TUI behavior, JSON persistence, filtering, summaries, editing, deletion, and validation match the input materials.
   - All hidden oracle tests pass.

@@ -12,7 +12,7 @@ M26 的目标是用真实 OpenRouter LLM 调用跑完 5 个自建 benchmark case
 - Benchmark oracle 运行时为隐藏测试注入 workspace `PYTHONPATH`，让 runner-only oracle 能导入 Agent 在 workspace 中生成的包。
 - 强化 LLM plan path normalization，避免空 workspace 下生成 `workspace/workspace/...`。
 - 为 `02_personal_ledger` 的可见需求补充 CSV export 顺序澄清，使可见规范与隐藏 oracle 收敛。
-- 将后续默认 LLM 临时切换为 `anthropic/claude-sonnet-4.6`，降低 OpenRouter 成本。
+- 将后续默认 LLM 切换为 `google/gemini-3.5-flash`。
 - 扩展 `README.md`，补充安装、OpenRouter Key、CLI、输出目录、resume、benchmark 和排障说明。
 
 ## 关键设计决策
@@ -26,7 +26,7 @@ M26 的目标是用真实 OpenRouter LLM 调用跑完 5 个自建 benchmark case
 
 - `python -m pytest tests\unit\config tests\unit\models\test_model_factory.py -q` -> 38 passed。
 - `python -m codeagent --help` -> succeeded。
-- Controlled OpenRouter smoke with default `ModelConfig()` -> `anthropic/claude-sonnet-4.6` returned expected marker。
+- Controlled OpenRouter smoke with default `ModelConfig()` -> `google/gemini-3.5-flash` returned expected marker。
 - `python -m codeagent benchmark --config benchmark\selfbuilt\selfbuilt_benchmark.yaml` -> 5/5 passed, `success_rate=1.00`, `blocked=0`。
 - Latest Sonnet selfbuilt aggregate: `benchmark/selfbuilt/codeagent_runs/benchmark/2026-06-03_085139_493426_codeagent_selfbuilt_python_benchmark_3bc92c/benchmark_result.json`。
 - Earlier full regression before Sonnet switch: `python -m pytest -q` -> 277 passed；`python -m compileall -q codeagent tests` -> passed。

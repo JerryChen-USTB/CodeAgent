@@ -80,14 +80,14 @@ def test_form_rendering_expands_choices_inline_under_the_active_field() -> None:
         mode="select",
         edit_field="model_name",
         choices=[
-            TuiChoice("anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"),
+            TuiChoice("google/gemini-3.5-flash", "google/gemini-3.5-flash"),
             TuiChoice("openai/gpt-5.5", "openai/gpt-5.5"),
         ],
         focused_choice_index=1,
     )
     text = "".join(fragment for _style, fragment in rendered)
 
-    assert "模型与审批\n>   模型: anthropic/claude-sonnet-4.6\n" in text
+    assert "模型与审批\n>   模型: google/gemini-3.5-flash\n" in text
     assert "      > 2. openai/gpt-5.5\n" in text
     assert "    审批模式:" in text
 
@@ -408,10 +408,10 @@ def test_tui_progress_reporter_renders_chinese_event_lines() -> None:
 
 def test_model_choices_are_fixed_for_wizard() -> None:
     assert defaults.WIZARD_MODEL_CHOICES == (
+        "google/gemini-3.5-flash",
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.5",
-        "google/gemini-3.5-flash",
         "deepseek/deepseek-v4-pro",
         "minimax/minimax-m3",
         "qwen/qwen3.7-max",

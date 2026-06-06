@@ -4,25 +4,22 @@ title: Library Lending Manager
 difficulty: medium_high
 task_type: project_implementation_testing_debug_repair
 language: python
-project_type: cli
+project_type: web_ui
 stages:
   - implementation
   - testing
   - debugging
   - repair
 entrypoint:
-  command: "python -m library_lending"
+  command: "python -m library_lending --db library.db --host 127.0.0.1 --port 8000"
 workspace:
   path: workspace
   initial_state: empty
 input_materials:
-  - path: input/requirements.md
-    type: natural_language_requirements
-    required: true
-  - path: input/prd.md
+  - path: input/PRD.md
     type: prd
     required: true
-  - path: input/user_stories.yaml
+  - path: input/user_stories.md
     type: user_stories
     required: true
   - path: input/design_model.md
@@ -41,6 +38,7 @@ test_command:
   command: "python -m unittest discover -s oracle_tests"
   timeout_seconds: 20
 success_criteria:
-  - The agent creates a runnable library_lending package in the empty workspace.
-  - SQLite persistence, lending workflow, stock checks, due dates, and reports match the input materials.
+  - The agent creates a runnable standard-library web UI package library_lending in the empty workspace.
+  - The default entrypoint starts a local browser-accessible HTTP service backed by SQLite.
+  - HTML forms, SQLite persistence, lending workflow, stock checks, due dates, overdue reports, and error handling match the input materials.
   - All hidden oracle tests pass.

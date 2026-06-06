@@ -28,10 +28,10 @@ cases:
     config: cases/04_library_lending/case.yaml
     enabled: true
     difficulty: medium_high
-    project_type: cli
+    project_type: web_ui
   - case_id: 05_meeting_room_booking
     config: cases/05_meeting_room_booking/case.yaml
     enabled: true
     difficulty: high
-    project_type: flask_api
+    project_type: flask_web_ui
     dependency_note: "Agent should create workspace/requirements.txt with Flask dependency during implementation."

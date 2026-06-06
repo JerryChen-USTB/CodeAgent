@@ -172,7 +172,7 @@ Repair 阶段支持保守修复可见生成测试代码：
 
 ### 3.11 Todo Manager 开发团队演示手册
 
-新增并多次修订 `docs/demo/Todo_Manager_开发团队演示手册.md`，形成面向开发团队的保姆级演示教程：
+新增并多次修订 `benchmark/selfbuilt/cases/01_todo_manager/Todo_Manager_开发团队演示手册.md`，形成面向开发团队的保姆级演示教程：
 
 - 先介绍 Todo Manager 案例。
 - 指导创建带时间戳的新演示空间。
@@ -228,7 +228,7 @@ Repair 阶段支持保守修复可见生成测试代码：
 ### 4.4 benchmark 与文档
 
 - `benchmark/selfbuilt/cases/01_todo_manager/...`
-- `docs/demo/Todo_Manager_开发团队演示手册.md`
+- `benchmark/selfbuilt/cases/01_todo_manager/Todo_Manager_开发团队演示手册.md`
 - `docs/dev_reports/OPT07_Todo_Manager工作流问题追踪.md`
 - `docs/design/02_模块划分与职责设计.md`
 - `docs/design/04_LangGraph工作流设计.md`

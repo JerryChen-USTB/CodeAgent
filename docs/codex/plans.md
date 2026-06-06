@@ -46,7 +46,7 @@ Note: `benchmark/**/evaluation`, `benchmark/selfbuilt/**/oracle_tests`, and `ben
 - Cover the continuous workflow `implement -> test -> debug -> repair`, while allowing legal single-stage or contiguous-stage subsets.
 - Use LangGraph for the main workflow, four stage subgraphs, conditional routing, streaming, interrupt/HITL, checkpoint, and resume.
 - Use LangChain for model calls, tools, structured outputs, and tool-level HITL guardrails.
-- Default model access is OpenRouter OpenAI-compatible, temporary cost-control model `anthropic/claude-sonnet-4.6`, with credentials resolved only from `OPENROUTER_API_KEY` or another explicitly configured environment variable; local secret files are forbidden inputs and must not be read.
+- Default model access is OpenRouter OpenAI-compatible, temporary cost-control model `google/gemini-3.5-flash`, with credentials resolved only from `OPENROUTER_API_KEY` or another explicitly configured environment variable; local secret files are forbidden inputs and must not be read.
 - Enforce patch-first for project source/test modifications. Side-effect operations require approval except benchmark-mode auto-approval with decision trace.
 - Persist every run under `codeagent_runs/<run_id>/`, including metadata, normalized task config, transcript, decision trace, artifacts index, stage artifacts, `stage_result.json`, and `final_report.md`.
 - Provide benchmark execution, per-case isolation, success-rate aggregation, and reports.
@@ -1042,17 +1042,17 @@ Use this section as an append-only engineering log. Every completed small module
 
 ### 2026-06-03 Temporary OpenRouter Model Cost Control
 
-- User directive: temporarily switch subsequent LLM calls to `anthropic/claude-sonnet-4.6` to reduce OpenRouter cost while continuing benchmark-driven implementation.
-- Implementation: updated `DEFAULT_MODEL_NAME` so new `TaskConfig` instances and benchmark case configs without explicit model overrides use `anthropic/claude-sonnet-4.6`.
+- User directive: switch default LLM calls to `google/gemini-3.5-flash` while continuing benchmark-driven implementation.
+- Implementation: updated `DEFAULT_MODEL_NAME` so new `TaskConfig` instances and benchmark case configs without explicit model overrides use `google/gemini-3.5-flash`.
 - Documentation: updated the current execution plan and implementation guide; historical Opus 4.8 smoke-test evidence remains recorded as historical evidence only.
-- Verification: `python -m pytest tests\unit\config tests\unit\models\test_model_factory.py -q` -> 38 passed; `python -m codeagent --help` -> succeeded; controlled OpenRouter smoke through default `ModelConfig()` returned the expected marker using `anthropic/claude-sonnet-4.6`.
+- Verification: `python -m pytest tests\unit\config tests\unit\models\test_model_factory.py -q` -> 38 passed; `python -m codeagent --help` -> succeeded; controlled OpenRouter smoke through default `ModelConfig()` returned the expected marker using `google/gemini-3.5-flash`.
 
 ### 2026-06-03 M26 Self-Built Benchmark Pass and Final Docs Complete
 
 - Backup before final doc update: `docs/_backups/20260603_165726/m26_final_docs/`.
 - Alignment review: checked M26 against SRS/design expectations for benchmark isolation, hidden oracle separation, reproducible reports, OpenRouter model configuration, run artifacts, and developer documentation.
 - Self-built benchmark convergence: fixed Windows long-path artifact handling, internal syntax checking without `__pycache__`, runner-only oracle import path, duplicate `workspace/` LLM path normalization, and visible CSV export ordering clarification for `02_personal_ledger`.
-- Real Sonnet evidence: `python -m codeagent benchmark --config benchmark\selfbuilt\selfbuilt_benchmark.yaml` ran with normalized `model_name: anthropic/claude-sonnet-4.6`, completed 5/5 self-built cases, `success_rate=1.00`, `blocked=0`.
+- Real default-model evidence: `python -m codeagent benchmark --config benchmark\selfbuilt\selfbuilt_benchmark.yaml` ran with normalized `model_name: google/gemini-3.5-flash`, completed 5/5 self-built cases, `success_rate=1.00`, `blocked=0`.
 - Latest aggregate: `benchmark/selfbuilt/codeagent_runs/benchmark/2026-06-03_085139_493426_codeagent_selfbuilt_python_benchmark_3bc92c/benchmark_result.json`; every case reports `oracle_success=True` and `source_unchanged=True`.
 - Final documentation: expanded `README.md`; added `docs/dev_reports/M26_selfbuilt_benchmark_final_docs.md`.
 - Commands run: `python -m pytest tests\unit\tools\test_patch_service.py tests\unit\reports\test_writer.py tests\unit\agents\test_plan_generation.py tests\integration\test_implementation_stage.py -q` -> 47 passed.
@@ -1078,7 +1078,7 @@ Use this section as an append-only engineering log. Every completed small module
 - Commands run: `python -m pytest tests\integration\test_testing_stage.py -q` -> 16 passed; `python -m pytest tests\integration\test_debugging_stage.py -q` -> 13 passed; `python -m pytest tests\integration\test_repair_stage.py -q` -> 17 passed.
 - Commands run: `python -m pytest -q` -> 289 passed; `python -m compileall -q codeagent tests` -> passed.
 - Commands run: `python -m codeagent --help` and `codeagent --help` -> both succeeded.
-- Commands run: controlled OpenRouter smoke through default `ModelConfig()` -> `OpenRouter smoke OK for anthropic/claude-sonnet-4.6`.
+- Commands run: controlled OpenRouter smoke through default `ModelConfig()` -> `OpenRouter smoke OK for google/gemini-3.5-flash`.
 - Safety checks: strict OpenRouter/Bearer key scan over active code/docs/benchmark input found no real secret values; `git ls-files --others --exclude-standard -- benchmark codeagent_runs docs\_backups` returned no untracked generated benchmark artifacts or backups.
 - Developer report: `docs/dev_reports/M27_review_hardening_and_final_validation.md`.
 

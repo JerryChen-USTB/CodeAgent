@@ -1,29 +1,27 @@
 schema_version: 1
 case_id: 05_meeting_room_booking
-title: Meeting Room Booking API
+title: Meeting Room Booking Web UI
 difficulty: high
 task_type: project_implementation_testing_debug_repair
 language: python
-project_type: flask_api
+project_type: flask_web_ui
 stages:
   - implementation
   - testing
   - debugging
   - repair
 entrypoint:
+  command: "python -m meeting_room_booking --db meeting_rooms.db --host 127.0.0.1 --port 8000"
   package: meeting_room_booking
   app_factory: "meeting_room_booking:create_app"
 workspace:
   path: workspace
   initial_state: empty
 input_materials:
-  - path: input/requirements.md
-    type: natural_language_requirements
-    required: true
-  - path: input/prd.md
+  - path: input/PRD.md
     type: prd
     required: true
-  - path: input/user_stories.yaml
+  - path: input/user_stories.md
     type: user_stories
     required: true
   - path: input/design_model.md
@@ -44,6 +42,7 @@ test_command:
   command: "python -m unittest discover -s oracle_tests"
   timeout_seconds: 25
 success_criteria:
-  - The agent creates a Flask package meeting_room_booking in the empty workspace.
-  - The app exposes create_app(db_path=None), uses SQLite persistence, and follows the API contract in input materials.
+  - The agent creates a Flask Web UI and JSON API package meeting_room_booking in the empty workspace.
+  - The app exposes create_app(db_path=None), uses SQLite persistence, and follows the Web UI and API contracts in input materials.
+  - The default entrypoint starts a browser-accessible Flask app backed by SQLite.
   - All hidden oracle tests pass.

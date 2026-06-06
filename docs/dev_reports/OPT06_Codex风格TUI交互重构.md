@@ -16,10 +16,10 @@
   - `TuiProgressReporter`：消费现有 workflow events，以滚动记录方式展示阶段、工具、测试和最终状态。
 - `codeagent wizard` 默认在 TTY 中启动新 TUI；非 TTY 环境使用脚本式行输入，TTY 中的 TUI 初始化错误会直接暴露，避免用降级掩盖环境问题。
 - wizard 新增模型选择字段，固定候选包括：
+  - `google/gemini-3.5-flash`
   - `anthropic/claude-opus-4.8`
   - `anthropic/claude-sonnet-4.6`
   - `openai/gpt-5.5`
-  - `google/gemini-3.5-flash`
   - `deepseek/deepseek-v4-pro`
   - `minimax/minimax-m3`
   - `qwen/qwen3.7-max`

@@ -95,7 +95,7 @@ python -m pytest tests\unit\stages\test_plan_schema_boundaries.py tests\unit\age
 
 ## 真实 LLM 验证
 
-已执行 Todo Manager 单 case，使用真实 OpenRouter 模型 `anthropic/claude-sonnet-4.6`。运行目录：
+已执行 Todo Manager 单 case，使用真实 OpenRouter 模型 `google/gemini-3.5-flash`。运行目录：
 
 ```text
 codeagent_runs/real_validation/opt03_todo_manager/runs/2026-06-04_065643_303727_implement-test-debug-repair_ebeeff

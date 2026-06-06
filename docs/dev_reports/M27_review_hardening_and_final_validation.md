@@ -11,7 +11,7 @@
 - LLM prompt 增加 SQLite 连接关闭要求：`with sqlite3.connect(...) as conn` 不能单独关闭连接，生成代码应显式 `close()`、`try/finally` 或 `contextlib.closing`。
 - CodeAgent 自身 SQLite checkpoint 初始化、状态检查和 SQLite saver 使用 `contextlib.closing`，并用 Windows 文件删除回归测试证明连接已释放。
 - `PlanGenerationService` 的可见上下文读取、failure log 发现，以及 implementation resume 路径中的 prepared plan/patch 读取进一步切到长路径 helper。
-- 活跃文档统一为临时默认模型 `anthropic/claude-sonnet-4.6`；secret 来源统一为环境变量，禁止读取本地 secret 文件。
+- 活跃文档统一为临时默认模型 `google/gemini-3.5-flash`；secret 来源统一为环境变量，禁止读取本地 secret 文件。
 - `README.md` 阶段子命令示例改为真实 CLI 参数形式。
 - 自建 benchmark 可见输入更新：`02_personal_ledger` CSV 导出明确为 stored/addition order；`05_meeting_room_booking` 明确 SQLite 连接必须关闭。
 
@@ -22,7 +22,7 @@
 - 阶段集成：testing/debugging/repair 三个集成文件分别 16、13、17 passed。
 - 全量：`python -m pytest -q` -> 289 passed。
 - 编译与 CLI：`python -m compileall -q codeagent tests`、`python -m codeagent --help`、`codeagent --help` 均通过。
-- 真实 OpenRouter smoke：默认 `ModelConfig()` 使用 `anthropic/claude-sonnet-4.6` 返回预期 marker。
+- 真实 OpenRouter smoke：默认 `ModelConfig()` 使用 `google/gemini-3.5-flash` 返回预期 marker。
 - 审查 follow-up：SQLite 文件锁测试先 2 failed，再修复后 2 passed；plan generation + implementation 25 passed；runtime/checkpoint/report/benchmark report 22 passed。
 
 ## Benchmark 结果

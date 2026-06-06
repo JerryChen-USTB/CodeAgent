@@ -1,12 +1,12 @@
 """Default configuration values."""
 
 DEFAULT_MODEL_PROVIDER = "openai_compatible"
-DEFAULT_MODEL_NAME = "anthropic/claude-sonnet-4.6"
+DEFAULT_MODEL_NAME = "google/gemini-3.5-flash"
 WIZARD_MODEL_CHOICES = (
+    "google/gemini-3.5-flash",
     "anthropic/claude-opus-4.8",
     "anthropic/claude-sonnet-4.6",
     "openai/gpt-5.5",
-    "google/gemini-3.5-flash",
     "deepseek/deepseek-v4-pro",
     "minimax/minimax-m3",
     "qwen/qwen3.7-max",
