@@ -68,6 +68,7 @@ from codeagent.cli.approval_console import (
     PATCH_AUTO_APPROVE_REMAINING_KEY,
     ApprovalConsole,
 )
+from codeagent.cli.inspect_run import write_run_health_summary
 from codeagent.tools.hitl import ApprovalRequest
 
 
@@ -149,6 +150,8 @@ def execute_task_config(
     progress = reporter or ProgressReporter()
     approval_console = approval_console or ApprovalConsole()
     context = create_run_context(task_config, output_root=task_config.output_dir)
+    _bind_run_context(progress, context)
+    _bind_run_context(approval_console, context)
     manager = CheckpointManager(context.run_dir, run_id=context.run_id)
     initial = create_initial_state(
         run_id=context.run_id,
@@ -178,6 +181,7 @@ def execute_task_config(
     _write_final_report(context, list(stage_results.values()))
     final_status = str(final_state.get("final_status") or "failed")
     context.workflow_trace.record("run_completed", final_status=final_status)
+    _write_run_health_summary(context)
     key_file_refs = _key_file_summary_refs(context)
     key_files = [ref.display for ref in key_file_refs]
     context.workflow_trace.record("key_files_summary", files=key_files)
@@ -207,6 +211,12 @@ def _stage_handlers_for_cli(
         "debugging": _debugging_handler(context, approval_console),
         "repair": _repair_handler(context, approval_console),
     }
+
+
+def _bind_run_context(target: object, context: RunContext) -> None:
+    binder = getattr(target, "bind_run_context", None)
+    if callable(binder):
+        binder(context)
 
 
 def _planner_for_context(context: RunContext) -> PlanGenerationService:
@@ -270,7 +280,7 @@ def _prompt_approval(
         risk_level=request.risk_level,
         payload=request.payload,
     )
-    _print_approval_context(context, request)
+    _present_approval_context(context, request, approval_console)
     decision = approval_console.prompt(request)
     return ApprovalDecision(
         interrupt_id=decision.interrupt_id,
@@ -282,6 +292,39 @@ def _prompt_approval(
         auto=False,
         decision_source=decision.decision_source or "user",
         presented_to_user=True,
+    )
+
+
+def _present_approval_context(
+    context: RunContext,
+    request: ApprovalRequest,
+    approval_console: ApprovalConsoleLike,
+) -> None:
+    presenter = getattr(approval_console, "set_approval_context", None)
+    if not callable(presenter):
+        _print_approval_context(context, request)
+        return
+    refs = _approval_context_refs(context, request)
+    command_context = _approval_command_context(context, request)
+    hint = _approval_hint(request.action)
+    presenter(
+        request,
+        refs,
+        command_context,
+        hint,
+    )
+    context.workflow_trace.record(
+        "approval_context_presented",
+        stage=_stage_from_approval_action(request.action),
+        action=request.action,
+        files=[ref.display for ref in refs],
+        hint=hint,
+        command=command_context[0] if command_context is not None else None,
+        cwd=(
+            command_context[1].absolute_path.as_posix()
+            if command_context is not None
+            else None
+        ),
     )
 
 
@@ -474,6 +517,8 @@ def _key_file_summary_refs(context: RunContext) -> list[DisplayPathRef]:
                 refs.append(_display_path_ref(value, base=context.task_config.project_path))
     for value in [
         "final_report.md",
+        "run_health.md",
+        "run_health.json",
         "workflow.log",
         "workflow_events.jsonl",
         "decision_trace.jsonl",
@@ -3633,6 +3678,25 @@ def _stage_results_from_state(state: dict[str, Any]) -> dict[str, StageResult]:
 def _write_final_report(context: RunContext, results: list[StageResult]) -> None:
     if results:
         _writer(context).write_final_report(results)
+
+
+def _write_run_health_summary(context: RunContext) -> None:
+    try:
+        artifacts = write_run_health_summary(context.run_dir)
+    except Exception as exc:
+        context.workflow_trace.record(
+            "run_health_summary_failed",
+            error_type=type(exc).__name__,
+            message=str(exc),
+        )
+        return
+    context.workflow_trace.record(
+        "run_health_summary_written",
+        json_path=_run_relative_path(artifacts.json_path, run_dir=context.run_dir),
+        markdown_path=_run_relative_path(artifacts.markdown_path, run_dir=context.run_dir),
+        healthy=artifacts.payload.get("healthy"),
+        warning_count=len(artifacts.payload.get("warnings") or []),
+    )
 
 
 def _writer(context: RunContext) -> ReportWriter:

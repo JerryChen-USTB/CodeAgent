@@ -1,0 +1,89 @@
+{
+  "name": "codeagent-vscode",
+  "displayName": "CodeAgent",
+  "description": "VS Code Webview UI for the CodeAgent Python CLI.",
+  "version": "0.1.0",
+  "publisher": "codeagent",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:codeagent.openPanel",
+    "onView:codeagent.sidebar"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeagent.openPanel",
+        "title": "CodeAgent: Open Panel",
+        "icon": "$(rocket)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codeagent",
+          "title": "CodeAgent",
+          "icon": "media/codeagent.svg"
+        }
+      ]
+    },
+    "views": {
+      "codeagent": [
+        {
+          "id": "codeagent.sidebar",
+          "name": "CodeAgent"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "codeagent.sidebar",
+        "contents": "打开 CodeAgent 任务面板，填写配置并运行 Python CLI 智能体。\n[打开 CodeAgent 面板](command:codeagent.openPanel)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "codeagent.openPanel",
+          "when": "view == codeagent.sidebar",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CodeAgent",
+      "properties": {
+        "codeagent.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to run `python -m codeagent vscode-run`."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p . && vite build",
+    "watch": "tsc -w -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.90.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vitest": "^4.0.15"
+  }
+}

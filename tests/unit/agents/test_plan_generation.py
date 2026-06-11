@@ -14,7 +14,11 @@ from codeagent.agents.plan_generation import (
 )
 from codeagent.config.schema import InputMaterial, Stage, TaskConfig
 from codeagent.runtime.run_context import RunContext, create_run_context
-from codeagent.stages.implementation_service import PATCH_INTERRUPT_ID
+from codeagent.stages.implementation_service import (
+    PATCH_INTERRUPT_ID,
+    ImplementationFileChange,
+    ImplementationPlan,
+)
 from codeagent.stages.debugging_service import FaultLocalization
 from codeagent.stages.repair_service import (
     REPAIR_COMMAND_INTERRUPT_ID,
@@ -308,6 +312,169 @@ def test_plan_generation_writes_llm_call_bundle_and_trace_indexes(tmp_path) -> N
 
     legacy_audit = context.stage_dirs[Stage.IMPLEMENT] / "plan_generation_attempts.json"
     assert legacy_audit.exists()
+
+
+def test_plan_generation_builds_single_file_patch_from_fenced_code(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    target = context.task_config.project_path / "solution.py"
+    old_content = "def add(left, right):\n    pass\n"
+    target.write_text(old_content, encoding="utf-8")
+    plan = ImplementationPlan(
+        requirements_summary="实现加法。",
+        implementation_strategy="补全 solution.py。",
+        changes=[
+            ImplementationFileChange(
+                path=Path("solution.py"),
+                change_type="modify",
+                rationale="满足可见需求。",
+            )
+        ],
+        acceptance_criteria=["add 返回两数之和。"],
+    )
+    model = _SequenceModel(
+        [
+            (
+                "补全目标文件。\n\n"
+                "```python\n"
+                "def add(left, right):\n"
+                "    return left + right\n"
+                "```\n"
+            )
+        ]
+    )
+
+    draft = PlanGenerationService(
+        model_factory=_FakeFactory(model)
+    ).create_implementation_file_patch_draft(
+        context,
+        plan,
+        target_path=Path("solution.py"),
+        workspace_context="### project/solution.py\n" + old_content,
+        work_summary="",
+        completed_files=[],
+        failed_attempts=[],
+    )
+
+    assert "do not return JSON" in model.prompts[0]
+    assert "exactly one fenced code block" in model.prompts[0]
+    assert draft.plan_summary == "补全目标文件。"
+    assert draft.changes[0].path.as_posix() == "solution.py"
+    assert draft.changes[0].old_content == old_content
+    assert (
+        draft.changes[0].new_content
+        == "def add(left, right):\n    return left + right\n"
+    )
+    assert draft.syntax_check_targets == [Path("solution.py")]
+
+    call_dirs = sorted((context.stage_dirs[Stage.IMPLEMENT] / "llm_calls").iterdir())
+    call_dir = call_dirs[0]
+    request_path = call_dir / "request.json"
+    parsed_path = call_dir / "attempt_01" / "response.parsed.json"
+    if os.name == "nt":
+        request_path = Path("\\\\?\\" + str(request_path.resolve()))
+        parsed_path = Path("\\\\?\\" + str(parsed_path.resolve()))
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert request["generation_kind"] == "single_file_patch_generation"
+    assert request["schema"] == "ImplementationPatchDraft"
+    parsed = json.loads(parsed_path.read_text(encoding="utf-8"))
+    assert parsed["changes"][0]["new_content"].endswith("return left + right\n")
+
+
+def test_plan_generation_retries_single_file_patch_without_fenced_code(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.IMPLEMENT])
+    plan = ImplementationPlan(
+        requirements_summary="实现加法。",
+        implementation_strategy="创建 solution.py。",
+        changes=[
+            ImplementationFileChange(
+                path=Path("solution.py"),
+                change_type="add",
+                rationale="满足可见需求。",
+            )
+        ],
+        acceptance_criteria=["add 返回两数之和。"],
+    )
+    model = _SequenceModel(
+        [
+            "def add(left, right):\n    return left + right\n",
+            "```python\ndef add(left, right):\n    return left + right\n```\n",
+        ]
+    )
+
+    draft = PlanGenerationService(
+        model_factory=_FakeFactory(model)
+    ).create_implementation_file_patch_draft(
+        context,
+        plan,
+        target_path=Path("solution.py"),
+        workspace_context="(empty)",
+        work_summary="",
+        completed_files=[],
+        failed_attempts=[],
+    )
+
+    assert len(model.prompts) == 2
+    assert "Previous response failed fenced-code validation" in model.prompts[1]
+    assert draft.changes[0].old_content is None
+    assert (
+        draft.changes[0].new_content
+        == "def add(left, right):\n    return left + right\n"
+    )
+
+    audit = json.loads(
+        (
+            context.stage_dirs[Stage.IMPLEMENT]
+            / "patch_generation_solution.py_attempts.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert audit["attempts"][0]["status"] == "invalid"
+    assert audit["attempts"][1]["status"] == "valid"
+
+
+def test_plan_generation_builds_testing_file_patch_from_fenced_code(tmp_path) -> None:
+    context = _context(tmp_path, stages=[Stage.TEST])
+    plan = TestingPlan(
+        target_summary="验证加法。",
+        strategy="生成一个可见 pytest 文件。",
+        acceptance_criteria=["覆盖基础加法。"],
+        changes=[
+            TestFileChange(
+                path=Path("tests/test_solution.py"),
+                test_focus="基础加法行为。",
+                rationale="覆盖可见需求。",
+            )
+        ],
+        command="python -m pytest tests -q",
+        framework="pytest",
+    )
+    model = _SequenceModel(
+        [
+            (
+                "```python\n"
+                "from solution import add\n\n"
+                "def test_add_visible():\n"
+                "    assert add(2, 3) == 5\n"
+                "```\n"
+            )
+        ]
+    )
+
+    draft = PlanGenerationService(
+        model_factory=_FakeFactory(model)
+    ).create_testing_file_patch_draft(
+        context,
+        plan,
+        target_path=Path("tests/test_solution.py"),
+        workspace_context="(empty)",
+        work_summary="",
+        completed_files=[],
+        failed_attempts=[],
+    )
+
+    assert draft.command == "python -m pytest tests -q"
+    assert draft.framework == "pytest"
+    assert draft.changes[0].path.as_posix() == "tests/test_solution.py"
+    assert "def test_add_visible" in (draft.changes[0].new_content or "")
 
 
 def test_plan_generation_rejects_implementation_test_artifacts(tmp_path) -> None:

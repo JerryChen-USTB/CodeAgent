@@ -15,7 +15,9 @@ ROOT_HELP = """基于 LangGraph 和 LangChain 的本地软件工程智能体。
 
   codeagent wizard
   codeagent run --config task.yaml
+  codeagent vscode-run --config task.yaml
   codeagent benchmark --config benchmark/benchmark.yaml
+  codeagent inspect-run --run-dir codeagent_runs/<run_id>
   codeagent resume --run-id <run_id>
 """
 
@@ -299,6 +301,72 @@ def benchmark(
         f"blocked={result.blocked_cases}"
     )
     console.print(f"Benchmark 目录：{result.benchmark_run_dir}")
+
+
+@app.command(name="vscode-run")
+def vscode_run(
+    config: str = typer.Option(
+        ...,
+        "--config",
+        "-c",
+        help="VS Code 插件生成的 YAML 或 JSON 任务配置文件路径。",
+    ),
+) -> None:
+    """以 JSONL 桥接协议运行任务，供 VS Code Webview 插件调用。"""
+    from codeagent.cli.plugin_bridge import run_vscode_bridge
+
+    exit_code = run_vscode_bridge(config)
+    raise typer.Exit(exit_code)
+
+
+@app.command(name="inspect-run")
+def inspect_run(
+    run_dir: str = typer.Option(
+        ...,
+        "--run-dir",
+        "-r",
+        help="要诊断的 CodeAgent 运行目录。",
+    ),
+    write: bool = typer.Option(
+        True,
+        "--write/--no-write",
+        help="是否写入 run_health.json 和 run_health.md。",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="以 JSON 输出诊断结果。",
+    ),
+) -> None:
+    """检查运行目录并生成可观测性健康摘要。
+
+    示例: codeagent inspect-run --run-dir codeagent_runs/<run_id>
+    """
+    import json
+
+    from codeagent.cli.inspect_run import (
+        inspect_run_health,
+        render_run_health_console,
+        write_run_health_summary,
+    )
+
+    try:
+        if write:
+            artifacts = write_run_health_summary(run_dir)
+            payload = artifacts.payload
+        else:
+            payload = inspect_run_health(run_dir)
+    except OSError as exc:
+        console.print(f"运行目录无法读取：{exc}")
+        raise typer.Exit(1) from exc
+    if json_output:
+        console.print(json.dumps(payload, ensure_ascii=False, indent=2), markup=False)
+    else:
+        console.print(render_run_health_console(payload), markup=False)
+        if write:
+            console.print("已写入：run_health.json, run_health.md")
+    if payload.get("final_status") != "succeeded":
+        raise typer.Exit(1)
 
 
 @app.command()

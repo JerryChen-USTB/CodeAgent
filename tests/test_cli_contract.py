@@ -19,6 +19,8 @@ def test_root_help_lists_required_commands() -> None:
         "debug",
         "repair",
         "benchmark",
+        "vscode-run",
+        "inspect-run",
         "resume",
     ]:
         assert command in result.output
@@ -34,6 +36,7 @@ def test_core_command_help_contracts() -> None:
         (["debug", "--help"], "运行调试阶段。"),
         (["repair", "--help"], "运行修复阶段。"),
         (["benchmark", "--help"], "运行 benchmark case 并汇总结果。"),
+        (["inspect-run", "--help"], "检查运行目录并生成可观测性健康摘要。"),
     ]
     for command, description in implemented_commands:
         result = runner.invoke(app, command)

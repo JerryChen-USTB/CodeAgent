@@ -236,7 +236,7 @@ class PlanGenerationService:
         failed_attempts: list[dict[str, Any]],
         feedback: str | None = None,
     ) -> ImplementationPatchDraft:
-        prompt = self._single_file_patch_prompt(
+        prompt = self._single_file_code_patch_prompt(
             context,
             stage="implementation",
             schema=ImplementationPatchDraft,
@@ -255,10 +255,12 @@ class PlanGenerationService:
                 f"{INTERACTIVE_CONTRACT_RULE}"
             ),
         )
-        return self._invoke_schema(
+        return self._invoke_single_file_code_patch(
             context,
             prompt,
             ImplementationPatchDraft,
+            plan=plan,
+            target_path=target_path,
             generation_kind="single_file_patch_generation",
             audit_stage=Stage.IMPLEMENT,
             audit_filename=f"patch_generation_{_path_slug(target_path)}_attempts.json",
@@ -364,7 +366,7 @@ class PlanGenerationService:
             if latest_testing_command
             else "Use the approved plan verification command unless a safer equivalent is required."
         )
-        prompt = self._single_file_patch_prompt(
+        prompt = self._single_file_code_patch_prompt(
             context,
             stage="repair",
             schema=RepairPatchDraft,
@@ -381,10 +383,12 @@ class PlanGenerationService:
                 f"{command_guidance}"
             ),
         )
-        return self._invoke_schema(
+        return self._invoke_single_file_code_patch(
             context,
             prompt,
             RepairPatchDraft,
+            plan=plan,
+            target_path=target_path,
             generation_kind="single_file_patch_generation",
             audit_stage=Stage.REPAIR,
             audit_filename=f"patch_generation_{_path_slug(target_path)}_attempts.json",
@@ -461,7 +465,7 @@ class PlanGenerationService:
         feedback: str | None = None,
     ) -> TestingPatchDraft:
         configured_command = context.task_config.test_command.command
-        prompt = self._single_file_patch_prompt(
+        prompt = self._single_file_code_patch_prompt(
             context,
             stage="testing",
             schema=TestingPatchDraft,
@@ -497,10 +501,12 @@ class PlanGenerationService:
                 f"{INTERACTIVE_CONTRACT_RULE}"
             ),
         )
-        return self._invoke_schema(
+        return self._invoke_single_file_code_patch(
             context,
             prompt,
             TestingPatchDraft,
+            plan=plan,
+            target_path=target_path,
             generation_kind="single_file_patch_generation",
             audit_stage=Stage.TEST,
             audit_filename=f"patch_generation_{_path_slug(target_path)}_attempts.json",
@@ -920,7 +926,7 @@ class PlanGenerationService:
             )
         )
 
-    def _single_file_patch_prompt(
+    def _single_file_code_patch_prompt(
         self,
         context: RunContext,
         *,
@@ -939,7 +945,6 @@ class PlanGenerationService:
             _without_empty(
                 [
                     _system_rules(f"{stage} single-file patch", schema.__name__),
-                    _schema_block(schema),
                     "Approved plan JSON:",
                     json.dumps(plan.model_dump(mode="json"), indent=2, ensure_ascii=False),
                     "Single-file patch target:",
@@ -956,27 +961,306 @@ class PlanGenerationService:
                     json.dumps(failed_attempts, indent=2, ensure_ascii=False),
                     _feedback_block(feedback),
                     (
-                        "Return only JSON for the schema above. Generate exactly one "
-                        "file change: changes must contain exactly one item, and "
-                        f"changes[0].path must be exactly {target_path.as_posix()!r}. "
-                        "Do not include any other file in this response. When modifying "
-                        "an existing file, old_content must match the current visible "
-                        "workspace content exactly, and new_content must be the full "
-                        "replacement file content. When adding a new file, use "
-                        "old_content=null and full new_content. When deleting a file, "
-                        "use full old_content and new_content=null. Earlier approved "
-                        "file patches have already been applied to the workspace and are "
-                        "included in the supplied applied-file context. The workspace "
-                        "context was read once at the start of this stage; do not assume "
-                        "another workspace read will happen before this patch. "
-                        "keep imports, public interfaces, commands, and names consistent "
-                        "with the current context. Avoid hard-coding a single failing "
-                        "test input, exact failure-only literal, or exact assertion text; "
-                        "prefer fixing the domain rule at the narrowest semantic location. "
+                        "Target-specific rule for __init__.py: write only package "
+                        "initialization metadata or safe exports. Never generate, write, "
+                        "bootstrap, or overwrite other module files from __init__.py."
+                        if Path(target_path).name == "__init__.py"
+                        else None
+                    ),
+                    (
+                        "Output contract: do not return JSON, do not return a diff, and "
+                        "do not include multiple files. Return a short Simplified Chinese "
+                        "summary if useful, followed by exactly one fenced code block "
+                        "containing the complete replacement content for the target file. "
+                        "The fenced code block is the source of truth; the local workflow "
+                        f"will wrap it into {schema.__name__} with exactly one change whose "
+                        f"path is {target_path.as_posix()!r}. Use the target file language "
+                        "for the fence label when helpful, for example ```python. When "
+                        "adding a new file, the fenced block is the full new file. When "
+                        "modifying an existing file, the fenced block is the full "
+                        "replacement file content, not a snippet. If the approved plan "
+                        "requires deleting this file, output exactly DELETE_FILE and no "
+                        "code fence. Earlier approved file patches have already been "
+                        "applied to the workspace and are included in the supplied "
+                        "applied-file context. The workspace context was read once at "
+                        "the start of this stage; do not assume another workspace read "
+                        "will happen before this patch. Keep imports, public interfaces, "
+                        "commands, and names consistent with the current context. Avoid "
+                        "hard-coding a single failing test input, exact failure-only "
+                        "literal, or exact assertion text; prefer fixing the domain rule "
+                        "at the narrowest semantic location. "
                         f"{EXACT_CONTRACT_RULE} {LOCAL_IMPORT_RULE} {guidance}"
                     ),
                 ]
             )
+        )
+
+    def _invoke_single_file_code_patch(
+        self,
+        context: RunContext,
+        prompt: str,
+        schema: type[SchemaT],
+        *,
+        plan: BaseModel,
+        target_path: Path,
+        generation_kind: str,
+        audit_stage: Stage,
+        audit_filename: str,
+        post_validator: Callable[[SchemaT], None] | None = None,
+    ) -> SchemaT:
+        model_config = context.task_config.model
+        model = self.model_factory.create(model_config)
+        last_error: Exception | None = None
+        attempts = max(1, context.task_config.model.max_retries + 1)
+        audit = _new_attempt_audit(prompt=prompt, schema=schema, attempts=attempts)
+        trace_stage = _stage_name_for_override(schema, audit_stage)
+        call_bundle = _start_llm_call_bundle(
+            context,
+            schema=schema,
+            generation_kind=generation_kind,
+            stage_override=audit_stage,
+            audit_filename=audit_filename,
+            model_name=context.task_config.model.model_name,
+            prompt=prompt,
+            max_attempts=attempts,
+        )
+        for attempt in range(1, attempts + 1):
+            retry_prompt = prompt
+            if last_error is not None:
+                retry_detail = _compact_retry_detail(str(last_error))
+                emit_progress(
+                    "agent_status",
+                    stage=trace_stage,
+                    message=(
+                        f"上次 LLM 输出未通过 {schema.__name__} fenced-code 校验："
+                        f"{retry_detail}；正在重试。"
+                    ),
+                )
+                context.workflow_trace.record(
+                    "llm_retry_scheduled",
+                    stage=trace_stage,
+                    generation_kind=generation_kind,
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    call_id=call_bundle["call_id"],
+                    reason=retry_detail,
+                )
+                retry_prompt += (
+                    "\n\nPrevious response failed fenced-code validation. "
+                    f"Attempt {attempt}/{attempts}. Error: {_redact(str(last_error))}. "
+                    "Return exactly one fenced code block with the full target file "
+                    "content, or DELETE_FILE if this file should be deleted. Do not "
+                    "return JSON."
+                )
+            prompt_paths = _write_llm_attempt_prompt(
+                call_bundle,
+                attempt=attempt,
+                prompt=retry_prompt,
+                retry=last_error is not None,
+            )
+            try:
+                emit_progress(
+                    "agent_status",
+                    stage=trace_stage,
+                    message=(
+                        f"正在调用 LLM 生成 {schema.__name__} fenced code"
+                        f"（第 {attempt}/{attempts} 次）"
+                    ),
+                )
+                context.workflow_trace.record(
+                    "llm_prompt",
+                    stage=trace_stage,
+                    generation_kind=generation_kind,
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    model=context.task_config.model.model_name,
+                    call_id=call_bundle["call_id"],
+                    call_dir=call_bundle["relative_call_dir"],
+                    prompt_path=prompt_paths["prompt_path"],
+                    prompt_manifest_path=prompt_paths["manifest_path"],
+                    prompt_sha256=hashlib.sha256(retry_prompt.encode("utf-8")).hexdigest(),
+                    prompt_chars=len(retry_prompt),
+                    retry=last_error is not None,
+                )
+                response = model.invoke(retry_prompt)
+            except Exception as exc:
+                last_error = exc
+                retryable = _is_retryable_model_error(exc)
+                reduced_max_tokens = _reduced_max_tokens_for_model_error(
+                    exc,
+                    current_max_tokens=model_config.max_tokens,
+                )
+                validation_path = _write_llm_attempt_validation(
+                    call_bundle,
+                    attempt=attempt,
+                    status="model_error",
+                    error=exc,
+                    retryable=retryable,
+                )
+                _record_attempt(
+                    audit,
+                    attempt=attempt,
+                    status="model_error",
+                    error=exc,
+                    retryable=retryable,
+                )
+                _write_attempt_audit(
+                    context,
+                    schema,
+                    audit,
+                    stage_override=audit_stage,
+                    filename_override=audit_filename,
+                )
+                _write_llm_call_summary(call_bundle)
+                context.workflow_trace.record(
+                    "llm_attempt_validation",
+                    stage=trace_stage,
+                    generation_kind=generation_kind,
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    call_id=call_bundle["call_id"],
+                    status="model_error",
+                    retryable=retryable,
+                    validation_path=validation_path,
+                )
+                if not retryable:
+                    raise PlanGenerationError(
+                        f"Failed to generate valid {schema.__name__}: {_redact(str(exc))}",
+                        retryable=False,
+                    ) from exc
+                if reduced_max_tokens is not None and attempt < attempts:
+                    model_config = model_config.model_copy(
+                        update={"max_tokens": reduced_max_tokens}
+                    )
+                    model = self.model_factory.create(model_config)
+                    context.workflow_trace.record(
+                        "llm_max_tokens_adjusted",
+                        stage=trace_stage,
+                        generation_kind=generation_kind,
+                        attempt=attempt + 1,
+                        schema=schema.__name__,
+                        call_id=call_bundle["call_id"],
+                        max_tokens=reduced_max_tokens,
+                        reason=_compact_retry_detail(str(exc)),
+                    )
+                    emit_progress(
+                        "agent_status",
+                        stage=trace_stage,
+                        message=(
+                            "模型服务提示 max_tokens 超过当前额度，"
+                            f"下一次尝试临时降为 {reduced_max_tokens}。"
+                        ),
+                    )
+                continue
+            response_text = _response_text(response)
+            response_path = _write_llm_attempt_response(
+                call_bundle,
+                attempt=attempt,
+                response_text=response_text,
+            )
+            context.workflow_trace.record(
+                "llm_response",
+                stage=trace_stage,
+                generation_kind=generation_kind,
+                attempt=attempt,
+                schema=schema.__name__,
+                call_id=call_bundle["call_id"],
+                response_path=response_path,
+                response_chars=len(response_text),
+                response_preview=_truncate(_redact(response_text), limit=500),
+            )
+            try:
+                value = _build_single_file_patch_draft_from_code(
+                    schema,
+                    context=context,
+                    plan=plan,
+                    target_path=target_path,
+                    response_text=response_text,
+                )
+                value = _normalize_generated_plan(value, context.task_config.project_path)
+                _validate_generated_plan_targets(value, context)
+                if post_validator is not None:
+                    post_validator(value)
+                output_path = _write_llm_attempt_output(
+                    call_bundle,
+                    attempt=attempt,
+                    output=value.model_dump(mode="json"),
+                )
+                validation_path = _write_llm_attempt_validation(
+                    call_bundle,
+                    attempt=attempt,
+                    status="valid",
+                    response_text=response_text,
+                    output_path=output_path,
+                )
+                context.workflow_trace.record(
+                    "llm_structured_output",
+                    stage=trace_stage,
+                    generation_kind=generation_kind,
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    call_id=call_bundle["call_id"],
+                    output_path=output_path,
+                    validation_path=validation_path,
+                    output_summary=_summarize_structured_output(value),
+                )
+                _record_attempt(
+                    audit,
+                    attempt=attempt,
+                    status="valid",
+                    response_text=response_text,
+                )
+                _write_attempt_audit(
+                    context,
+                    schema,
+                    audit,
+                    stage_override=audit_stage,
+                    filename_override=audit_filename,
+                )
+                _write_llm_call_summary(call_bundle)
+                emit_progress(
+                    "agent_status",
+                    stage=trace_stage,
+                    message=f"LLM 已生成有效的 {schema.__name__}",
+                )
+                return value
+            except (ValidationError, TypeError, ValueError) as exc:
+                last_error = exc
+                validation_path = _write_llm_attempt_validation(
+                    call_bundle,
+                    attempt=attempt,
+                    status="invalid",
+                    error=exc,
+                    response_text=response_text,
+                )
+                _record_attempt(
+                    audit,
+                    attempt=attempt,
+                    status="invalid",
+                    error=exc,
+                    response_text=response_text,
+                )
+                _write_attempt_audit(
+                    context,
+                    schema,
+                    audit,
+                    stage_override=audit_stage,
+                    filename_override=audit_filename,
+                )
+                _write_llm_call_summary(call_bundle)
+                context.workflow_trace.record(
+                    "llm_attempt_validation",
+                    stage=trace_stage,
+                    generation_kind=generation_kind,
+                    attempt=attempt,
+                    schema=schema.__name__,
+                    call_id=call_bundle["call_id"],
+                    status="invalid",
+                    validation_path=validation_path,
+                )
+        raise PlanGenerationError(
+            f"Failed to generate valid {schema.__name__}: {_redact(str(last_error))}",
+            retryable=True,
         )
 
     def _invoke_schema(
@@ -2261,6 +2545,209 @@ def _latest_testing_command(context: RunContext) -> str | None:
     return str(command).strip() if command else None
 
 
+def _build_single_file_patch_draft_from_code(
+    schema: type[SchemaT],
+    *,
+    context: RunContext,
+    plan: BaseModel,
+    target_path: Path,
+    response_text: str,
+) -> SchemaT:
+    target = _normalize_single_file_target(target_path, context.task_config.project_path)
+    old_content = _read_current_target_content(context, target)
+    new_content = (
+        None
+        if _is_delete_file_response(response_text)
+        else _extract_single_fenced_code(response_text)
+    )
+    plan_summary = _single_file_plan_summary(
+        plan,
+        target,
+        response_text=response_text,
+    )
+    rationale = _single_file_rationale(
+        plan,
+        target,
+        response_text=response_text,
+    )
+    change = {
+        "path": target,
+        "old_content": old_content,
+        "new_content": new_content,
+        "rationale": rationale,
+    }
+    if issubclass(schema, ImplementationPatchDraft):
+        syntax_targets = (
+            [target] if new_content is not None and target.suffix.lower() == ".py" else []
+        )
+        return schema.model_validate(
+            {
+                "plan_summary": plan_summary,
+                "changes": [change],
+                "syntax_check_targets": syntax_targets,
+            }
+        )
+    if issubclass(schema, TestingPatchDraft):
+        return schema.model_validate(
+            {
+                "plan_summary": plan_summary,
+                "changes": [change],
+                "command": _single_file_testing_command(context, plan),
+                "framework": _single_file_framework(context, plan),
+            }
+        )
+    if issubclass(schema, RepairPatchDraft):
+        return schema.model_validate(
+            {
+                "plan_summary": plan_summary,
+                "changes": [change],
+                "verification_command": _single_file_repair_command(context, plan),
+                "framework": _single_file_framework(context, plan),
+            }
+        )
+    raise TypeError(f"unsupported single-file code patch schema: {schema.__name__}")
+
+
+def _normalize_single_file_target(target_path: Path, project_root: Path) -> Path:
+    normalized = _project_relative_path(Path(target_path), project_root)
+    safe_target = _safe_generated_target(normalized)
+    if safe_target is None:
+        raise ValueError(f"single-file patch target outside project root: {target_path}")
+    return Path(safe_target)
+
+
+def _read_current_target_content(context: RunContext, target_path: Path) -> str | None:
+    target = context.task_config.project_path / target_path
+    if not fs.exists(target):
+        return None
+    if not fs.is_file(target):
+        raise ValueError(f"single-file patch target is not a file: {target_path}")
+    try:
+        return fs.read_text(target)
+    except UnicodeDecodeError:
+        return fs.portable_path(target).read_text(encoding="utf-8", errors="replace")
+
+
+def _is_delete_file_response(response_text: str) -> bool:
+    return response_text.strip() == "DELETE_FILE"
+
+
+def _extract_single_fenced_code(response_text: str) -> str:
+    matches = list(
+        re.finditer(
+            r"```[^\S\r\n]*[A-Za-z0-9_.+-]*[^\S\r\n]*\r?\n(.*?)```",
+            response_text,
+            flags=re.DOTALL,
+        )
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            "single-file patch response must contain exactly one fenced code block"
+        )
+    code = matches[0].group(1)
+    if not code.strip():
+        raise ValueError("single-file patch fenced code block is empty")
+    return code
+
+
+def _single_file_plan_summary(
+    plan: BaseModel,
+    target_path: Path,
+    *,
+    response_text: str,
+) -> str:
+    response_summary = _non_code_response_text(response_text)
+    if response_summary:
+        return _truncate_field(response_summary, limit=8000)
+    for attribute in (
+        "implementation_strategy",
+        "strategy",
+        "repair_strategy",
+        "target_summary",
+        "requirements_summary",
+        "root_cause",
+    ):
+        value = getattr(plan, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return _truncate_field(value.strip(), limit=8000)
+    return f"生成 {target_path.as_posix()} 的单文件补丁。"
+
+
+def _single_file_rationale(
+    plan: BaseModel,
+    target_path: Path,
+    *,
+    response_text: str,
+) -> str:
+    expected = target_path.as_posix()
+    changes = getattr(plan, "changes", [])
+    if isinstance(changes, list):
+        for change in changes:
+            change_path = getattr(change, "path", None)
+            if change_path is None or Path(change_path).as_posix() != expected:
+                continue
+            pieces = [
+                getattr(change, "rationale", None),
+                getattr(change, "test_focus", None),
+                getattr(change, "expected_effect", None),
+            ]
+            rationale = " ".join(
+                str(piece).strip()
+                for piece in pieces
+                if isinstance(piece, str) and piece.strip()
+            )
+            if rationale:
+                return _truncate_field(rationale, limit=4000)
+    response_summary = _non_code_response_text(response_text)
+    if response_summary:
+        return _truncate_field(response_summary, limit=4000)
+    return f"根据已批准计划生成 {target_path.as_posix()}。"
+
+
+def _non_code_response_text(response_text: str) -> str | None:
+    without_code = re.sub(
+        r"```[^\S\r\n]*[A-Za-z0-9_.+-]*[^\S\r\n]*\r?\n.*?```",
+        "",
+        response_text,
+        flags=re.DOTALL,
+    )
+    compact = " ".join(without_code.replace("DELETE_FILE", "").split())
+    return compact or None
+
+
+def _single_file_testing_command(context: RunContext, plan: BaseModel) -> str:
+    command = getattr(plan, "command", None)
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    return context.task_config.test_command.command
+
+
+def _single_file_repair_command(context: RunContext, plan: BaseModel) -> str:
+    latest_testing_command = _latest_testing_command(context)
+    if latest_testing_command:
+        return latest_testing_command
+    command = getattr(plan, "verification_command", None)
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    return context.task_config.test_command.command
+
+
+def _single_file_framework(context: RunContext, plan: BaseModel) -> str:
+    framework = getattr(plan, "framework", None)
+    if framework in {"pytest", "unittest"}:
+        return framework
+    if context.task_config.test_framework in {"pytest", "unittest"}:
+        return context.task_config.test_framework
+    return "pytest"
+
+
+def _truncate_field(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    marker = "\n[truncated]"
+    return text[: max(0, limit - len(marker))] + marker
+
+
 def _new_attempt_audit(
     *,
     prompt: str,
@@ -2348,17 +2835,16 @@ def _start_llm_call_bundle(
     stage = _stage_for_schema_or_override(schema, stage_override)
     calls_dir = context.stage_dirs[stage] / "llm_calls"
     _mkdir(calls_dir)
-    call_slug = _text_slug(
-        "__".join(
-            part
-            for part in (
-                generation_kind,
-                schema.__name__,
-                Path(audit_filename).stem if audit_filename else None,
-            )
-            if part
+    call_label = "__".join(
+        part
+        for part in (
+            generation_kind,
+            schema.__name__,
+            Path(audit_filename).stem if audit_filename else None,
         )
+        if part
     )
+    call_slug = _short_call_slug(call_label, generation_kind, schema.__name__)
     call_id, call_dir = _next_call_dir(calls_dir, call_slug)
     bundle: dict[str, Any] = {
         "context": context,
@@ -2374,6 +2860,7 @@ def _start_llm_call_bundle(
     }
     request = {
         "call_id": call_id,
+        "call_label": call_label,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stage": bundle["stage"],
         "schema": schema.__name__,
@@ -2661,6 +3148,12 @@ def _run_relative_path(context: RunContext, path: Path) -> str:
 def _text_slug(text: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")
     return slug[:120] or "llm_call"
+
+
+def _short_call_slug(label: str, generation_kind: str, schema_name: str) -> str:
+    digest = hashlib.sha256(label.encode("utf-8")).hexdigest()[:10]
+    prefix = _text_slug(f"{generation_kind}__{schema_name}")[:72].strip("_")
+    return f"{prefix}__{digest}" if prefix else f"llm_call__{digest}"
 
 
 def _write_json(path: Path, payload: Any) -> None:

@@ -11,3 +11,6 @@ Software Engineering Project.txt
 *.pfx
 codeagent_runs/
 docs/_backups/
+vscode-extension/node_modules/
+vscode-extension/*.vsix
+dataset.zip
